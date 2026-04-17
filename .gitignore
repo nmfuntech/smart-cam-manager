@@ -1,0 +1,15 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Runtime artifacts
+captures/
+
+# IDE/OS
+.DS_Store
+.idea/
+.vscode/
+.env
+__pycache__/
