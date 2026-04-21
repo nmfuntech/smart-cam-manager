@@ -3,6 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="blackframe-csrf-token" content="{{ csrf_token }}" />
     <title>BLACKFRAME</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -12,7 +13,7 @@
     />
     <link
       rel="stylesheet"
-      href="{{ url_for('static', filename='styles.css') }}"
+      href="{{ url_for('static', filename='styles.css', v=static_asset_version) }}"
     />
   </head>
   <body>
@@ -32,14 +33,16 @@
             <p class="runtime-feedback" id="runtime-feedback">-</p>
             <div class="runtime-grid">
               <label class="runtime-field slider-field">
-                <span>Sensibilita</span>
-                <input id="cfg-motion-threshold" type="range" min="1" max="255" />
-                <p class="slider-hint" id="cfg-motion-threshold-hint">Sensibilita media</p>
+                <span>Sensibilita movimento</span>
+                <input id="cfg-motion-threshold" type="range" min="1" max="3" step="1" />
+                <p class="slider-hint" id="cfg-motion-threshold-hint">A destra rileva di piu, a sinistra filtra di piu</p>
+                <p class="slider-value" id="cfg-motion-threshold-value">-</p>
               </label>
               <label class="runtime-field slider-field">
-                <span>Area minima</span>
-                <input id="cfg-motion-min-area" type="range" min="1" max="30000" step="100" />
-                <p class="slider-hint" id="cfg-motion-min-area-hint">Rileva anche movimenti piccoli</p>
+                <span>Dimensione minima soggetto</span>
+                <input id="cfg-motion-min-area" type="range" min="1" max="3" step="1" />
+                <p class="slider-hint" id="cfg-motion-min-area-hint">A destra accetta soggetti piu piccoli, a sinistra solo piu grandi</p>
+                <p class="slider-value" id="cfg-motion-min-area-value">-</p>
               </label>
               <button class="ghost-button compact-button save-runtime" id="runtime-save" type="button">
                 Salva
@@ -57,6 +60,7 @@
               <button class="ptz-btn" data-direction="down" aria-label="Giù">↓</button>
             </div>
             <p class="ptz-message" id="ptz-message">-</p>
+            <a class="ghost-button compact-button camera-link-button" href="/cameras">Gestisci camere</a>
           </section>
 
           <section class="sidebar-block status-block">
@@ -103,13 +107,20 @@
           <div class="viewer-shell">
             <div class="viewer-topbar compact">
               <h1>BLACKFRAME</h1>
-              <a class="ghost-button" href="/health" target="_blank">Health</a>
+              <div class="header-actions">
+                <a class="ghost-button" href="/cameras">Camere</a>
+                <form method="post" action="{{ url_for('auth.logout') }}">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+                  <button class="ghost-button" type="submit">Esci</button>
+                </form>
+                <a class="ghost-button" href="/health" target="_blank">Health</a>
+              </div>
             </div>
 
             <div class="viewer-frame">
               <img
                 id="camera-frame"
-                src="{{ url_for('video.snapshot') }}"
+                src="{{ url_for('video.video_feed') }}"
                 alt="Streaming live BLACKFRAME"
               />
               <div class="viewer-overlay" id="viewer-overlay">
@@ -123,12 +134,13 @@
               <div class="motion-preview-panel">
                 <div class="motion-capture-copy">
                   <span class="motion-label">Preview</span>
-                  <strong id="motion-capture-path">Nessun evento</strong>
+                  <strong id="motion-capture-path">Seleziona un evento</strong>
                 </div>
                 <div class="motion-capture-frame">
                   <img id="motion-capture-image" alt="Preview evento di movimento" />
+                  <span class="motion-preview-badge" id="motion-preview-badge">Nessun evento selezionato</span>
                   <p class="motion-capture-empty" id="motion-capture-empty">
-                    Nessuna cattura
+                    Seleziona un evento
                   </p>
                 </div>
               </div>
@@ -136,9 +148,14 @@
               <div class="capture-panel">
                 <div class="capture-panel-head">
                   <strong id="capture-summary">Ultimi 5 eventi</strong>
-                  <button class="ghost-button compact-button" id="capture-toggle" type="button">
-                    Mostra altri
-                  </button>
+                  <div class="capture-actions">
+                    <button class="ghost-button compact-button danger-button" id="capture-clear" type="button">
+                      Cancella tutto
+                    </button>
+                    <button class="ghost-button compact-button" id="capture-toggle" type="button">
+                      Mostra altri
+                    </button>
+                  </div>
                 </div>
                 <div class="capture-list" id="capture-list"></div>
               </div>
@@ -147,10 +164,9 @@
         </div>
       </section>
     </main>
-
     <script
       type="module"
-      src="{{ url_for('static', filename='js/main.js') }}"
+      src="{{ url_for('static', filename='js/main.js', v=static_asset_version) }}"
     ></script>
   </body>
 </html>

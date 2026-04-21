@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="it">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="blackframe-csrf-token" content="" />
+    <title>BLACKFRAME ACCESSO</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500;700&display=swap"
+      rel="stylesheet"
+    />
+    <link
+      rel="stylesheet"
+      href="{{ url_for('static', filename='styles.css', v=static_asset_version) }}"
+    />
+  </head>
+  <body>
+    <main class="page camera-manager-page">
+      <section class="viewer-shell camera-manager-shell">
+        <div class="viewer-topbar">
+          <div>
+            <p class="eyebrow">BLACKFRAME</p>
+            <h1 class="camera-manager-title">Accesso protetto</h1>
+            <p class="description compact">
+              Inserisci password amministrativa per aprire viewer e controlli camera.
+            </p>
+          </div>
+        </div>
+
+        <div class="camera-manager-grid">
+          <section class="sidebar-block camera-config-block">
+            <div class="camera-config-head">
+              <h2>Login</h2>
+            </div>
+            {% if error %}
+            <p class="runtime-feedback login-error">{{ error }}</p>
+            {% endif %}
+            <form class="camera-form" method="post" action="{{ url_for('auth.login_submit') }}">
+              <input type="hidden" name="next" value="{{ next_url }}" />
+              <label class="camera-field">
+                <span>Password admin</span>
+                <input
+                  id="admin-password"
+                  name="password"
+                  type="password"
+                  autocomplete="current-password"
+                  required
+                />
+              </label>
+              <button class="ghost-button compact-button" type="submit">
+                Entra
+              </button>
+            </form>
+          </section>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

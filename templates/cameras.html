@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="it">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="blackframe-csrf-token" content="{{ csrf_token }}" />
+    <title>BLACKFRAME CAMERE</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500;700&display=swap"
+      rel="stylesheet"
+    />
+    <link
+      rel="stylesheet"
+      href="{{ url_for('static', filename='styles.css', v=static_asset_version) }}"
+    />
+  </head>
+  <body>
+    <main class="page camera-manager-page">
+      <section class="viewer-shell camera-manager-shell">
+        <div class="viewer-topbar">
+          <div>
+            <p class="eyebrow">BLACKFRAME</p>
+            <h1 class="camera-manager-title">Camere</h1>
+            <p class="description compact">
+              Aggiungi profili Tapo, abbina SSID Wi-Fi, poi apri viewer dedicato per camera scelta.
+            </p>
+          </div>
+          <div class="header-actions">
+            <span class="status-pill" id="wifi-pill">Wi-Fi: verifica...</span>
+            <a class="ghost-button" href="/">Viewer attuale</a>
+            <form method="post" action="{{ url_for('auth.logout') }}">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+              <button class="ghost-button" type="submit">Esci</button>
+            </form>
+          </div>
+        </div>
+
+        <div class="camera-manager-grid">
+          <section class="sidebar-block camera-config-block">
+            <div class="camera-config-head">
+              <h2>Profili salvati</h2>
+            </div>
+            <p class="runtime-feedback" id="camera-config-feedback">-</p>
+            <div class="camera-active-summary" id="camera-active-summary">Profilo attivo: -</div>
+            <div class="camera-profile-list" id="camera-profile-list"></div>
+          </section>
+
+          <section class="sidebar-block camera-config-block">
+            <div class="camera-config-head">
+              <h2>Nuova camera</h2>
+            </div>
+            <form class="camera-form" id="camera-form">
+              <label class="camera-field">
+                <span>Nome camera</span>
+                <input id="cam-name" name="name" type="text" placeholder="Es. Tapo soggiorno papa" required />
+              </label>
+              <label class="camera-field">
+                <span>Wi-Fi associato</span>
+                <input id="cam-wifi-ssid" name="wifi_ssid" type="text" placeholder="SSID rete dove vive questa cam" />
+              </label>
+              <label class="camera-field">
+                <span>Host / IP</span>
+                <input id="cam-host" name="host" type="text" placeholder="192.168.1.50" required />
+              </label>
+              <label class="camera-field">
+                <span>Porta RTSP</span>
+                <input id="cam-rtsp-port" name="rtsp_port" type="number" min="1" value="554" required />
+              </label>
+              <label class="camera-field">
+                <span>Stream path</span>
+                <input id="cam-stream-path" name="stream_path" type="text" value="stream1" required />
+              </label>
+              <label class="camera-field">
+                <span>Username RTSP</span>
+                <input id="cam-username" name="username" type="text" required />
+              </label>
+              <label class="camera-field">
+                <span>Password RTSP</span>
+                <input id="cam-password" name="password" type="password" required />
+              </label>
+              <label class="camera-field">
+                <span>Porta ONVIF</span>
+                <input id="cam-onvif-port" name="onvif_port" type="number" min="1" value="2020" required />
+              </label>
+              <label class="camera-field">
+                <span>Username ONVIF</span>
+                <input id="cam-onvif-username" name="onvif_username" type="text" placeholder="Vuoto = usa RTSP" />
+              </label>
+              <label class="camera-field">
+                <span>Password ONVIF</span>
+                <input id="cam-onvif-password" name="onvif_password" type="password" placeholder="Vuoto = usa RTSP" />
+              </label>
+              <label class="camera-field">
+                <span>Velocita PTZ</span>
+                <input id="cam-move-speed" name="move_speed" type="number" min="0" step="0.05" value="0.6" required />
+              </label>
+              <label class="camera-field">
+                <span>Durata PTZ</span>
+                <input id="cam-move-timeout" name="move_timeout" type="number" min="0" step="0.05" value="0.35" required />
+              </label>
+              <label class="camera-field camera-notes">
+                <span>Note</span>
+                <textarea id="cam-notes" name="notes" rows="2" placeholder="Facoltativo"></textarea>
+              </label>
+              <button class="ghost-button compact-button" id="camera-save" type="submit">
+                Salva camera
+              </button>
+            </form>
+          </section>
+        </div>
+      </section>
+    </main>
+
+    <script
+      type="module"
+      src="{{ url_for('static', filename='js/cameras-page.js', v=static_asset_version) }}"
+    ></script>
+  </body>
+</html>

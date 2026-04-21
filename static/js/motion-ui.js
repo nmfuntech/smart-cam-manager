@@ -11,69 +11,103 @@ export function createMotionController(elements) {
     motionThreshold,
     motionCapturePath,
     motionCaptureImage,
+    motionPreviewBadge,
     motionCaptureEmpty,
     captureList,
     captureSummary,
     captureToggle,
+    captureClear,
     runtimeSave,
     runtimeFeedback,
     cfgMotionEnabled,
     cfgMotionThreshold,
     cfgMotionThresholdHint,
+    cfgMotionThresholdValue,
     cfgMotionMinArea,
     cfgMotionMinAreaHint,
+    cfgMotionMinAreaValue,
   } = elements;
 
   let selectedCaptureId = null;
+  let selectedCapturePinned = false;
   let latestCaptureId = null;
   let lastCaptureSignature = "";
   let previewFrames = [];
   let previewFrameIndex = 0;
   let previewTimer = null;
+  let previewLoadedFrames = [];
+  let previewAnimationToken = 0;
   let archiveExpanded = false;
   let runtimeLoaded = false;
   let monitoringEnabled = null;
   let runtimeDirty = false;
+  let clearingCaptures = false;
+  let lastMotionListRefreshKey = "";
+  let refreshCaptureListInFlight = null;
+  let latestPreviewRequestKey = "";
 
   const collapsedCaptureLimit = 5;
   const expandedCaptureLimit = 60;
   const capturePanelHeight = 560;
+  const thresholdSteps = [
+    { level: 1, value: 70, title: "Filtro alto", hint: "Scena difficile o luce variabile: riduce i falsi trigger." },
+    { level: 2, value: 48, title: "Bilanciato", hint: "Uso normale in casa: buon equilibrio tra sensibilita e stabilita." },
+    { level: 3, value: 30, title: "Alta sensibilita", hint: "Soggetti lenti, piccoli o lontani: rileva di piu." },
+  ];
+  const minAreaSteps = [
+    { level: 1, value: 12000, title: "Solo soggetti grandi", hint: "Passaggi vicini o evidenti: ignora movimenti piccoli." },
+    { level: 2, value: 5000, title: "Bilanciato", hint: "Persone o animali in interno: profilo consigliato." },
+    { level: 3, value: 2200, title: "Anche soggetti piccoli", hint: "Animali piccoli o soggetti lontani: rileva prima." },
+  ];
   const runtimeFieldMap = {
     MOTION_ENABLED: { element: cfgMotionEnabled, type: "bool" },
     MOTION_THRESHOLD: { element: cfgMotionThreshold, type: "int" },
     MOTION_MIN_AREA: { element: cfgMotionMinArea, type: "int" },
   };
 
-  function thresholdToUiSensitivity(thresholdValue) {
-    const numeric = Number(thresholdValue);
+  function nearestStepByValue(steps, rawValue) {
+    const numeric = Number(rawValue);
     if (!Number.isFinite(numeric)) {
-      return 128;
+      return steps[1] || steps[0];
     }
-    return Math.max(1, Math.min(255, 256 - Math.round(numeric)));
+    return steps.reduce((best, step) => {
+      if (!best) {
+        return step;
+      }
+      return Math.abs(step.value - numeric) < Math.abs(best.value - numeric) ? step : best;
+    }, null);
+  }
+
+  function stepByLevel(steps, rawLevel) {
+    const numeric = Number(rawLevel);
+    if (!Number.isFinite(numeric)) {
+      return steps[1] || steps[0];
+    }
+    return steps.find((step) => step.level === Math.round(numeric)) || steps[1] || steps[0];
+  }
+
+  function thresholdToUiSensitivity(thresholdValue) {
+    return nearestStepByValue(thresholdSteps, thresholdValue).level;
   }
 
   function uiSensitivityToThreshold(uiValue) {
-    const numeric = Number(uiValue);
-    if (!Number.isFinite(numeric)) {
-      return null;
-    }
-    return Math.max(1, Math.min(255, 256 - Math.round(numeric)));
+    return stepByLevel(thresholdSteps, uiValue).value;
   }
 
   function minAreaToUiSensitivity(minAreaValue) {
-    const numeric = Number(minAreaValue);
-    if (!Number.isFinite(numeric)) {
-      return 15000;
-    }
-    return Math.max(1, Math.min(30000, 30001 - Math.round(numeric)));
+    return nearestStepByValue(minAreaSteps, minAreaValue).level;
   }
 
   function uiSensitivityToMinArea(uiValue) {
-    const numeric = Number(uiValue);
-    if (!Number.isFinite(numeric)) {
-      return null;
-    }
-    return Math.max(1, Math.min(30000, 30001 - Math.round(numeric)));
+    return stepByLevel(minAreaSteps, uiValue).value;
+  }
+
+  function getThresholdStep(uiValue) {
+    return stepByLevel(thresholdSteps, uiValue);
+  }
+
+  function getMinAreaStep(uiValue) {
+    return stepByLevel(minAreaSteps, uiValue);
   }
 
   function setRuntimeFeedback(text, isError = false) {
@@ -82,6 +116,17 @@ export function createMotionController(elements) {
   }
 
   function applyRuntimeConfigToForm(config) {
+    if (cfgMotionThreshold) {
+      cfgMotionThreshold.min = "1";
+      cfgMotionThreshold.max = "3";
+      cfgMotionThreshold.step = "1";
+    }
+    if (cfgMotionMinArea) {
+      cfgMotionMinArea.min = "1";
+      cfgMotionMinArea.max = "3";
+      cfgMotionMinArea.step = "1";
+    }
+
     for (const [key, spec] of Object.entries(runtimeFieldMap)) {
       const value = config[key];
       if (value === undefined || value === null || !spec.element) {
@@ -119,37 +164,36 @@ export function createMotionController(elements) {
     }
   }
 
-  function getThresholdHint(value) {
-    if (value <= 85) {
-      return "Poco sensibile: rileva solo variazioni marcate";
+  function snapRangeToStep(element) {
+    if (!element) {
+      return;
     }
-    if (value <= 170) {
-      return "Sensibilita media: buon equilibrio";
+    const numeric = parseInt(element.value, 10);
+    if (!Number.isFinite(numeric)) {
+      return;
     }
-    return "Molto sensibile: rileva anche micro-variazioni";
-  }
-
-  function getMinAreaHint(value) {
-    if (value <= 10000) {
-      return "Poco sensibile: ignora movimenti piccoli";
-    }
-    if (value <= 22000) {
-      return "Sensibilita media: filtra disturbi leggeri";
-    }
-    return "Molto sensibile: rileva anche movimenti piccoli/lontani";
+    element.value = String(Math.max(1, Math.min(3, Math.round(numeric))));
   }
 
   function updateSliderHints() {
     if (cfgMotionThreshold && cfgMotionThresholdHint) {
-      const thresholdValue = parseInt(cfgMotionThreshold.value, 10);
-      if (Number.isFinite(thresholdValue)) {
-        cfgMotionThresholdHint.textContent = getThresholdHint(thresholdValue);
+      const thresholdStep = getThresholdStep(cfgMotionThreshold.value);
+      if (thresholdStep) {
+        cfgMotionThresholdHint.textContent = thresholdStep.hint;
+        if (cfgMotionThresholdValue) {
+          cfgMotionThresholdValue.textContent =
+            `Scenario ${thresholdStep.level}/3 · ${thresholdStep.title} · Valore reale ${thresholdStep.value}`;
+        }
       }
     }
     if (cfgMotionMinArea && cfgMotionMinAreaHint) {
-      const minAreaValue = parseInt(cfgMotionMinArea.value, 10);
-      if (Number.isFinite(minAreaValue)) {
-        cfgMotionMinAreaHint.textContent = getMinAreaHint(minAreaValue);
+      const minAreaStep = getMinAreaStep(cfgMotionMinArea.value);
+      if (minAreaStep) {
+        cfgMotionMinAreaHint.textContent = minAreaStep.hint;
+        if (cfgMotionMinAreaValue) {
+          cfgMotionMinAreaValue.textContent =
+            `Scenario ${minAreaStep.level}/3 · ${minAreaStep.title} · Valore reale ${minAreaStep.value} px`;
+        }
       }
     }
   }
@@ -284,42 +328,128 @@ export function createMotionController(elements) {
 
   function stopPreviewAnimation() {
     if (previewTimer) {
-      clearInterval(previewTimer);
+      clearTimeout(previewTimer);
       previewTimer = null;
     }
+    previewLoadedFrames = [];
+    previewAnimationToken += 1;
+  }
+
+  function setPreviewBadge(text) {
+    if (!motionPreviewBadge) {
+      return;
+    }
+    motionPreviewBadge.textContent = text;
+  }
+
+  function showEmptyPreview(message = "Seleziona un evento") {
+    selectedCaptureId = null;
+    selectedCapturePinned = false;
+    stopPreviewAnimation();
+    motionCapturePath.textContent = message;
+    motionCaptureImage.removeAttribute("src");
+    motionCaptureImage.style.display = "none";
+    motionCaptureEmpty.textContent = message;
+    motionCaptureEmpty.style.display = "grid";
+    setPreviewBadge("Nessun evento selezionato");
+  }
+
+  function buildPreviewUrl(url) {
+    const separator = url.includes("?") ? "&" : "?";
+    return `${url}${separator}preview_ts=${Date.now()}`;
+  }
+
+  function preloadPreviewFrames(frames, animationToken) {
+    return Promise.all(
+      frames.map(
+        (frameUrl) =>
+          new Promise((resolve) => {
+            const image = new Image();
+            image.decoding = "async";
+            const resolvedUrl = buildPreviewUrl(frameUrl);
+            image.onload = () => resolve(resolvedUrl);
+            image.onerror = () => resolve(resolvedUrl);
+            image.src = resolvedUrl;
+          }),
+      ),
+    ).then((loadedFrames) => {
+      if (animationToken !== previewAnimationToken) {
+        return [];
+      }
+      return loadedFrames;
+    });
+  }
+
+  function renderPreviewFrame(frameUrl) {
+    if (!frameUrl) {
+      return;
+    }
+    motionCaptureImage.src = frameUrl;
+    motionCaptureImage.style.opacity = "1";
   }
 
   function startPreviewAnimation(frames) {
     stopPreviewAnimation();
     previewFrames = frames || [];
     previewFrameIndex = 0;
+    const animationToken = previewAnimationToken;
 
     if (previewFrames.length === 0) {
+      setPreviewBadge("Nessun frame");
       return;
     }
 
-    motionCaptureImage.src = previewFrames[0];
+    setPreviewBadge(previewFrames.length === 1 ? "Frame singolo" : `${previewFrames.length} frame`);
+    motionCaptureImage.style.opacity = "0";
 
-    if (previewFrames.length === 1) {
-      return;
-    }
+    preloadPreviewFrames(previewFrames, animationToken).then((loadedFrames) => {
+      if (animationToken !== previewAnimationToken || loadedFrames.length === 0) {
+        return;
+      }
 
-    previewTimer = setInterval(() => {
-      previewFrameIndex = (previewFrameIndex + 1) % previewFrames.length;
-      motionCaptureImage.src = previewFrames[previewFrameIndex];
-    }, 220);
+      previewLoadedFrames = loadedFrames;
+      renderPreviewFrame(previewLoadedFrames[0]);
+
+      if (previewLoadedFrames.length === 1) {
+        return;
+      }
+
+      const frameDurationMs = 180;
+      const tick = () => {
+        if (animationToken !== previewAnimationToken || previewLoadedFrames.length <= 1) {
+          return;
+        }
+        previewFrameIndex = (previewFrameIndex + 1) % previewLoadedFrames.length;
+        renderPreviewFrame(previewLoadedFrames[previewFrameIndex]);
+        previewTimer = setTimeout(tick, frameDurationMs);
+      };
+
+      previewTimer = setTimeout(tick, frameDurationMs);
+    });
   }
 
   function formatCaptureLabel(capture) {
     return `${capture.label} · ${capture.frame_count} frame`;
   }
 
-  function showCapture(capture) {
+  function showCapture(capture, options = {}) {
+    const animate =
+      options.animate
+      ?? (
+        !capture.isLivePreview
+        && Array.isArray(capture.frames)
+        && capture.frames.length > 1
+      );
+    const pinSelection = options.pinSelection ?? false;
     selectedCaptureId = capture.id;
+    selectedCapturePinned = pinSelection;
     motionCaptureImage.style.display = "block";
     motionCaptureEmpty.style.display = "none";
     motionCapturePath.textContent = formatCaptureLabel(capture);
-    startPreviewAnimation(capture.frames?.length ? capture.frames : [capture.url]);
+    const playbackFrames = animate
+      ? capture.frames
+      : [capture.url];
+    startPreviewAnimation(playbackFrames);
     document.querySelectorAll(".capture-row").forEach((row) => {
       row.classList.toggle("selected", row.dataset.captureId === capture.id);
     });
@@ -329,13 +459,32 @@ export function createMotionController(elements) {
     try {
       const { response, data } = await fetchJson(`/motion_event/${capture.id}`);
       if (response.ok) {
-        showCapture(data);
+        showCapture(data, { animate: true, pinSelection: true });
         return;
       }
     } catch {
     }
 
-    showCapture(capture);
+    showCapture(capture, { animate: false, pinSelection: true });
+  }
+
+  async function openLatestCapture(eventId, fallbackCapture, refreshKey) {
+    latestPreviewRequestKey = refreshKey;
+    try {
+      const { response, data } = await fetchJson(`/motion_event/${eventId}?ts=${Date.now()}`);
+      if (latestPreviewRequestKey !== refreshKey) {
+        return;
+      }
+      if (response.ok && data?.id === eventId) {
+        showCapture(data, { animate: false, pinSelection: false });
+        return;
+      }
+    } catch {
+    }
+
+    if (latestPreviewRequestKey === refreshKey) {
+      showCapture(fallbackCapture, { animate: false, pinSelection: false });
+    }
   }
 
   function buildCaptureRow(capture) {
@@ -373,10 +522,15 @@ export function createMotionController(elements) {
   }
 
   async function refreshCaptureList() {
+    if (refreshCaptureListInFlight) {
+      return refreshCaptureListInFlight;
+    }
+
+    refreshCaptureListInFlight = (async () => {
     const limit = archiveExpanded ? expandedCaptureLimit : collapsedCaptureLimit;
 
     try {
-      const { data } = await fetchJson(`/motion_captures?limit=${limit}`);
+      const { data } = await fetchJson(`/motion_captures?limit=${limit}&ts=${Date.now()}`);
       const captures = data.captures || [];
       const total = data.total || captures.length;
       const signature = `${archiveExpanded ? "full" : "compact"}::${captures
@@ -389,12 +543,11 @@ export function createMotionController(elements) {
       captureToggle.style.display = total > collapsedCaptureLimit ? "inline-flex" : "none";
       captureToggle.textContent = archiveExpanded ? "Mostra meno" : "Mostra altri";
       captureList.style.maxHeight = `${capturePanelHeight}px`;
+      if (captureClear) {
+        captureClear.disabled = clearingCaptures || total === 0;
+      }
 
       if (signature === lastCaptureSignature && captures.length > 0) {
-        if (!selectedCaptureId && captures[0].id !== latestCaptureId) {
-          latestCaptureId = captures[0].id;
-          await openCapture(captures[0]);
-        }
         return;
       }
 
@@ -403,24 +556,21 @@ export function createMotionController(elements) {
       captureList.scrollTop = 0;
 
       if (captures.length === 0) {
-        if (!selectedCaptureId) {
-          motionCaptureEmpty.style.display = "grid";
-        }
+        latestCaptureId = null;
+        showEmptyPreview("Nessun evento");
         captureList.innerHTML = '<p class="capture-list-empty">Nessun evento salvato ancora</p>';
         return;
       }
 
-      motionCaptureEmpty.style.display = "none";
+      if (!selectedCaptureId) {
+        showEmptyPreview("Seleziona un evento");
+      }
 
       for (const [index, capture] of captures.entries()) {
         const button = buildCaptureRow(capture);
 
         if (index === 0) {
           latestCaptureId = capture.id;
-        }
-
-        if (index === 0 && !selectedCaptureId) {
-          await openCapture(capture);
         }
 
         if (capture.id === selectedCaptureId) {
@@ -432,44 +582,68 @@ export function createMotionController(elements) {
     } catch {
       captureList.innerHTML =
         '<p class="capture-list-empty">Impossibile leggere l\'archivio eventi</p>';
+    } finally {
+      refreshCaptureListInFlight = null;
+    }
+    })();
+
+    return refreshCaptureListInFlight;
+  }
+
+  async function clearAllCaptures() {
+    if (!captureClear || clearingCaptures || !window.confirm("Cancellare tutti gli eventi salvati?")) {
+      return;
+    }
+
+    clearingCaptures = true;
+    captureClear.disabled = true;
+    setRuntimeFeedback("Cancellazione archivio in corso...");
+
+    try {
+      const { response, data } = await fetchJson("/api/motion_captures", {
+        method: "DELETE",
+      });
+      if (!response.ok) {
+        setRuntimeFeedback(data.error || "Errore cancellazione archivio", true);
+        return;
+      }
+
+      lastCaptureSignature = "";
+      latestCaptureId = null;
+      showEmptyPreview("Nessun evento");
+      captureList.innerHTML = '<p class="capture-list-empty">Nessun evento salvato ancora</p>';
+      captureSummary.textContent = "Archivio svuotato";
+      setRuntimeFeedback(`Archivio cancellato (${data.removed ?? 0} elementi)`);
+      await refreshMotionStatus();
+      await refreshCaptureList();
+    } catch {
+      setRuntimeFeedback("Errore di rete durante cancellazione archivio", true);
+    } finally {
+      clearingCaptures = false;
+      if (captureClear) {
+        captureClear.disabled = false;
+      }
     }
   }
 
   async function refreshMotionStatus() {
     try {
-      const { data } = await fetchJson("/motion_status");
+      const { data } = await fetchJson(`/motion_status?ts=${Date.now()}`);
       monitoringEnabled = Boolean(data.enabled);
 
-      motionThreshold.textContent = data.min_area ?? "-";
+      motionThreshold.textContent = data.threshold ?? "-";
       motionCurrentArea.textContent = data.current_area ?? 0;
       motionLastTriggerArea.textContent = data.last_trigger_area ?? 0;
       motionLastEvent.textContent = data.last_motion_at || "-";
 
-      if (data.last_event_id) {
-        motionCapturePath.textContent = data.last_event_id;
-      }
-
       if (data.last_capture_path) {
-        const capture = {
-          id: data.last_event_id || "latest",
-          path: data.last_capture_path,
-          url: data.last_preview_url || "/latest_motion.jpg",
-          label: data.last_event_id || "Evento recente",
-          frame_count: "?",
-          frames: [data.last_preview_url || "/latest_motion.jpg"],
-        };
-        const shouldFollowLatest =
-          !selectedCaptureId || selectedCaptureId === latestCaptureId;
-        latestCaptureId = capture.id;
-        if (shouldFollowLatest) {
-          motionCaptureImage.style.display = "block";
-          motionCaptureEmpty.style.display = "none";
-          showCapture(capture);
+        const refreshKey = `${data.last_event_id || ""}::${data.last_capture_path || ""}`;
+        if (refreshKey && refreshKey !== lastMotionListRefreshKey) {
+          lastMotionListRefreshKey = refreshKey;
+          await refreshCaptureList();
         }
-      } else if (!selectedCaptureId) {
-        motionCaptureImage.removeAttribute("src");
-        motionCaptureImage.style.display = "none";
-        motionCaptureEmpty.style.display = "grid";
+      } else {
+        lastMotionListRefreshKey = "";
       }
 
       if (!data.enabled) {
@@ -500,12 +674,28 @@ export function createMotionController(elements) {
   }
 
   function bind() {
+    if (cfgMotionThreshold) {
+      cfgMotionThreshold.min = "1";
+      cfgMotionThreshold.max = "3";
+      cfgMotionThreshold.step = "1";
+    }
+    if (cfgMotionMinArea) {
+      cfgMotionMinArea.min = "1";
+      cfgMotionMinArea.max = "3";
+      cfgMotionMinArea.step = "1";
+    }
+
     captureToggle.addEventListener("click", async () => {
       archiveExpanded = !archiveExpanded;
       lastCaptureSignature = "";
       captureList.scrollTop = 0;
       await refreshCaptureList();
     });
+    if (captureClear) {
+      captureClear.addEventListener("click", async () => {
+        await clearAllCaptures();
+      });
+    }
     if (runtimeSave) {
       runtimeSave.addEventListener("click", async () => {
         await saveRuntimeConfig();
@@ -517,13 +707,19 @@ export function createMotionController(elements) {
       });
     }
     if (cfgMotionThreshold) {
-      cfgMotionThreshold.addEventListener("input", markRuntimeDirty);
-      cfgMotionThreshold.addEventListener("input", updateSliderHints);
+      cfgMotionThreshold.addEventListener("input", () => {
+        snapRangeToStep(cfgMotionThreshold);
+        markRuntimeDirty();
+        updateSliderHints();
+      });
       cfgMotionThreshold.addEventListener("change", updateSliderHints);
     }
     if (cfgMotionMinArea) {
-      cfgMotionMinArea.addEventListener("input", markRuntimeDirty);
-      cfgMotionMinArea.addEventListener("input", updateSliderHints);
+      cfgMotionMinArea.addEventListener("input", () => {
+        snapRangeToStep(cfgMotionMinArea);
+        markRuntimeDirty();
+        updateSliderHints();
+      });
       cfgMotionMinArea.addEventListener("change", updateSliderHints);
     }
     updateSliderHints();

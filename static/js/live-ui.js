@@ -6,6 +6,7 @@ export function createLiveController(elements) {
   const OVERLAY_DEBOUNCE_MS = 500;
   let pendingOverlayTimer = null;
   let latestStatus = null;
+  let feedInitialized = false;
 
   function clearPendingOverlayTimer() {
     if (!pendingOverlayTimer) {
@@ -98,13 +99,17 @@ export function createLiveController(elements) {
     }
   }
 
-  function refreshSnapshot() {
-    cameraFrame.src = `/snapshot.jpg?ts=${Date.now()}`;
+  function ensureVideoFeed() {
+    if (feedInitialized || !cameraFrame) {
+      return;
+    }
+    cameraFrame.src = "/video_feed";
+    feedInitialized = true;
   }
 
   return {
+    ensureVideoFeed,
     refreshStatus,
-    refreshSnapshot,
-    getSnapshotIntervalMs: () => latestStatus?.snapshot_interval_ms ?? null,
+    getStreamIntervalMs: () => latestStatus?.snapshot_interval_ms ?? null,
   };
 }

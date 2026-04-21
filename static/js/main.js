@@ -1,6 +1,7 @@
 import { createLiveController } from "./live-ui.js";
 import { createMotionController } from "./motion-ui.js";
 import { createPtzController } from "./ptz-ui.js";
+import { createCameraConfigController } from "./camera-ui.js";
 
 const live = createLiveController({
   overlay: document.getElementById("viewer-overlay"),
@@ -17,17 +18,21 @@ const motion = createMotionController({
   motionThreshold: document.getElementById("motion-threshold"),
   motionCapturePath: document.getElementById("motion-capture-path"),
   motionCaptureImage: document.getElementById("motion-capture-image"),
+  motionPreviewBadge: document.getElementById("motion-preview-badge"),
   motionCaptureEmpty: document.getElementById("motion-capture-empty"),
   captureList: document.getElementById("capture-list"),
   captureSummary: document.getElementById("capture-summary"),
   captureToggle: document.getElementById("capture-toggle"),
+  captureClear: document.getElementById("capture-clear"),
   runtimeSave: document.getElementById("runtime-save"),
   runtimeFeedback: document.getElementById("runtime-feedback"),
   cfgMotionEnabled: document.getElementById("cfg-motion-enabled"),
   cfgMotionThreshold: document.getElementById("cfg-motion-threshold"),
   cfgMotionThresholdHint: document.getElementById("cfg-motion-threshold-hint"),
+  cfgMotionThresholdValue: document.getElementById("cfg-motion-threshold-value"),
   cfgMotionMinArea: document.getElementById("cfg-motion-min-area"),
   cfgMotionMinAreaHint: document.getElementById("cfg-motion-min-area-hint"),
+  cfgMotionMinAreaValue: document.getElementById("cfg-motion-min-area-value"),
 });
 
 const ptz = createPtzController({
@@ -36,6 +41,19 @@ const ptz = createPtzController({
   ptzStatusLabel: document.getElementById("ptz-status-label"),
   ptzHostLabel: document.getElementById("ptz-host-label"),
   ptzButtons: document.querySelectorAll(".ptz-btn"),
+});
+
+const cameras = createCameraConfigController({
+  wifiPill: document.getElementById("wifi-pill"),
+  feedback: document.getElementById("camera-config-feedback"),
+  activeSummary: document.getElementById("camera-active-summary"),
+  profileList: document.getElementById("camera-profile-list"),
+  form: document.getElementById("camera-form"),
+  onApplied: async () => {
+    live.ensureVideoFeed();
+    await live.refreshStatus();
+    await ptz.refreshPtzStatus();
+  },
 });
 
 const motionOverlayToggle = document.getElementById("motion-overlay-toggle");
@@ -70,6 +88,7 @@ function bindMotionOverlayToggle() {
 
 motion.bind();
 ptz.bind();
+cameras.bind();
 bindMotionOverlayToggle();
 
 const POLL_MODE = {
@@ -89,27 +108,24 @@ let motionEnabled = true;
 const POLL_INTERVALS = {
   [POLL_MODE.FAST]: {
     streamStatus: 2000,
-    snapshot: 700,
-    motionStatus: 1500,
+    motionStatus: 2000,
     runtimeConfig: 8000,
-    captureList: 3000,
-    ptzStatus: 4000,
+    captureList: 5000,
+    ptzStatus: 6000,
   },
   [POLL_MODE.DEFAULT]: {
     streamStatus: 4000,
-    snapshot: 1500,
-    motionStatus: 3500,
-    runtimeConfig: 12000,
-    captureList: 6000,
-    ptzStatus: 8000,
+    motionStatus: 5000,
+    runtimeConfig: 20000,
+    captureList: 10000,
+    ptzStatus: 12000,
   },
   [POLL_MODE.HIDDEN]: {
-    streamStatus: 15000,
-    snapshot: 0,
-    motionStatus: 12000,
+    streamStatus: 20000,
+    motionStatus: 15000,
     runtimeConfig: 30000,
-    captureList: 20000,
-    ptzStatus: 20000,
+    captureList: 30000,
+    ptzStatus: 30000,
   },
 };
 
@@ -132,12 +148,6 @@ function getInterval(mode, key) {
   if (baseMs <= 0) {
     return 0;
   }
-  if (key === "snapshot") {
-    const streamIntervalMs = live.getSnapshotIntervalMs();
-    if (Number.isFinite(streamIntervalMs) && streamIntervalMs > 0) {
-      return Math.max(baseMs, streamIntervalMs);
-    }
-  }
   if (motionEnabled) {
     return baseMs;
   }
@@ -154,6 +164,8 @@ function clearPollingHandles() {
   pollingHandles.forEach((handle) => clearInterval(handle));
   pollingHandles = [];
 }
+
+let authLost = false;
 
 function scheduleTask(taskKey, callback, mode) {
   const intervalMs = getInterval(mode, taskKey);
@@ -174,11 +186,14 @@ function syncMotionEnabledState(enabled) {
 }
 
 function applyPollingMode(mode) {
+  if (authLost) {
+    clearPollingHandles();
+    return;
+  }
   clearPollingHandles();
   activeMode = mode;
 
   scheduleTask("streamStatus", () => live.refreshStatus(), mode);
-  scheduleTask("snapshot", () => live.refreshSnapshot(), mode);
   scheduleTask("motionStatus", async () => {
     const enabled = await motion.refreshMotionStatus();
     syncMotionEnabledState(enabled);
@@ -207,8 +222,11 @@ function markUserActive() {
 }
 
 async function bootstrap() {
+  if (authLost) {
+    return;
+  }
+  live.ensureVideoFeed();
   await live.refreshStatus();
-  live.refreshSnapshot();
   const enabled = await motion.refreshMotionStatus();
   syncMotionEnabledState(enabled);
   if (typeof enabled === "boolean") {
@@ -217,10 +235,16 @@ async function bootstrap() {
   await motion.refreshRuntimeConfig();
   await motion.refreshCaptureList();
   await ptz.refreshPtzStatus();
+  await cameras.refresh();
 
   applyPollingMode(getCurrentMode());
   setInterval(() => refreshPollingMode(), MODE_CHECK_MS);
 }
+
+window.addEventListener("blackframe:auth-required", () => {
+  authLost = true;
+  clearPollingHandles();
+});
 
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden) {

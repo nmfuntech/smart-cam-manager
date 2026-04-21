@@ -1,4 +1,5 @@
 import re
+import shutil
 import time
 from datetime import datetime
 from pathlib import Path
@@ -7,11 +8,14 @@ import cv2
 
 
 class MotionEventStore:
+    CLOSED_MARKER_NAME = ".closed"
+
     def __init__(self, config: dict):
         self.config = config
         self.current_event_id = None
         self.current_event_dir = None
         self.current_event_last_at = None
+        self.current_event_started_at = None
         self.current_event_frame_count = 0
 
     def save_frame(self, frame, timestamp: str) -> tuple[str | None, str | None]:
@@ -21,14 +25,25 @@ class MotionEventStore:
         save_dir = Path(self.config["save_dir"])
         save_dir.mkdir(parents=True, exist_ok=True)
         now = time.time()
+        max_event_duration = float(self.config.get("max_event_duration", 0.0) or 0.0)
+        duration_exceeded = (
+            max_event_duration > 0
+            and self.current_event_started_at is not None
+            and now - self.current_event_started_at >= max_event_duration
+        )
         if (
             self.current_event_dir is None
             or self.current_event_last_at is None
             or now - self.current_event_last_at > self.config["event_gap"]
+            or duration_exceeded
         ):
+            if duration_exceeded:
+                self.close_current_event()
             self.current_event_id = f"motion_event_{timestamp}"
             self.current_event_dir = save_dir / self.current_event_id
             self.current_event_dir.mkdir(parents=True, exist_ok=True)
+            self._marker_path(self.current_event_dir).unlink(missing_ok=True)
+            self.current_event_started_at = now
             self.current_event_frame_count = 0
 
         self.current_event_last_at = now
@@ -52,6 +67,15 @@ class MotionEventStore:
         events = self.list_events(limit=1)
         return events[0] if events else None
 
+    def close_current_event(self) -> None:
+        if self.current_event_dir is not None:
+            self._close_event_dir(self.current_event_dir)
+        self.current_event_id = None
+        self.current_event_dir = None
+        self.current_event_last_at = None
+        self.current_event_started_at = None
+        self.current_event_frame_count = 0
+
     def get_event(self, event_id: str):
         for event in self.list_events(limit=500, include_frames=True):
             if event["id"] == event_id:
@@ -70,10 +94,29 @@ class MotionEventStore:
         events.sort(key=lambda event: event["timestamp"] or datetime.min, reverse=True)
         return events[:limit]
 
+    def clear_all(self) -> int:
+        save_dir = Path(self.config["save_dir"])
+        if not save_dir.exists():
+            return 0
+
+        self.close_current_event()
+        removed = 0
+        for path in save_dir.iterdir():
+            if path.is_dir() and path.name.startswith("motion_event_"):
+                shutil.rmtree(path, ignore_errors=True)
+                removed += 1
+            elif path.is_file() and path.name.startswith("motion_") and path.suffix == ".jpg":
+                path.unlink(missing_ok=True)
+                removed += 1
+
+        return removed
+
     def _iter_saved_events(self, save_dir: Path, include_frames: bool):
         events = []
         for event_dir in sorted(save_dir.glob("motion_event_*"), reverse=True):
             if not event_dir.is_dir():
+                continue
+            if not self._ensure_event_is_closed(event_dir):
                 continue
             event = self._build_saved_event(event_dir, include_frames)
             if event:
@@ -104,7 +147,7 @@ class MotionEventStore:
         cover_path = event_dir / "cover.jpg"
         latest_path = event_dir / "latest.jpg"
         frames = sorted(event_dir.glob("frame_*.jpg"))
-        preview_path = latest_path if latest_path.exists() else cover_path
+        preview_path = cover_path if cover_path.exists() else latest_path
         if not preview_path.exists():
             return None
         event = {
@@ -152,3 +195,30 @@ class MotionEventStore:
             return datetime.strptime(match.group(1), "%Y%m%d_%H%M%S")
         except ValueError:
             return None
+
+    def _marker_path(self, event_dir: Path) -> Path:
+        return event_dir / self.CLOSED_MARKER_NAME
+
+    def _close_event_dir(self, event_dir: Path) -> None:
+        if not event_dir.exists():
+            return
+        self._marker_path(event_dir).touch(exist_ok=True)
+
+    def _ensure_event_is_closed(self, event_dir: Path) -> bool:
+        marker_path = self._marker_path(event_dir)
+        if marker_path.exists():
+            return True
+        is_current_event = self.current_event_dir is not None and event_dir == self.current_event_dir
+        if not self._is_event_stale(event_dir):
+            return False
+        if is_current_event:
+            self.close_current_event()
+            return True
+        self._close_event_dir(event_dir)
+        return True
+
+    def _is_event_stale(self, event_dir: Path) -> bool:
+        newest_mtime = event_dir.stat().st_mtime
+        for path in event_dir.glob("*.jpg"):
+            newest_mtime = max(newest_mtime, path.stat().st_mtime)
+        return time.time() - newest_mtime > float(self.config.get("event_gap", 0.0) or 0.0)

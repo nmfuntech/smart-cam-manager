@@ -6,6 +6,8 @@ __pycache__/
 
 # Runtime artifacts
 captures/
+data/camera_profiles.json
+data/.camera_profiles.key
 
 # IDE/OS
 .DS_Store

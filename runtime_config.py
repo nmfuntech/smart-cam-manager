@@ -10,6 +10,7 @@ class ConfigField:
     key: str
     value_type: str
     sensitive: bool = False
+    internal_only: bool = False
     minimum: float | None = None
     must_be_odd: bool = False
 
@@ -20,7 +21,26 @@ class RuntimeConfigManager:
     def __init__(self, env_path: str | Path = ".env"):
         self.env_path = Path(env_path)
         self.fields = {
+            "TAPO_HOST": ConfigField("TAPO_HOST", "str"),
+            "TAPO_RTSP_PORT": ConfigField("TAPO_RTSP_PORT", "int", minimum=1),
+            "TAPO_STREAM_PATH": ConfigField("TAPO_STREAM_PATH", "str"),
+            "TAPO_USERNAME": ConfigField("TAPO_USERNAME", "str", sensitive=True),
+            "TAPO_PASSWORD": ConfigField("TAPO_PASSWORD", "str", sensitive=True),
+            "TAPO_ONVIF_PORT": ConfigField("TAPO_ONVIF_PORT", "int", minimum=1),
+            "TAPO_ONVIF_USERNAME": ConfigField(
+                "TAPO_ONVIF_USERNAME", "str", sensitive=True
+            ),
+            "TAPO_ONVIF_PASSWORD": ConfigField(
+                "TAPO_ONVIF_PASSWORD", "str", sensitive=True
+            ),
+            "TAPO_MOVE_SPEED": ConfigField("TAPO_MOVE_SPEED", "float", minimum=0),
+            "TAPO_MOVE_TIMEOUT": ConfigField("TAPO_MOVE_TIMEOUT", "float", minimum=0),
             "MOTION_ENABLED": ConfigField("MOTION_ENABLED", "bool"),
+            "MOTION_SAVE_DIR": ConfigField(
+                "MOTION_SAVE_DIR",
+                "str",
+                internal_only=True,
+            ),
             "MOTION_MIN_AREA": ConfigField("MOTION_MIN_AREA", "int", minimum=1),
             "MOTION_THRESHOLD": ConfigField("MOTION_THRESHOLD", "int", minimum=1),
             "MOTION_BLUR_SIZE": ConfigField(
@@ -34,13 +54,20 @@ class RuntimeConfigManager:
     def get_public_config(self) -> dict:
         data = {}
         for key, field in self.fields.items():
+            if field.sensitive or field.internal_only:
+                continue
             raw_value = os.getenv(key)
             if raw_value is None:
                 continue
             data[key] = self._coerce_value(key, raw_value, field)
         return data
 
-    def update(self, updates: dict) -> dict:
+    def update(
+        self,
+        updates: dict,
+        allow_sensitive: bool = False,
+        allow_internal: bool = False,
+    ) -> dict:
         if not isinstance(updates, dict) or not updates:
             raise ValueError("Payload aggiornamento non valido")
 
@@ -49,8 +76,10 @@ class RuntimeConfigManager:
             if key not in self.fields:
                 raise ValueError(f"Parametro non modificabile: {key}")
             field = self.fields[key]
-            if field.sensitive:
+            if field.sensitive and not allow_sensitive:
                 raise ValueError(f"Parametro sensibile non modificabile: {key}")
+            if field.internal_only and not allow_internal:
+                raise ValueError(f"Parametro interno non modificabile: {key}")
             normalized[key] = self._coerce_value(key, raw_value, field)
 
         for key, value in normalized.items():
@@ -69,6 +98,8 @@ class RuntimeConfigManager:
             value = str(raw_value).strip()
             if not value:
                 raise ValueError(f"{key} non puo essere vuoto")
+            if any(ord(char) < 32 or ord(char) == 127 for char in value):
+                raise ValueError(f"{key} contiene caratteri non validi")
         else:
             raise ValueError(f"Tipo non supportato: {field.value_type}")
 
@@ -131,4 +162,6 @@ class RuntimeConfigManager:
         ) as tmp:
             tmp.write(content)
             temp_path = Path(tmp.name)
+        os.chmod(temp_path, 0o600)
         temp_path.replace(self.env_path)
+        os.chmod(self.env_path, 0o600)

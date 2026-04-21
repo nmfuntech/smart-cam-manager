@@ -1,3 +1,4 @@
+import logging
 import os
 import threading
 import time
@@ -8,21 +9,27 @@ from urllib.parse import urlparse
 import cv2
 from dotenv import load_dotenv
 from flask import Flask
+from auth import auth_bp, configure_auth
 from motion_events import MotionEventStore
 from runtime_config import RuntimeConfigManager
 from routes import register_blueprints
 from service_layer import (
+    CameraProfileService,
     FeatureServices,
     NotificationService,
     PresetService,
     RecordingService,
+    WifiService,
 )
 
 
 load_dotenv()
+logger = logging.getLogger(__name__)
 
-# Force RTSP over TCP for more reliable LAN streaming.
-os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp"
+# Prefer low-delay RTSP options to reduce frame buffering latency.
+os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
+    "rtsp_transport;tcp|fflags;nobuffer|flags;low_delay|max_delay;0|analyzeduration;0"
+)
 
 
 def get_rtsp_url() -> str:
@@ -68,18 +75,21 @@ def get_onvif_config() -> dict:
 
 def get_motion_config() -> dict:
     enabled = os.getenv("MOTION_ENABLED", "true").lower() == "true"
-    min_area = int(os.getenv("MOTION_MIN_AREA", "6000"))
-    threshold = int(os.getenv("MOTION_THRESHOLD", "35"))
-    blur_size = int(os.getenv("MOTION_BLUR_SIZE", "31"))
-    cooldown = float(os.getenv("MOTION_COOLDOWN", "5"))
-    min_interval = float(os.getenv("MOTION_FRAME_INTERVAL", "0.4"))
+    min_area = int(os.getenv("MOTION_MIN_AREA", "1400"))
+    threshold = int(os.getenv("MOTION_THRESHOLD", "24"))
+    blur_size = int(os.getenv("MOTION_BLUR_SIZE", "21"))
+    cooldown = float(os.getenv("MOTION_COOLDOWN", "3"))
+    min_interval = float(os.getenv("MOTION_FRAME_INTERVAL", "0.12"))
+    capture_interval = float(os.getenv("MOTION_CAPTURE_INTERVAL", "0.18"))
+    max_area_ratio = float(os.getenv("MOTION_MAX_AREA_RATIO", "0.45"))
     warmup_frames = int(os.getenv("MOTION_WARMUP_FRAMES", "12"))
-    trigger_frames = int(os.getenv("MOTION_TRIGGER_FRAMES", "3"))
-    clear_frames = int(os.getenv("MOTION_CLEAR_FRAMES", "6"))
-    background_alpha = float(os.getenv("MOTION_BACKGROUND_ALPHA", "0.08"))
+    trigger_frames = int(os.getenv("MOTION_TRIGGER_FRAMES", "2"))
+    clear_frames = int(os.getenv("MOTION_CLEAR_FRAMES", "8"))
+    background_alpha = float(os.getenv("MOTION_BACKGROUND_ALPHA", "0.03"))
     save_frames = os.getenv("MOTION_SAVE_FRAMES", "true").lower() == "true"
     save_dir = os.getenv("MOTION_SAVE_DIR", "captures/motion")
-    event_gap = float(os.getenv("MOTION_EVENT_GAP", "3.0"))
+    event_gap = float(os.getenv("MOTION_EVENT_GAP", "4.0"))
+    max_event_duration = float(os.getenv("MOTION_EVENT_MAX_DURATION", "45.0"))
 
     if blur_size % 2 == 0:
         blur_size += 1
@@ -91,6 +101,8 @@ def get_motion_config() -> dict:
         "blur_size": blur_size,
         "cooldown": cooldown,
         "min_interval": min_interval,
+        "capture_interval": capture_interval,
+        "max_area_ratio": max_area_ratio,
         "warmup_frames": warmup_frames,
         "trigger_frames": trigger_frames,
         "clear_frames": clear_frames,
@@ -98,6 +110,7 @@ def get_motion_config() -> dict:
         "save_frames": save_frames,
         "save_dir": save_dir,
         "event_gap": event_gap,
+        "max_event_duration": max_event_duration,
     }
 
 
@@ -127,6 +140,36 @@ def get_stream_config() -> dict:
         "snapshot_interval_offline_ms": parse_int(
             "STREAM_SNAPSHOT_INTERVAL_OFFLINE_MS", 2500, 250
         ),
+        "backlog_skip_frames": parse_int("RTSP_BACKLOG_SKIP_FRAMES", 1, 0),
+        "jpeg_quality": parse_int("STREAM_JPEG_QUALITY", 85, 40),
+        "max_width": parse_int("STREAM_MAX_WIDTH", 0, 0),
+    }
+
+
+def build_default_camera_profile() -> dict:
+    return {
+        "id": "env-default",
+        "name": os.getenv("TAPO_CAMERA_NAME", "Camera principale"),
+        "wifi_ssid": os.getenv("TAPO_WIFI_SSID", ""),
+        "host": os.getenv("TAPO_HOST", "192.168.1.50"),
+        "rtsp_port": int(os.getenv("TAPO_RTSP_PORT", "554")),
+        "stream_path": os.getenv("TAPO_STREAM_PATH", "stream1"),
+        "username": os.getenv("TAPO_USERNAME", ""),
+        "password": os.getenv("TAPO_PASSWORD", ""),
+        "onvif_port": int(os.getenv("TAPO_ONVIF_PORT", "2020")),
+        "onvif_username": (
+            os.getenv("TAPO_ONVIF_USERNAME")
+            or os.getenv("TAPO_CAMERA_ACCOUNT_USER")
+            or os.getenv("TAPO_USERNAME", "")
+        ),
+        "onvif_password": (
+            os.getenv("TAPO_ONVIF_PASSWORD")
+            or os.getenv("TAPO_CAMERA_ACCOUNT_PASSWORD")
+            or os.getenv("TAPO_PASSWORD", "")
+        ),
+        "move_speed": float(os.getenv("TAPO_MOVE_SPEED", "0.6")),
+        "move_timeout": float(os.getenv("TAPO_MOVE_TIMEOUT", "0.35")),
+        "notes": "",
     }
 
 
@@ -144,8 +187,12 @@ class CameraStream:
         self.snapshot_interval_offline_ms = int(
             stream_config.get("snapshot_interval_offline_ms", 2500)
         )
+        self.backlog_skip_frames = int(stream_config.get("backlog_skip_frames", 1))
+        self.jpeg_quality = int(stream_config.get("jpeg_quality", 85))
+        self.max_width = int(stream_config.get("max_width", 0))
         self.capture = None
         self.frame = None
+        self.frame_sequence = 0
         self.raw_frame = None
         self.last_frame_at = None
         self.last_success_at = None
@@ -223,6 +270,8 @@ class CameraStream:
             capture.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, timeout_ms)
         if hasattr(cv2, "CAP_PROP_READ_TIMEOUT_MSEC"):
             capture.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, timeout_ms)
+        if hasattr(cv2, "CAP_PROP_BUFFERSIZE"):
+            capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         if not capture.isOpened():
             raise RuntimeError(f"Impossibile aprire stream RTSP su {self._endpoint()}")
         return capture
@@ -234,13 +283,24 @@ class CameraStream:
                     try:
                         self.capture = self._open_capture()
                         self._reset_backoff()
-                    except Exception as exc:
-                        print(f"Errore open stream video: {exc}")
-                        self._record_open_failure(str(exc))
+                    except Exception:
+                        logger.exception("Errore apertura stream video")
+                        self._record_open_failure("Impossibile aprire stream RTSP")
                         time.sleep(self._consume_backoff())
                         continue
 
-                ok, frame = self.capture.read()
+                if self.backlog_skip_frames > 0:
+                    ok_grab = self.capture.grab()
+                    if not ok_grab:
+                        ok = False
+                        frame = None
+                    else:
+                        for _ in range(self.backlog_skip_frames):
+                            if not self.capture.grab():
+                                break
+                        ok, frame = self.capture.retrieve()
+                else:
+                    ok, frame = self.capture.read()
                 if not ok:
                     if self.capture is not None:
                         self.capture.release()
@@ -249,13 +309,30 @@ class CameraStream:
                     time.sleep(self._consume_backoff())
                     continue
 
-                ok, buffer = cv2.imencode(".jpg", frame)
+                render_frame = frame
+                if self.max_width > 0:
+                    frame_width = frame.shape[1]
+                    if frame_width > self.max_width:
+                        scale = self.max_width / float(frame_width)
+                        resized_height = int(frame.shape[0] * scale)
+                        render_frame = cv2.resize(
+                            frame,
+                            (self.max_width, resized_height),
+                            interpolation=cv2.INTER_AREA,
+                        )
+
+                ok, buffer = cv2.imencode(
+                    ".jpg",
+                    render_frame,
+                    [int(cv2.IMWRITE_JPEG_QUALITY), self.jpeg_quality],
+                )
                 if not ok:
                     self._record_read_failure("Encoding JPEG fallito sul frame live")
                     continue
 
                 with self.lock:
                     self.frame = buffer.tobytes()
+                    self.frame_sequence += 1
                     self.raw_frame = frame.copy()
                     self.last_frame_at = time.time()
                     self.last_success_at = self.last_frame_at
@@ -263,17 +340,21 @@ class CameraStream:
                     self.last_error_stage = ""
                     self.connection_state = "online"
                 self._reset_backoff()
-            except Exception as exc:
-                print(f"Errore stream video: {exc}")
+            except Exception:
+                logger.exception("Errore stream video")
                 if self.capture is not None:
                     self.capture.release()
                 self.capture = None
-                self._record_read_failure(str(exc))
+                self._record_read_failure("Errore lettura stream RTSP")
                 time.sleep(self._consume_backoff())
 
     def get_frame(self) -> bytes | None:
         with self.lock:
             return self.frame
+
+    def get_frame_packet(self) -> tuple[bytes | None, int]:
+        with self.lock:
+            return self.frame, self.frame_sequence
 
     def get_raw_frame(self):
         with self.lock:
@@ -318,11 +399,20 @@ class CameraStream:
             "reconnect_backoff_max_sec": self.reconnect_backoff_max_sec,
             "snapshot_interval_online_ms": self.snapshot_interval_online_ms,
             "snapshot_interval_offline_ms": self.snapshot_interval_offline_ms,
+            "backlog_skip_frames": self.backlog_skip_frames,
+            "jpeg_quality": self.jpeg_quality,
+            "max_width": self.max_width,
         }
         return status
 
     def apply_runtime_config(self, updates: dict) -> None:
-        relevant = {"TAPO_HOST", "TAPO_RTSP_PORT", "TAPO_STREAM_PATH"}
+        relevant = {
+            "TAPO_HOST",
+            "TAPO_RTSP_PORT",
+            "TAPO_STREAM_PATH",
+            "TAPO_USERNAME",
+            "TAPO_PASSWORD",
+        }
         if not any(key in relevant for key in updates):
             return
         with self.lock:
@@ -331,6 +421,7 @@ class CameraStream:
                 self.capture.release()
             self.capture = None
             self.frame = None
+            self.frame_sequence = 0
             self.raw_frame = None
             self.connection_state = "connecting"
             self.last_error = "Config stream aggiornata, reconnessione in corso..."
@@ -389,8 +480,9 @@ class PTZController:
         except ModuleNotFoundError:
             self.last_error = "Libreria ONVIF non installata. Installa onvif-zeep."
             self.available = False
-        except Exception as exc:
-            self.last_error = f"Connessione ONVIF fallita: {exc}"
+        except Exception:
+            logger.exception("Connessione ONVIF fallita")
+            self.last_error = "Connessione ONVIF fallita"
             self.available = False
 
     def move(self, direction: str) -> tuple[bool, str]:
@@ -429,9 +521,10 @@ class PTZController:
                 self.ptz_service.Stop(self.stop_request)
                 self.last_error = ""
                 return True, ""
-            except Exception as exc:
+            except Exception:
+                logger.exception("Comando PTZ fallito")
                 self.available = False
-                self.last_error = f"Comando PTZ fallito: {exc}"
+                self.last_error = "Comando PTZ fallito"
                 return False, self.last_error
 
     def stop(self) -> tuple[bool, str]:
@@ -446,9 +539,10 @@ class PTZController:
                 self.ptz_service.Stop(self.stop_request)
                 self.last_error = ""
                 return True, ""
-            except Exception as exc:
+            except Exception:
+                logger.exception("Stop PTZ fallito")
                 self.available = False
-                self.last_error = f"Stop PTZ fallito: {exc}"
+                self.last_error = "Stop PTZ fallito"
                 return False, self.last_error
 
     def home(self) -> tuple[bool, str]:
@@ -465,9 +559,10 @@ class PTZController:
                 self.ptz_service.GotoHomePosition(request_home)
                 self.last_error = ""
                 return True, ""
-            except Exception as exc:
+            except Exception:
+                logger.exception("Home PTZ fallito")
                 self.available = False
-                self.last_error = f"Home PTZ fallito: {exc}"
+                self.last_error = "Home PTZ fallito"
                 return False, self.last_error
 
     def get_status(self) -> dict:
@@ -486,6 +581,12 @@ class PTZController:
                 reconnect = True
             if "TAPO_ONVIF_PORT" in updates:
                 self.config["port"] = int(updates["TAPO_ONVIF_PORT"])
+                reconnect = True
+            if "TAPO_ONVIF_USERNAME" in updates:
+                self.config["username"] = str(updates["TAPO_ONVIF_USERNAME"])
+                reconnect = True
+            if "TAPO_ONVIF_PASSWORD" in updates:
+                self.config["password"] = str(updates["TAPO_ONVIF_PASSWORD"])
                 reconnect = True
             if "TAPO_MOVE_SPEED" in updates:
                 self.config["move_speed"] = float(updates["TAPO_MOVE_SPEED"])
@@ -514,6 +615,7 @@ class MotionDetector:
         self.last_capture_path = None
         self.last_event_id = None
         self.last_error = ""
+        self.last_capture_saved_at = None
         self._restore_last_capture()
         self.thread = threading.Thread(target=self._run, daemon=True)
         self.thread.start()
@@ -534,7 +636,28 @@ class MotionDetector:
     def _save_motion_frame(self, frame, timestamp: str) -> str | None:
         filepath, event_id = self._get_event_store().save_frame(frame, timestamp)
         self.last_event_id = event_id
+        self.last_capture_saved_at = time.time()
         return filepath
+
+    def _should_save_active_event_frame(self, now: float) -> bool:
+        if not self.motion_detected:
+            return False
+        if self.clear_streak >= self.config["clear_frames"]:
+            return False
+        if self.last_capture_saved_at is None:
+            return True
+        return (
+            now - self.last_capture_saved_at
+            >= self.config.get("capture_interval", self.config["min_interval"])
+        )
+
+    def _is_usable_motion_area(self, area: float, frame_area: float) -> bool:
+        if area < self.config["min_area"]:
+            return False
+        max_ratio = self.config.get("max_area_ratio", 1.0)
+        if max_ratio <= 0:
+            return True
+        return area <= frame_area * max_ratio
 
     def _restore_last_capture(self) -> None:
         event = self._get_event_store().latest_event()
@@ -591,19 +714,25 @@ class MotionDetector:
                 )
 
                 largest_area = 0.0
+                largest_usable_area = 0.0
                 motion_now = False
+                frame_area = float(processed.shape[0] * processed.shape[1])
                 for contour in contours:
                     area = cv2.contourArea(contour)
                     if area > largest_area:
                         largest_area = area
-                    if area >= self.config["min_area"]:
+                    if self._is_usable_motion_area(area, frame_area):
+                        if area > largest_usable_area:
+                            largest_usable_area = area
                         motion_now = True
 
                 now = time.time()
                 with self.lock:
                     self.processed_frames += 1
                     self.current_area = (
-                        largest_area if largest_area >= self.config["min_area"] else 0.0
+                        largest_usable_area
+                        if largest_usable_area >= self.config["min_area"]
+                        else 0.0
                     )
                     self.last_error = ""
                     if self.processed_frames <= self.config["warmup_frames"]:
@@ -616,7 +745,7 @@ class MotionDetector:
                         if self.trigger_streak >= self.config["trigger_frames"]:
                             self.motion_detected = True
                             self.last_motion_at = now
-                            self.last_trigger_area = largest_area
+                            self.last_trigger_area = largest_usable_area
                             now_dt = datetime.now()
                             self.last_motion_at_display = now_dt.strftime(
                                 "%Y-%m-%d %H:%M:%S"
@@ -629,6 +758,16 @@ class MotionDetector:
                     else:
                         self.trigger_streak = 0
                         self.clear_streak += 1
+                        if self._should_save_active_event_frame(now):
+                            now_dt = datetime.now()
+                            self.last_motion_at_display = now_dt.strftime(
+                                "%Y-%m-%d %H:%M:%S"
+                            )
+                            capture_timestamp = now_dt.strftime("%Y%m%d_%H%M%S")
+                            self.last_capture_path = self._save_motion_frame(
+                                frame,
+                                capture_timestamp,
+                            )
                         enough_quiet = self.clear_streak >= self.config["clear_frames"]
                         out_of_cooldown = (
                             self.last_motion_at is None
@@ -636,9 +775,11 @@ class MotionDetector:
                         )
                         if enough_quiet and out_of_cooldown:
                             self.motion_detected = False
-            except Exception as exc:
+                            self._get_event_store().close_current_event()
+            except Exception:
+                logger.exception("Errore motion detection")
                 with self.lock:
-                    self.last_error = f"Errore motion detection: {exc}"
+                    self.last_error = "Errore motion detection"
 
             time.sleep(self.config["min_interval"])
 
@@ -650,6 +791,7 @@ class MotionDetector:
                 "last_motion_at": self.last_motion_at_display,
                 "current_area": round(self.current_area, 2),
                 "last_trigger_area": round(self.last_trigger_area, 2),
+                "threshold": self.config["threshold"],
                 "min_area": self.config["min_area"],
                 "trigger_frames": self.config["trigger_frames"],
                 "save_frames": self.config["save_frames"],
@@ -681,6 +823,10 @@ class MotionDetector:
                     self.config["cooldown"] = float(value)
                 elif key == "MOTION_FRAME_INTERVAL":
                     self.config["min_interval"] = float(value)
+                elif key == "MOTION_CAPTURE_INTERVAL":
+                    self.config["capture_interval"] = float(value)
+                elif key == "MOTION_MAX_AREA_RATIO":
+                    self.config["max_area_ratio"] = float(value)
                 elif key == "MOTION_WARMUP_FRAMES":
                     self.config["warmup_frames"] = int(value)
                 elif key == "MOTION_TRIGGER_FRAMES":
@@ -693,6 +839,13 @@ class MotionDetector:
                     self.config["save_frames"] = bool(value)
                 elif key == "MOTION_SAVE_DIR":
                     self.config["save_dir"] = str(value)
+                    self.event_store = MotionEventStore(self.config)
+                    self.last_capture_path = None
+                    self.last_event_id = None
+                    self.last_motion_at = None
+                    self.last_motion_at_display = None
+                    self.last_capture_saved_at = None
+                    self._restore_last_capture()
                 elif key == "MOTION_EVENT_GAP":
                     self.config["event_gap"] = float(value)
 
@@ -712,6 +865,7 @@ class MotionDetector:
                 self.processed_frames = 0
                 self.trigger_streak = 0
                 self.clear_streak = 0
+                self.last_capture_saved_at = None
 
     def list_events(self, limit: int = 8, include_frames: bool = False) -> list[dict]:
         return self._get_event_store().list_events(
@@ -721,6 +875,19 @@ class MotionDetector:
 
     def get_event(self, event_id: str):
         return self._get_event_store().get_event(event_id)
+
+    def clear_events(self) -> int:
+        with self.lock:
+            removed = self._get_event_store().clear_all()
+            self.last_capture_path = None
+            self.last_event_id = None
+            self.last_motion_at = None
+            self.last_motion_at_display = None
+            self.last_trigger_area = 0.0
+            self.current_area = 0.0
+            self.last_capture_saved_at = None
+            self.motion_detected = False
+            return removed
 
 
 @dataclass
@@ -734,6 +901,17 @@ class AppServices:
 
 def build_services() -> AppServices:
     runtime_config = RuntimeConfigManager()
+    camera_profiles = CameraProfileService()
+    camera_profiles.ensure_default_profile(build_default_camera_profile())
+    active_profile_id = camera_profiles.get_active_profile_id()
+    if active_profile_id:
+        active_profile = camera_profiles.get_profile(active_profile_id)
+        if active_profile:
+            runtime_config.update(
+                camera_profiles.build_runtime_updates(active_profile),
+                allow_sensitive=True,
+                allow_internal=True,
+            )
     camera = CameraStream(get_rtsp_url(), get_stream_config())
     ptz = PTZController(get_onvif_config())
     motion = MotionDetector(camera, get_motion_config())
@@ -741,6 +919,8 @@ def build_services() -> AppServices:
         presets=PresetService(),
         notifications=NotificationService(),
         recording=RecordingService(),
+        camera_profiles=camera_profiles,
+        wifi=WifiService(),
     )
     return AppServices(
         camera=camera,
@@ -753,7 +933,9 @@ def build_services() -> AppServices:
 
 def create_app(services: AppServices | None = None) -> Flask:
     app = Flask(__name__)
+    configure_auth(app)
     app.config["services"] = services or build_services()
+    app.register_blueprint(auth_bp)
     register_blueprints(app)
     return app
 
@@ -761,4 +943,10 @@ app = create_app()
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8000, debug=False, use_reloader=False, threaded=True)
+    app.run(
+        host=os.getenv("APP_BIND_HOST", "127.0.0.1"),
+        port=int(os.getenv("APP_PORT", "8000")),
+        debug=False,
+        use_reloader=False,
+        threaded=True,
+    )
