@@ -17,23 +17,28 @@
     />
   </head>
   <body>
-    <main class="page camera-manager-page">
+
+    <header class="app-header">
+      <a class="app-header-brand" href="/">BLACKFRAME</a>
+      <nav class="app-header-nav">
+        <span class="status-pill compact-button" id="wifi-pill">Wi-Fi: verifica...</span>
+        <a class="ghost-button compact-button" href="/">Viewer</a>
+        <a class="ghost-button compact-button" href="/dashboard">Dashboard</a>
+        <form method="post" action="{{ url_for('auth.logout') }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+          <button class="ghost-button compact-button" type="submit">Esci</button>
+        </form>
+      </nav>
+    </header>
+
+    <main class="page camera-manager-page viewer-page">
       <section class="viewer-shell camera-manager-shell">
         <div class="viewer-topbar">
           <div>
-            <p class="eyebrow">BLACKFRAME</p>
             <h1 class="camera-manager-title">Camere</h1>
             <p class="description compact">
-              Aggiungi profili Tapo, abbina SSID Wi-Fi, poi apri viewer dedicato per camera scelta.
+              Aggiungi profili Tapo, abbina SSID Wi-Fi, poi apri viewer dedicato per la camera scelta.
             </p>
-          </div>
-          <div class="header-actions">
-            <span class="status-pill" id="wifi-pill">Wi-Fi: verifica...</span>
-            <a class="ghost-button" href="/">Viewer attuale</a>
-            <form method="post" action="{{ url_for('auth.logout') }}">
-              <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
-              <button class="ghost-button" type="submit">Esci</button>
-            </form>
           </div>
         </div>
 
@@ -49,7 +54,7 @@
 
           <section class="sidebar-block camera-config-block">
             <div class="camera-config-head">
-              <h2>Nuova camera</h2>
+              <h2 id="camera-form-title">Nuova camera</h2>
             </div>
             <form class="camera-form" id="camera-form">
               <label class="camera-field">
@@ -99,6 +104,10 @@
               <label class="camera-field">
                 <span>Durata PTZ</span>
                 <input id="cam-move-timeout" name="move_timeout" type="number" min="0" step="0.05" value="0.35" required />
+              </label>
+              <label class="camera-field toggle-field">
+                <span>Monitora in background (eventi + notifiche anche se non attiva)</span>
+                <input id="cam-monitored" name="monitored" type="checkbox" />
               </label>
               <label class="camera-field camera-notes">
                 <span>Note</span>

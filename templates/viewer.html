@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="blackframe-csrf-token" content="{{ csrf_token }}" />
-    <title>BLACKFRAME</title>
+    <title>BLACKFRAME · Viewer</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -17,11 +17,59 @@
     />
   </head>
   <body>
-    <main class="page redesigned">
+
+    <header class="app-header">
+      <a class="app-header-brand" href="/">BLACKFRAME</a>
+      <nav class="app-header-nav">
+        <a class="ghost-button compact-button" href="/dashboard">Dashboard</a>
+        <a class="ghost-button compact-button" href="/cameras">Camere</a>
+        <form method="post" action="{{ url_for('auth.logout') }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+          <button class="ghost-button compact-button" type="submit">Esci</button>
+        </form>
+      </nav>
+    </header>
+
+    <main class="page viewer-page">
       <section class="workspace">
-        <aside class="status-rail settings-sidebar">
-          <h2>Controlli</h2>
-          <section class="sidebar-block motion-controls">
+
+        <aside class="viewer-sidebar status-rail settings-sidebar">
+
+          <!-- 1. STATO — info più importante, top della sidebar -->
+          <section class="sidebar-block">
+            <p class="sidebar-section-label">Stato</p>
+            <div class="status-stack">
+              <span class="status-pill" id="stream-pill">Stream: verifica...</span>
+              <span class="status-pill" id="motion-pill">Motion: verifica...</span>
+              <span class="status-pill" id="ptz-pill">PTZ: verifica...</span>
+            </div>
+            <div class="stats-grid-compact">
+              <div class="motion-stat">
+                <span class="motion-label">Rilevamento</span>
+                <strong id="motion-state">-</strong>
+              </div>
+              <div class="motion-stat">
+                <span class="motion-label">Soglia</span>
+                <strong id="motion-threshold">-</strong>
+              </div>
+              <div class="motion-stat">
+                <span class="motion-label">Area live</span>
+                <strong id="motion-current-area">0</strong>
+              </div>
+              <div class="motion-stat">
+                <span class="motion-label">Ultimo evento</span>
+                <strong id="motion-last-event">-</strong>
+              </div>
+            </div>
+            <!-- ID nascosti per compatibilità JS -->
+            <span hidden id="motion-last-trigger-area"></span>
+            <span hidden id="ptz-status-label"></span>
+            <span hidden id="ptz-host-label"></span>
+          </section>
+
+          <!-- 2. RILEVAMENTO MOVIMENTO -->
+          <section class="sidebar-block">
+            <p class="sidebar-section-label">Rilevamento</p>
             <button
               class="ptz-overlay-toggle motion-overlay-toggle is-on"
               id="motion-overlay-toggle"
@@ -30,28 +78,37 @@
             >
               MOTION ON
             </button>
-            <p class="runtime-feedback" id="runtime-feedback">-</p>
             <div class="runtime-grid">
               <label class="runtime-field slider-field">
-                <span>Sensibilita movimento</span>
+                <span>Sensibilità</span>
                 <input id="cfg-motion-threshold" type="range" min="1" max="3" step="1" />
-                <p class="slider-hint" id="cfg-motion-threshold-hint">A destra rileva di piu, a sinistra filtra di piu</p>
+                <p class="slider-hint" id="cfg-motion-threshold-hint">A destra rileva di più, a sinistra filtra di più</p>
                 <p class="slider-value" id="cfg-motion-threshold-value">-</p>
               </label>
               <label class="runtime-field slider-field">
-                <span>Dimensione minima soggetto</span>
+                <span>Soggetto minimo</span>
                 <input id="cfg-motion-min-area" type="range" min="1" max="3" step="1" />
-                <p class="slider-hint" id="cfg-motion-min-area-hint">A destra accetta soggetti piu piccoli, a sinistra solo piu grandi</p>
+                <p class="slider-hint" id="cfg-motion-min-area-hint">A destra accetta soggetti più piccoli, a sinistra solo più grandi</p>
                 <p class="slider-value" id="cfg-motion-min-area-value">-</p>
               </label>
-              <button class="ghost-button compact-button save-runtime" id="runtime-save" type="button">
-                Salva
-              </button>
+              <label class="runtime-field toggle-field">
+                <span>Registrazione video</span>
+                <input id="cfg-record-enabled" type="checkbox" />
+              </label>
+              <label class="runtime-field toggle-field">
+                <span>Notifiche Telegram</span>
+                <input id="cfg-notify-telegram-enabled" type="checkbox" />
+              </label>
             </div>
+            <button class="ghost-button compact-button save-runtime" id="runtime-save" type="button">
+              Salva impostazioni
+            </button>
+            <p class="runtime-feedback" id="runtime-feedback">-</p>
           </section>
 
+          <!-- 3. TELECAMERA PTZ -->
           <section class="sidebar-block">
-            <h2>Camera</h2>
+            <p class="sidebar-section-label">Telecamera</p>
             <div class="ptz-pad-simple sidebar-ptz">
               <button class="ptz-btn" data-direction="up" aria-label="Su">↑</button>
               <button class="ptz-btn" data-direction="left" aria-label="Sinistra">←</button>
@@ -60,63 +117,54 @@
               <button class="ptz-btn" data-direction="down" aria-label="Giù">↓</button>
             </div>
             <p class="ptz-message" id="ptz-message">-</p>
-            <a class="ghost-button compact-button camera-link-button" href="/cameras">Gestisci camere</a>
           </section>
 
-          <section class="sidebar-block status-block">
-            <h2>Stato</h2>
-            <div class="status-stack">
-              <span class="status-pill" id="stream-pill">Stream: verifica...</span>
-              <span class="status-pill" id="motion-pill">Motion: verifica...</span>
-              <span class="status-pill" id="ptz-pill">PTZ: verifica...</span>
+          <!-- 4. AVANZATE — collassabile, nascosto di default -->
+          <details class="sidebar-block sidebar-advanced">
+            <summary class="sidebar-advanced-summary">
+              <span class="sidebar-section-label" style="margin:0">Avanzate</span>
+              <span class="sidebar-advanced-chevron">▾</span>
+            </summary>
+            <div class="runtime-grid sidebar-advanced-body">
+              <label class="runtime-field toggle-field">
+                <span>Classificazione</span>
+                <input id="cfg-classification-enabled" type="checkbox" />
+              </label>
+              <label class="runtime-field">
+                <span>Backend</span>
+                <select id="cfg-classification-backend">
+                  <option value="local">Local (ONNX)</option>
+                  <option value="teachable_machine">Teachable Machine</option>
+                  <option value="cloud">Cloud HTTP</option>
+                </select>
+              </label>
+              <label class="runtime-field slider-field">
+                <span>Soglia confidenza</span>
+                <input
+                  id="cfg-classification-min-confidence"
+                  type="range"
+                  min="0.3"
+                  max="0.99"
+                  step="0.01"
+                />
+                <p class="slider-value" id="cfg-classification-min-confidence-value">0.55</p>
+              </label>
+              <label class="runtime-field">
+                <span>Policy campionamento</span>
+                <select id="cfg-classification-sample-policy">
+                  <option value="event_cover">event_cover</option>
+                </select>
+              </label>
             </div>
-            <div class="status-card-grid">
-              <div class="motion-stat">
-                <span class="motion-label">Motion</span>
-                <strong id="motion-state">-</strong>
-              </div>
-              <div class="motion-stat">
-                <span class="motion-label">Ultimo evento</span>
-                <strong id="motion-last-event">-</strong>
-              </div>
-              <div class="motion-stat">
-                <span class="motion-label">Area live</span>
-                <strong id="motion-current-area">0</strong>
-              </div>
-              <div class="motion-stat">
-                <span class="motion-label">Ultimo trigger</span>
-                <strong id="motion-last-trigger-area">0</strong>
-              </div>
-              <div class="motion-stat">
-                <span class="motion-label">Soglia</span>
-                <strong id="motion-threshold">-</strong>
-              </div>
-              <div class="motion-stat">
-                <span class="motion-label">PTZ</span>
-                <strong id="ptz-status-label">-</strong>
-              </div>
-              <div class="motion-stat">
-                <span class="motion-label">Nodo</span>
-                <strong id="ptz-host-label">-</strong>
-              </div>
-            </div>
-          </section>
+          </details>
+
         </aside>
 
+        <!-- COLONNA PRINCIPALE -->
         <div class="main-column">
-          <div class="viewer-shell">
-            <div class="viewer-topbar compact">
-              <h1>BLACKFRAME</h1>
-              <div class="header-actions">
-                <a class="ghost-button" href="/cameras">Camere</a>
-                <form method="post" action="{{ url_for('auth.logout') }}">
-                  <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
-                  <button class="ghost-button" type="submit">Esci</button>
-                </form>
-                <a class="ghost-button" href="/health" target="_blank">Health</a>
-              </div>
-            </div>
 
+          <!-- Stream video -->
+          <div class="viewer-shell">
             <div class="viewer-frame">
               <img
                 id="camera-frame"
@@ -129,6 +177,7 @@
             </div>
           </div>
 
+          <!-- Sezione eventi di movimento -->
           <section class="motion-shell compact-shell">
             <div class="motion-workspace">
               <div class="motion-preview-panel">
@@ -138,6 +187,13 @@
                 </div>
                 <div class="motion-capture-frame">
                   <img id="motion-capture-image" alt="Preview evento di movimento" />
+                  <video
+                    id="motion-capture-video"
+                    controls
+                    playsinline
+                    preload="metadata"
+                    hidden
+                  ></video>
                   <span class="motion-preview-badge" id="motion-preview-badge">Nessun evento selezionato</span>
                   <p class="motion-capture-empty" id="motion-capture-empty">
                     Seleziona un evento
@@ -161,9 +217,11 @@
               </div>
             </div>
           </section>
+
         </div>
       </section>
     </main>
+
     <script
       type="module"
       src="{{ url_for('static', filename='js/main.js', v=static_asset_version) }}"

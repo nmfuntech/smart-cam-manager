@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="it">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="blackframe-csrf-token" content="{{ csrf_token }}" />
+    <title>BLACKFRAME · Dashboard</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500;700&display=swap"
+      rel="stylesheet"
+    />
+    <link
+      rel="stylesheet"
+      href="{{ url_for('static', filename='styles.css', v=static_asset_version) }}"
+    />
+  </head>
+  <body>
+
+    <header class="app-header">
+      <a class="app-header-brand" href="/">BLACKFRAME</a>
+      <nav class="app-header-nav">
+        <a class="ghost-button compact-button" href="/">Viewer</a>
+        <a class="ghost-button compact-button" href="/cameras">Camere</a>
+        <form method="post" action="{{ url_for('auth.logout') }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+          <button class="ghost-button compact-button" type="submit">Esci</button>
+        </form>
+      </nav>
+    </header>
+
+    <main class="page viewer-page">
+      <div class="viewer-topbar compact" style="margin-bottom:16px">
+        <h2 style="margin:0;font-size:1.4rem;letter-spacing:0.06em;text-transform:uppercase">Dashboard</h2>
+      </div>
+
+      {% if not cameras %}
+      <p class="motion-capture-empty" style="display:grid;margin-top:40px">
+        Nessuna camera attiva o monitorata. Abilita il monitoraggio dalla pagina
+        <a href="/cameras" style="color:var(--accent)">Camere</a>.
+      </p>
+      {% else %}
+      <section class="camera-grid">
+        {% for cam in cameras %}
+        <article class="camera-tile" data-profile-id="{{ cam.id }}">
+          <div class="tile-head">
+            <strong>{{ cam.name }}</strong>
+            {% if cam.active %}
+            <span class="status-pill ok">Attiva</span>
+            {% else %}
+            <span class="status-pill">Monitor</span>
+            {% endif %}
+          </div>
+          <img
+            src="{{ url_for('video.camera_video_feed', profile_id=cam.id) }}"
+            alt="Live {{ cam.name }}"
+          />
+          <div class="tile-foot">
+            <span class="status-pill motion-pill" data-role="motion-pill">Motion: -</span>
+            <a class="ghost-button compact-button" href="{{ url_for('video.camera_view', profile_id=cam.id) }}">Apri</a>
+          </div>
+        </article>
+        {% endfor %}
+      </section>
+      {% endif %}
+    </main>
+    <script
+      type="module"
+      src="{{ url_for('static', filename='js/dashboard.js', v=static_asset_version) }}"
+    ></script>
+  </body>
+</html>

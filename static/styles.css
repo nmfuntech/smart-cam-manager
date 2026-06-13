@@ -392,7 +392,8 @@ h2 {
   line-height: 1.35;
 }
 
-.runtime-field input {
+.runtime-field input,
+.runtime-field select {
   min-height: 36px;
   border: 1px solid var(--line);
   border-radius: 10px;
@@ -402,15 +403,38 @@ h2 {
   font: inherit;
 }
 
-.runtime-field.checkbox-field {
-  grid-template-columns: 1fr auto;
-  align-items: center;
+input:focus,
+select:focus,
+textarea:focus {
+  outline: none;
+  border-color: rgba(82, 242, 199, 0.6);
+  box-shadow: 0 0 0 2px rgba(82, 242, 199, 0.14);
 }
 
-.runtime-field.checkbox-field input {
+select {
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%238ca8b4' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  padding-right: 30px;
+  cursor: pointer;
+}
+
+.runtime-field.checkbox-field,
+.runtime-field.toggle-field,
+.camera-field.toggle-field {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.runtime-field.checkbox-field input,
+.runtime-field.toggle-field input[type="checkbox"],
+.camera-field.toggle-field input[type="checkbox"] {
   min-height: auto;
-  width: 22px;
-  height: 22px;
+  flex-shrink: 0;
 }
 
 .motion-preview-panel,
@@ -444,13 +468,18 @@ h2 {
     #000;
 }
 
-.motion-capture-frame img {
+.motion-capture-frame img,
+.motion-capture-frame video {
   display: none;
   width: 100%;
   height: 100%;
   object-fit: contain;
   background: #000;
   transition: opacity 140ms ease;
+}
+
+.motion-capture-frame video {
+  border-radius: 0;
 }
 
 .motion-capture-empty {
@@ -605,6 +634,15 @@ h2 {
     padding-top: 20px;
   }
 
+  .app-header {
+    padding: 0 14px;
+    gap: 10px;
+  }
+
+  .app-header-nav {
+    gap: 4px;
+  }
+
   .hero,
   .viewer-topbar,
   .capture-panel-head {
@@ -623,6 +661,12 @@ h2 {
 
   .motion-capture-frame {
     min-height: 240px;
+  }
+
+  .viewer-sidebar {
+    position: static;
+    max-height: none;
+    overflow-y: visible;
   }
 }
 
@@ -971,7 +1015,12 @@ h2 {
 }
 
 .camera-profile-button {
-  width: 100%;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.camera-profile-actions {
+  flex-wrap: wrap;
 }
 
 .camera-link-button {
@@ -1012,7 +1061,8 @@ h2 {
 }
 
 .camera-field input,
-.camera-field textarea {
+.camera-field textarea,
+.camera-field select {
   width: 100%;
   border: 1px solid var(--line);
   border-radius: 12px;
@@ -1032,6 +1082,201 @@ h2 {
   padding: 12px;
   color: var(--muted);
   font-size: 0.85rem;
+}
+
+/* ─── Global app header ─────────────────────────────────── */
+.app-header {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 0 24px;
+  height: 52px;
+  background: rgba(5, 8, 22, 0.94);
+  border-bottom: 1px solid var(--line);
+  backdrop-filter: blur(20px);
+}
+
+.app-header-brand {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.88rem;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--accent);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.app-header-brand:hover {
+  opacity: 0.85;
+}
+
+.app-header-nav {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.app-header-nav form {
+  margin: 0;
+}
+
+/* ─── Viewer page ────────────────────────────────────────── */
+.viewer-page {
+  padding-top: 20px;
+}
+
+.viewer-sidebar {
+  position: sticky;
+  top: 66px;
+  align-self: start;
+  max-height: calc(100vh - 80px);
+  overflow-y: auto;
+  display: grid;
+  gap: 12px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(82, 242, 199, 0.2) transparent;
+}
+
+.viewer-sidebar::-webkit-scrollbar {
+  width: 4px;
+}
+
+.viewer-sidebar::-webkit-scrollbar-thumb {
+  background: rgba(82, 242, 199, 0.25);
+  border-radius: 999px;
+}
+
+/* Override status-rail sticky since viewer-sidebar manages it */
+.viewer-sidebar.status-rail {
+  position: sticky;
+  top: 66px;
+  height: auto;
+}
+
+.sidebar-section-label {
+  margin: 0 0 8px;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--accent);
+  opacity: 0.75;
+}
+
+.stats-grid-compact {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.stats-grid-compact .motion-stat {
+  border-radius: 10px;
+  padding: 8px 10px;
+}
+
+.stats-grid-compact .motion-stat strong {
+  font-size: 0.88rem;
+}
+
+/* Advanced collapsible */
+.sidebar-advanced {
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--panel-soft);
+  overflow: hidden;
+}
+
+.sidebar-advanced-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+
+.sidebar-advanced-summary::-webkit-details-marker {
+  display: none;
+}
+
+.sidebar-advanced-summary:hover {
+  background: rgba(82, 242, 199, 0.05);
+}
+
+.sidebar-advanced-chevron {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.72rem;
+  color: var(--muted);
+  transition: transform 180ms ease;
+}
+
+details[open].sidebar-advanced .sidebar-advanced-chevron {
+  transform: rotate(180deg);
+}
+
+.sidebar-advanced-body {
+  padding: 0 12px 12px;
+  grid-template-columns: 1fr;
+}
+
+/* Dashboard multi-camera */
+.camera-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 16px;
+  padding: 16px 0;
+}
+
+.camera-tile {
+  background: rgba(13, 15, 20, 0.92);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  overflow: hidden;
+  transition: border-color 180ms ease;
+}
+
+.camera-tile:hover {
+  border-color: rgba(82, 242, 199, 0.3);
+}
+
+.tile-head,
+.tile-foot {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+}
+
+.camera-tile img {
+  width: 100%;
+  display: block;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  background: #000;
+}
+
+/* Nav bar shared across pages */
+.app-nav {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.app-nav form {
+  margin: 0;
 }
 
 @media (max-width: 1080px) {
