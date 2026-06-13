@@ -33,6 +33,14 @@ const motion = createMotionController({
   cfgMotionMinArea: document.getElementById("cfg-motion-min-area"),
   cfgMotionMinAreaHint: document.getElementById("cfg-motion-min-area-hint"),
   cfgMotionMinAreaValue: document.getElementById("cfg-motion-min-area-value"),
+  cfgClassificationEnabled: document.getElementById("cfg-classification-enabled"),
+  cfgClassificationBackend: document.getElementById("cfg-classification-backend"),
+  cfgClassificationMinConfidence: document.getElementById("cfg-classification-min-confidence"),
+  cfgClassificationMinConfidenceValue: document.getElementById("cfg-classification-min-confidence-value"),
+  cfgClassificationSamplePolicy: document.getElementById("cfg-classification-sample-policy"),
+  cfgRecordEnabled: document.getElementById("cfg-record-enabled"),
+  cfgNotifyTelegramEnabled: document.getElementById("cfg-notify-telegram-enabled"),
+  motionCaptureVideo: document.getElementById("motion-capture-video"),
 });
 
 const ptz = createPtzController({

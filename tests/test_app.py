@@ -164,9 +164,7 @@ class MotionDetectorEventTests(unittest.TestCase):
         events = detector.list_events(limit=5, include_frames=False)
 
         self.assertEqual(len(events), 1)
-        self.assertTrue(
-            (event_dir / self.app_module.MotionEventStore.CLOSED_MARKER_NAME).exists()
-        )
+        self.assertTrue((event_dir / self.app_module.MotionEventStore.CLOSED_MARKER_NAME).exists())
 
     def test_stale_current_event_is_auto_closed_on_read(self):
         event_dir = Path(self.tmpdir) / "motion_event_20260417_120001"
@@ -189,9 +187,7 @@ class MotionDetectorEventTests(unittest.TestCase):
 
         self.assertEqual(len(events), 1)
         self.assertIsNone(detector.event_store.current_event_dir)
-        self.assertTrue(
-            (event_dir / self.app_module.MotionEventStore.CLOSED_MARKER_NAME).exists()
-        )
+        self.assertTrue((event_dir / self.app_module.MotionEventStore.CLOSED_MARKER_NAME).exists())
 
     def test_max_event_duration_rolls_over_to_new_event(self):
         store = self.app_module.MotionEventStore(
@@ -209,9 +205,7 @@ class MotionDetectorEventTests(unittest.TestCase):
                 _, second_event_id = store.save_frame(object(), "20260417_120010")
 
         self.assertNotEqual(first_event_id, second_event_id)
-        self.assertTrue(
-            (Path(self.tmpdir) / first_event_id / store.CLOSED_MARKER_NAME).exists()
-        )
+        self.assertTrue((Path(self.tmpdir) / first_event_id / store.CLOSED_MARKER_NAME).exists())
 
     def test_clear_all_handles_current_event_without_crashing(self):
         event_dir = Path(self.tmpdir) / "motion_event_20260417_120001"
@@ -264,6 +258,140 @@ class MotionDetectorEventTests(unittest.TestCase):
 
         self.assertFalse(detector._is_usable_motion_area(500000, 1000000))
         self.assertTrue(detector._is_usable_motion_area(120000, 1000000))
+
+    def test_saved_event_exposes_classification_metadata(self):
+        event_dir = Path(self.tmpdir) / "motion_event_20260417_120001"
+        event_dir.mkdir(parents=True, exist_ok=True)
+        self.create_file("motion_event_20260417_120001/cover.jpg")
+        self.create_file("motion_event_20260417_120001/latest.jpg")
+        self.create_file("motion_event_20260417_120001/frame_20260417_120001_001.jpg")
+        self.create_file(
+            f"motion_event_20260417_120001/{self.app_module.MotionEventStore.CLOSED_MARKER_NAME}"
+        )
+        (event_dir / "meta.json").write_text(
+            json.dumps(
+                {
+                    "classification": {
+                        "class_label": "persona",
+                        "confidence": 0.93,
+                        "backend": "local",
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        detector = self.build_detector()
+        events = detector.list_events(limit=5, include_frames=False)
+
+        self.assertEqual(events[0]["classification"]["class_label"], "persona")
+        self.assertEqual(events[0]["classification"]["backend"], "local")
+
+    def test_event_classification_is_written_once_per_event(self):
+        class FakeStore:
+            def __init__(self):
+                self.meta_writes = 0
+                self.current_event_dir = None
+
+            def save_frame(self, frame, timestamp):
+                return "/tmp/frame.jpg", "motion_event_20260417_120001"
+
+            def save_event_meta(self, event_id, data):
+                self.meta_writes += 1
+
+            def event_has_classification(self, event_id):
+                return self.meta_writes > 0
+
+        class FakeClassifier:
+            enabled = True
+            sample_policy = "event_cover"
+
+            def classify(self, frame):
+                return {
+                    "class_label": "persona",
+                    "confidence": 0.88,
+                    "classification_status": "ok",
+                }
+
+        detector = self.app_module.MotionDetector.__new__(self.app_module.MotionDetector)
+        detector.event_store = FakeStore()
+        detector.classifier = FakeClassifier()
+        detector._classified_events = set()
+        detector._notified_events = set()
+        detector.recorder = None
+        detector.notifier = None
+        detector.last_event_id = None
+        detector.last_capture_saved_at = None
+
+        detector._save_motion_frame(object(), "20260417_120001")
+        detector._save_motion_frame(object(), "20260417_120002")
+
+        self.assertEqual(detector.event_store.meta_writes, 1)
+
+
+class MultiCameraRegistryTests(unittest.TestCase):
+    def setUp(self):
+        self.app_module = load_app_module()
+
+    def test_profile_motion_dir_is_isolated_and_sanitized(self):
+        self.assertEqual(
+            self.app_module.profile_motion_dir("cam-2"),
+            str(Path("captures/motion") / "cam-2"),
+        )
+        # Unsafe characters are stripped.
+        self.assertEqual(
+            self.app_module.profile_motion_dir("a/b c"),
+            str(Path("captures/motion") / "abc"),
+        )
+
+    def test_rtsp_url_and_onvif_fallback_from_profile(self):
+        profile = {
+            "host": "10.0.0.5",
+            "rtsp_port": 554,
+            "stream_path": "stream2",
+            "username": "u",
+            "password": "p",
+            "onvif_port": 2020,
+            "onvif_username": "",
+            "onvif_password": "",
+        }
+        self.assertEqual(
+            self.app_module.rtsp_url_from_profile(profile),
+            "rtsp://u:p@10.0.0.5:554/stream2",
+        )
+        onvif = self.app_module.onvif_config_from_profile(profile)
+        # Empty ONVIF creds fall back to the RTSP credentials.
+        self.assertEqual(onvif["username"], "u")
+        self.assertEqual(onvif["password"], "p")
+
+    def test_camera_and_motion_resolves_active_and_monitors(self):
+        from types import SimpleNamespace
+
+        class FakeProfiles:
+            def get_active_profile_id(self):
+                return "A"
+
+        monitor_camera = object()
+        monitor_motion = object()
+        runtime = self.app_module.CameraRuntime(
+            profile_id="B",
+            camera=monitor_camera,
+            motion=monitor_motion,
+            recorder=None,
+            ptz=None,
+        )
+        services = self.app_module.AppServices(
+            camera="active-cam",
+            ptz=None,
+            motion="active-motion",
+            features=SimpleNamespace(camera_profiles=FakeProfiles()),
+            runtime_config=None,
+            monitors={"B": runtime},
+        )
+
+        self.assertEqual(services.camera_and_motion("A"), ("active-cam", "active-motion"))
+        self.assertEqual(services.camera_and_motion("B"), (monitor_camera, monitor_motion))
+        self.assertEqual(services.camera_and_motion("missing"), (None, None))
 
 
 class ConfigTests(unittest.TestCase):
@@ -350,6 +478,51 @@ class CameraProfileServiceTests(unittest.TestCase):
         self.assertEqual(loaded["onvif_password"], "super-secret-onvif")
         self.assertEqual(self.store_path.stat().st_mode & 0o777, 0o600)
         self.assertEqual(self.key_path.stat().st_mode & 0o777, 0o600)
+
+    def test_edit_keeps_existing_password_when_blank(self):
+        service = self._build_service()
+        saved = service.save_profile(
+            {
+                "name": "Cam",
+                "host": "192.168.1.10",
+                "username": "u",
+                "password": "secret-rtsp",
+                "onvif_password": "secret-onvif",
+            }
+        )
+        # Edit changing only the host, leaving secrets blank.
+        service.save_profile(
+            {
+                "id": saved["id"],
+                "name": "Cam rinominata",
+                "host": "192.168.1.99",
+                "username": "u",
+                "password": "",
+                "onvif_password": "",
+            }
+        )
+        updated = service.get_profile(saved["id"])
+        self.assertEqual(updated["host"], "192.168.1.99")
+        self.assertEqual(updated["name"], "Cam rinominata")
+        self.assertEqual(updated["password"], "secret-rtsp")
+        self.assertEqual(updated["onvif_password"], "secret-onvif")
+
+    def test_delete_profile_reassigns_active(self):
+        service = self._build_service()
+        a = service.save_profile(
+            {"name": "A", "host": "10.0.0.1", "username": "u", "password": "p"}
+        )
+        b = service.save_profile(
+            {"name": "B", "host": "10.0.0.2", "username": "u", "password": "p"}
+        )
+        service.activate_profile(a["id"])
+
+        new_active = service.delete_profile(a["id"])
+
+        self.assertEqual(new_active, b["id"])
+        self.assertIsNone(service.get_profile(a["id"]))
+        with self.assertRaises(ValueError):
+            service.delete_profile("does-not-exist")
 
     def test_plaintext_profile_store_is_migrated_on_read(self):
         plaintext = {
@@ -514,14 +687,24 @@ class AppFactoryTests(unittest.TestCase):
             with mock.patch.object(self.app_module, "RuntimeConfigManager") as runtime_cls:
                 runtime_instance = runtime_cls.return_value
                 runtime_instance.update.side_effect = (
-                    lambda updates, allow_sensitive=False, allow_internal=False: runtime_update_calls.append(
+                    lambda updates,
+                    allow_sensitive=False,
+                    allow_internal=False: runtime_update_calls.append(
                         (updates, allow_sensitive, allow_internal)
                     )
                 )
-                with mock.patch.object(self.app_module, "get_rtsp_url", return_value="rtsp://example"):
+                with mock.patch.object(
+                    self.app_module, "get_rtsp_url", return_value="rtsp://example"
+                ):
                     with mock.patch.object(self.app_module, "get_stream_config", return_value={}):
-                        with mock.patch.object(self.app_module, "get_onvif_config", return_value={}):
-                            with mock.patch.object(self.app_module, "get_motion_config", return_value={"save_dir": "captures/motion"}):
+                        with mock.patch.object(
+                            self.app_module, "get_onvif_config", return_value={}
+                        ):
+                            with mock.patch.object(
+                                self.app_module,
+                                "get_motion_config",
+                                return_value={"save_dir": "captures/motion"},
+                            ):
                                 with mock.patch.object(self.app_module, "CameraStream"):
                                     with mock.patch.object(self.app_module, "PTZController"):
                                         with mock.patch.object(self.app_module, "MotionDetector"):
@@ -589,6 +772,11 @@ class AppFactoryTests(unittest.TestCase):
         response = client.get("/")
 
         self.assertEqual(response.status_code, 200)
+        page = response.data.decode("utf-8")
+        self.assertIn('id="cfg-classification-enabled"', page)
+        self.assertIn('id="cfg-classification-backend"', page)
+        self.assertIn('id="cfg-classification-min-confidence"', page)
+        self.assertIn('id="cfg-classification-sample-policy"', page)
 
     def test_runtime_config_endpoints_update_and_apply(self):
         class FakeCamera:
@@ -652,6 +840,10 @@ class AppFactoryTests(unittest.TestCase):
                     "MOTION_ENABLED": True,
                     "MOTION_THRESHOLD": 35,
                     "MOTION_MIN_AREA": 1400,
+                    "CLASSIFICATION_ENABLED": False,
+                    "CLASSIFICATION_BACKEND": "local",
+                    "CLASSIFICATION_MIN_CONFIDENCE": 0.55,
+                    "CLASSIFICATION_SAMPLE_POLICY": "event_cover",
                 }
 
             def get_public_config(self):
@@ -686,6 +878,10 @@ class AppFactoryTests(unittest.TestCase):
                     "MOTION_ENABLED": False,
                     "MOTION_THRESHOLD": 55,
                     "MOTION_MIN_AREA": 2100,
+                    "CLASSIFICATION_ENABLED": True,
+                    "CLASSIFICATION_BACKEND": "cloud",
+                    "CLASSIFICATION_MIN_CONFIDENCE": 0.8,
+                    "CLASSIFICATION_SAMPLE_POLICY": "event_cover",
                 }
             },
             headers=csrf_headers(csrf_token),
@@ -699,15 +895,21 @@ class AppFactoryTests(unittest.TestCase):
         self.assertEqual(get_response.get_json()["config"]["MOTION_ENABLED"], True)
         self.assertEqual(get_response.get_json()["config"]["MOTION_THRESHOLD"], 35)
         self.assertEqual(get_response.get_json()["config"]["MOTION_MIN_AREA"], 1400)
+        self.assertEqual(get_response.get_json()["config"]["CLASSIFICATION_ENABLED"], False)
         self.assertEqual(patch_response.status_code, 200)
         self.assertEqual(patch_response.get_json()["config"]["MOTION_ENABLED"], False)
         self.assertEqual(patch_response.get_json()["config"]["MOTION_THRESHOLD"], 55)
         self.assertEqual(patch_response.get_json()["config"]["MOTION_MIN_AREA"], 2100)
+        self.assertEqual(patch_response.get_json()["config"]["CLASSIFICATION_ENABLED"], True)
+        self.assertEqual(patch_response.get_json()["config"]["CLASSIFICATION_BACKEND"], "cloud")
+        self.assertEqual(patch_response.get_json()["config"]["CLASSIFICATION_MIN_CONFIDENCE"], 0.8)
         self.assertEqual(fake_camera.last_updates["MOTION_ENABLED"], False)
         self.assertEqual(fake_ptz.last_updates["MOTION_THRESHOLD"], 55)
         self.assertEqual(fake_ptz.last_updates["MOTION_MIN_AREA"], 2100)
+        self.assertEqual(fake_ptz.last_updates["CLASSIFICATION_BACKEND"], "cloud")
         self.assertEqual(fake_motion.last_updates["MOTION_THRESHOLD"], 55)
         self.assertEqual(fake_motion.last_updates["MOTION_MIN_AREA"], 2100)
+        self.assertEqual(fake_motion.last_updates["CLASSIFICATION_ENABLED"], True)
         self.assertEqual(delete_response.status_code, 200)
         self.assertEqual(delete_response.get_json()["removed"], 7)
         self.assertTrue(fake_motion.cleared)
@@ -846,7 +1048,13 @@ class AppFactoryTests(unittest.TestCase):
 
         class FakeWifiService:
             def get_current_wifi(self):
-                return {"connected": True, "ssid": "Casa Papa", "interface": "en0", "source": "test", "error": ""}
+                return {
+                    "connected": True,
+                    "ssid": "Casa Papa",
+                    "interface": "en0",
+                    "source": "test",
+                    "error": "",
+                }
 
         tmpdir = tempfile.mkdtemp(prefix="camera-profiles-")
         self.addCleanup(lambda: shutil.rmtree(tmpdir, ignore_errors=True))
@@ -1022,10 +1230,13 @@ class AppFactoryTests(unittest.TestCase):
             headers=csrf_headers(csrf_token),
         )
         viewer_response = client.get(saved["viewer_url"])
+        training_response = client.get("/model-training")
 
         self.assertEqual(manager_response.status_code, 200)
         self.assertEqual(activate_response.status_code, 200)
         self.assertEqual(viewer_response.status_code, 200)
+        self.assertEqual(training_response.status_code, 200)
+        self.assertIn("Addestramento modello", training_response.data.decode("utf-8"))
         self.assertEqual(fake_camera.last_updates["TAPO_HOST"], "192.168.1.40")
         self.assertIn("captures/motion", fake_motion.last_updates["MOTION_SAVE_DIR"])
 
@@ -1507,6 +1718,10 @@ class RuntimeConfigManagerTests(unittest.TestCase):
                     "MOTION_MIN_AREA=1400",
                     "MOTION_THRESHOLD=35",
                     "MOTION_BLUR_SIZE=30",
+                    "CLASSIFICATION_ENABLED=false",
+                    "CLASSIFICATION_BACKEND=local",
+                    "CLASSIFICATION_MIN_CONFIDENCE=0.55",
+                    "CLASSIFICATION_SAMPLE_POLICY=event_cover",
                 ]
             )
             + "\n",
@@ -1551,6 +1766,30 @@ class RuntimeConfigManagerTests(unittest.TestCase):
         manager = RuntimeConfigManager(self.env_path)
         with self.assertRaises(ValueError):
             manager.update({"TAPO_HOST": "127.0.0.1\nEVIL=1"})
+
+    def test_update_accepts_classification_settings(self):
+        manager = RuntimeConfigManager(self.env_path)
+        config = manager.update(
+            {
+                "CLASSIFICATION_ENABLED": True,
+                "CLASSIFICATION_BACKEND": "local",
+                "CLASSIFICATION_MIN_CONFIDENCE": "0.7",
+                "CLASSIFICATION_SAMPLE_POLICY": "event_cover",
+            }
+        )
+        env_text = self.env_path.read_text(encoding="utf-8")
+
+        self.assertEqual(config["CLASSIFICATION_ENABLED"], True)
+        self.assertEqual(config["CLASSIFICATION_BACKEND"], "local")
+        self.assertEqual(config["CLASSIFICATION_MIN_CONFIDENCE"], 0.7)
+        self.assertEqual(config["CLASSIFICATION_SAMPLE_POLICY"], "event_cover")
+        self.assertIn("CLASSIFICATION_ENABLED=true", env_text)
+        self.assertIn("CLASSIFICATION_BACKEND=local", env_text)
+
+    def test_update_rejects_invalid_classification_backend(self):
+        manager = RuntimeConfigManager(self.env_path)
+        with self.assertRaises(ValueError):
+            manager.update({"CLASSIFICATION_BACKEND": "unsupported"})
 
 
 if __name__ == "__main__":

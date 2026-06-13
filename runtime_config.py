@@ -27,12 +27,8 @@ class RuntimeConfigManager:
             "TAPO_USERNAME": ConfigField("TAPO_USERNAME", "str", sensitive=True),
             "TAPO_PASSWORD": ConfigField("TAPO_PASSWORD", "str", sensitive=True),
             "TAPO_ONVIF_PORT": ConfigField("TAPO_ONVIF_PORT", "int", minimum=1),
-            "TAPO_ONVIF_USERNAME": ConfigField(
-                "TAPO_ONVIF_USERNAME", "str", sensitive=True
-            ),
-            "TAPO_ONVIF_PASSWORD": ConfigField(
-                "TAPO_ONVIF_PASSWORD", "str", sensitive=True
-            ),
+            "TAPO_ONVIF_USERNAME": ConfigField("TAPO_ONVIF_USERNAME", "str", sensitive=True),
+            "TAPO_ONVIF_PASSWORD": ConfigField("TAPO_ONVIF_PASSWORD", "str", sensitive=True),
             "TAPO_MOVE_SPEED": ConfigField("TAPO_MOVE_SPEED", "float", minimum=0),
             "TAPO_MOVE_TIMEOUT": ConfigField("TAPO_MOVE_TIMEOUT", "float", minimum=0),
             "MOTION_ENABLED": ConfigField("MOTION_ENABLED", "bool"),
@@ -49,6 +45,67 @@ class RuntimeConfigManager:
                 minimum=1,
                 must_be_odd=True,
             ),
+            "CLASSIFICATION_ENABLED": ConfigField("CLASSIFICATION_ENABLED", "bool"),
+            "CLASSIFICATION_BACKEND": ConfigField("CLASSIFICATION_BACKEND", "str"),
+            "CLASSIFICATION_MIN_CONFIDENCE": ConfigField(
+                "CLASSIFICATION_MIN_CONFIDENCE",
+                "float",
+                minimum=0.0,
+            ),
+            "CLASSIFICATION_SAMPLE_POLICY": ConfigField(
+                "CLASSIFICATION_SAMPLE_POLICY",
+                "str",
+            ),
+            "CLASSIFICATION_LOCAL_MODEL_PATH": ConfigField(
+                "CLASSIFICATION_LOCAL_MODEL_PATH",
+                "str",
+                internal_only=True,
+            ),
+            "CLASSIFICATION_LOCAL_LABELS_PATH": ConfigField(
+                "CLASSIFICATION_LOCAL_LABELS_PATH",
+                "str",
+                internal_only=True,
+            ),
+            "CLASSIFICATION_TM_MODEL_PATH": ConfigField(
+                "CLASSIFICATION_TM_MODEL_PATH",
+                "str",
+                internal_only=True,
+            ),
+            "CLASSIFICATION_TM_LABELS_PATH": ConfigField(
+                "CLASSIFICATION_TM_LABELS_PATH",
+                "str",
+                internal_only=True,
+            ),
+            "CLASSIFICATION_CLOUD_ENDPOINT": ConfigField(
+                "CLASSIFICATION_CLOUD_ENDPOINT",
+                "str",
+                internal_only=True,
+            ),
+            "CLASSIFICATION_CLOUD_API_KEY": ConfigField(
+                "CLASSIFICATION_CLOUD_API_KEY",
+                "str",
+                sensitive=True,
+            ),
+            "MOTION_RETENTION_DAYS": ConfigField("MOTION_RETENTION_DAYS", "float", minimum=0),
+            "MOTION_RETENTION_MAX_MB": ConfigField("MOTION_RETENTION_MAX_MB", "float", minimum=0),
+            "MOTION_RETENTION_INTERVAL_SEC": ConfigField(
+                "MOTION_RETENTION_INTERVAL_SEC",
+                "float",
+                minimum=60,
+                internal_only=True,
+            ),
+            "RECORD_ENABLED": ConfigField("RECORD_ENABLED", "bool"),
+            "RECORD_FPS": ConfigField("RECORD_FPS", "float", minimum=1),
+            "RECORD_PREROLL_SEC": ConfigField("RECORD_PREROLL_SEC", "float", minimum=0),
+            "RECORD_MAX_DURATION_SEC": ConfigField("RECORD_MAX_DURATION_SEC", "float", minimum=1),
+            "NOTIFY_TELEGRAM_ENABLED": ConfigField("NOTIFY_TELEGRAM_ENABLED", "bool"),
+            "NOTIFY_TELEGRAM_BOT_TOKEN": ConfigField(
+                "NOTIFY_TELEGRAM_BOT_TOKEN", "str", sensitive=True
+            ),
+            "NOTIFY_TELEGRAM_CHAT_ID": ConfigField(
+                "NOTIFY_TELEGRAM_CHAT_ID", "str", sensitive=True
+            ),
+            "NOTIFY_MIN_INTERVAL_SEC": ConfigField("NOTIFY_MIN_INTERVAL_SEC", "float", minimum=0),
         }
 
     def get_public_config(self) -> dict:
@@ -108,6 +165,18 @@ class RuntimeConfigManager:
 
         if key == "MOTION_THRESHOLD" and value > 255:
             raise ValueError("MOTION_THRESHOLD deve essere <= 255")
+
+        if key == "CLASSIFICATION_MIN_CONFIDENCE" and value > 1:
+            raise ValueError("CLASSIFICATION_MIN_CONFIDENCE deve essere <= 1")
+
+        if key == "CLASSIFICATION_BACKEND" and value not in {
+            "local",
+            "teachable_machine",
+            "cloud",
+        }:
+            raise ValueError(
+                "CLASSIFICATION_BACKEND deve essere uno tra: local, teachable_machine, cloud"
+            )
 
         if field.must_be_odd and isinstance(value, int) and value % 2 == 0:
             value += 1

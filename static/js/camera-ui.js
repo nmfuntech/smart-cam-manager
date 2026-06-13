@@ -8,14 +8,85 @@ export function createCameraConfigController(elements) {
     activeSummary,
     profileList,
     form,
+    formTitle,
     onApplied,
     openViewerOnSave = false,
   } = elements;
 
   let submitting = false;
+  let editingProfileId = null;
 
   function getSubmitButton() {
     return form?.querySelector('button[type="submit"]') || null;
+  }
+
+  function submitLabel() {
+    return editingProfileId ? "Aggiorna camera" : "Salva camera";
+  }
+
+  function enterEditMode(profile) {
+    if (!form) {
+      return;
+    }
+    editingProfileId = profile.id;
+    const setValue = (name, value) => {
+      const field = form.elements[name];
+      if (field) {
+        field.value = value ?? "";
+      }
+    };
+    setValue("name", profile.name);
+    setValue("wifi_ssid", profile.wifi_ssid);
+    setValue("host", profile.host);
+    setValue("rtsp_port", profile.rtsp_port);
+    setValue("stream_path", profile.stream_path);
+    setValue("username", profile.username);
+    setValue("onvif_port", profile.onvif_port);
+    setValue("onvif_username", profile.onvif_username);
+    setValue("move_speed", profile.move_speed);
+    setValue("move_timeout", profile.move_timeout);
+    setValue("notes", profile.notes);
+    if (form.elements.monitored) {
+      form.elements.monitored.checked = Boolean(profile.monitored);
+    }
+    // Passwords are redacted: leave blank to keep the stored ones.
+    for (const name of ["password", "onvif_password"]) {
+      const field = form.elements[name];
+      if (field) {
+        field.value = "";
+        field.required = false;
+        field.placeholder = "Lascia vuoto per non cambiare";
+      }
+    }
+    const submitButton = getSubmitButton();
+    if (submitButton) {
+      submitButton.textContent = submitLabel();
+    }
+    if (formTitle) {
+      formTitle.textContent = `Modifica: ${profile.name}`;
+    }
+    setFeedback(`Modifica di "${profile.name}". Password vuote = invariate.`);
+    form.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  function resetEditMode() {
+    editingProfileId = null;
+    if (!form) {
+      return;
+    }
+    form.reset();
+    const password = form.elements.password;
+    if (password) {
+      password.required = true;
+      password.placeholder = "";
+    }
+    const submitButton = getSubmitButton();
+    if (submitButton) {
+      submitButton.textContent = submitLabel();
+    }
+    if (formTitle) {
+      formTitle.textContent = "Nuova camera";
+    }
   }
 
   function setFeedback(text, isError = false) {
@@ -32,7 +103,7 @@ export function createCameraConfigController(elements) {
       return;
     }
     submitButton.disabled = isSubmitting;
-    submitButton.textContent = isSubmitting ? "Salvataggio..." : "Salva camera";
+    submitButton.textContent = isSubmitting ? "Salvataggio..." : submitLabel();
   }
 
   function readFieldLabel(field) {
@@ -147,9 +218,55 @@ export function createCameraConfigController(elements) {
     });
     actions.appendChild(button);
 
+    const editButton = document.createElement("button");
+    editButton.type = "button";
+    editButton.className = "ghost-button compact-button camera-profile-button";
+    editButton.textContent = "Modifica";
+    editButton.disabled = submitting;
+    editButton.addEventListener("click", () => enterEditMode(profile));
+    actions.appendChild(editButton);
+
+    const deleteButton = document.createElement("button");
+    deleteButton.type = "button";
+    deleteButton.className = "ghost-button compact-button danger-button camera-profile-button";
+    deleteButton.textContent = "Elimina";
+    deleteButton.disabled = submitting;
+    deleteButton.addEventListener("click", () => deleteProfile(profile));
+    actions.appendChild(deleteButton);
+
     card.appendChild(actions);
 
     return card;
+  }
+
+  async function deleteProfile(profile) {
+    if (!window.confirm(`Eliminare la camera "${profile.name}"? L'operazione e definitiva.`)) {
+      return;
+    }
+    submitting = true;
+    setFeedback(`Eliminazione di "${profile.name}"...`);
+    try {
+      const { response, data } = await fetchJson(`/api/cameras/${profile.id}`, {
+        method: "DELETE",
+      });
+      if (!response.ok || !data.ok) {
+        setFeedback(data.error || "Eliminazione camera fallita", true);
+        return;
+      }
+      if (editingProfileId === profile.id) {
+        resetEditMode();
+      }
+      renderWifi(data.current_wifi);
+      renderProfiles(data);
+      setFeedback("Camera eliminata");
+      if (typeof onApplied === "function") {
+        onApplied();
+      }
+    } catch {
+      setFeedback("Errore rete durante eliminazione camera", true);
+    } finally {
+      submitting = false;
+    }
   }
 
   function renderProfiles(payload) {
@@ -187,8 +304,10 @@ export function createCameraConfigController(elements) {
       onvif_password: onvifPassword || password,
       move_speed: Number(formData.get("move_speed") || 0.6),
       move_timeout: Number(formData.get("move_timeout") || 0.35),
+      monitored: formData.get("monitored") === "on",
       notes: String(formData.get("notes") || "").trim(),
       activate: true,
+      ...(editingProfileId ? { id: editingProfileId } : {}),
     };
   }
 
@@ -279,9 +398,11 @@ export function createCameraConfigController(elements) {
           setFeedback(data.error || "Salvataggio camera fallito", true);
           return;
         }
+        const wasEditing = Boolean(editingProfileId);
+        resetEditMode();
         renderWifi(data.current_wifi);
         renderProfiles(data);
-        setFeedback("Camera salvata e attivata");
+        setFeedback(wasEditing ? "Camera aggiornata e attivata" : "Camera salvata e attivata");
         if (openViewerOnSave && data.profile?.viewer_url) {
           window.location.href = data.profile.viewer_url;
           return;

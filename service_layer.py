@@ -14,7 +14,6 @@ from pathlib import Path
 
 from cryptography.fernet import Fernet, InvalidToken
 
-
 logger = logging.getLogger(__name__)
 PRIVATE_FILE_MODE = 0o600
 CAMERA_PROFILE_SECRET_FIELDS = ("password", "onvif_password")
@@ -301,6 +300,20 @@ class CameraProfileService:
 
         profile_id = str(payload.get("id") or uuid.uuid4())
         profile = self._normalize_profile({"id": profile_id, **payload})
+
+        data = self._read_store()
+        existing = next(
+            (item for item in data.get("profiles", []) if item.get("id") == profile_id),
+            None,
+        )
+        # On edit, blank secret fields keep the previously stored values so the user
+        # does not have to re-type passwords just to change other settings.
+        if existing:
+            if not profile["password"]:
+                profile["password"] = existing.get("password", "")
+            if not profile["onvif_password"]:
+                profile["onvif_password"] = existing.get("onvif_password", "")
+
         if not profile["name"]:
             raise ValueError("Nome camera obbligatorio")
         if not profile["host"]:
@@ -310,7 +323,6 @@ class CameraProfileService:
         if not profile["password"]:
             raise ValueError("Password RTSP obbligatoria")
 
-        data = self._read_store()
         profiles = [item for item in data.get("profiles", []) if item.get("id") != profile_id]
         profiles.append(profile)
         data["profiles"] = profiles
@@ -323,7 +335,9 @@ class CameraProfileService:
 
     def activate_profile(self, profile_id: str) -> dict:
         data = self._read_store()
-        profile = next((item for item in data.get("profiles", []) if item.get("id") == profile_id), None)
+        profile = next(
+            (item for item in data.get("profiles", []) if item.get("id") == profile_id), None
+        )
         if not profile:
             raise ValueError("Profilo camera non trovato")
         data["active_profile_id"] = profile_id
@@ -331,6 +345,22 @@ class CameraProfileService:
         rendered = self._sanitize_profile(profile)
         rendered["active"] = True
         return rendered
+
+    def delete_profile(self, profile_id: str) -> str | None:
+        """Remove a profile. If it was active, fall back to another profile (or none).
+
+        Returns the new active profile id (which may be None).
+        """
+        data = self._read_store()
+        profiles = data.get("profiles", [])
+        if not any(item.get("id") == profile_id for item in profiles):
+            raise ValueError("Profilo camera non trovato")
+        remaining = [item for item in profiles if item.get("id") != profile_id]
+        data["profiles"] = remaining
+        if data.get("active_profile_id") == profile_id:
+            data["active_profile_id"] = remaining[0]["id"] if remaining else None
+        self._write_store(data)
+        return data.get("active_profile_id")
 
     def get_profile(self, profile_id: str) -> dict | None:
         data = self._read_store()
@@ -384,7 +414,8 @@ class CameraProfileService:
         except ValueError:
             backup_path = self._backup_unreadable_store()
             logger.error(
-                "Archivio profili camera non decifrabile. Backup creato in %s e store reinizializzato.",
+                "Archivio profili camera non decifrabile. "
+                "Backup creato in %s e store reinizializzato.",
                 backup_path,
             )
             return {"active_profile_id": None, "profiles": []}
@@ -395,7 +426,9 @@ class CameraProfileService:
 
     def _backup_unreadable_store(self) -> Path:
         timestamp = time.strftime("%Y%m%d_%H%M%S")
-        backup_path = self.store_path.with_suffix(f"{self.store_path.suffix}.unreadable.{timestamp}.bak")
+        backup_path = self.store_path.with_suffix(
+            f"{self.store_path.suffix}.unreadable.{timestamp}.bak"
+        )
         backup_path.write_bytes(self.store_path.read_bytes())
         _set_private_permissions(backup_path)
         self.store_path.unlink(missing_ok=True)
@@ -424,6 +457,12 @@ class CameraProfileService:
         def read_float(key: str, default: float) -> float:
             return float(payload.get(key) or default)
 
+        def read_bool(key: str, default: bool = False) -> bool:
+            value = payload.get(key, default)
+            if isinstance(value, bool):
+                return value
+            return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
         return {
             "id": read_text("id"),
             "name": read_text("name"),
@@ -438,6 +477,7 @@ class CameraProfileService:
             "onvif_password": read_text("onvif_password"),
             "move_speed": read_float("move_speed", 0.6),
             "move_timeout": read_float("move_timeout", 0.35),
+            "monitored": read_bool("monitored", False),
             "notes": read_text("notes"),
         }
 
@@ -465,3 +505,4 @@ class FeatureServices:
     recording: RecordingService
     camera_profiles: CameraProfileService
     wifi: WifiService
+    telegram: object | None = None

@@ -1,9 +1,9 @@
-from pathlib import Path
 import re
+from pathlib import Path
 
-from auth import rate_limit, require_auth, require_csrf
 from flask import Blueprint, Response, abort, current_app, jsonify, request, send_file
 
+from auth import rate_limit, require_auth, require_csrf
 
 motion_bp = Blueprint("motion", __name__)
 EVENT_ID_PATTERN = re.compile(r"^motion_event_\d{8}_\d{6}$")
@@ -13,6 +13,14 @@ PUBLIC_RUNTIME_UPDATE_KEYS = {
     "MOTION_ENABLED",
     "MOTION_THRESHOLD",
     "MOTION_MIN_AREA",
+    "CLASSIFICATION_ENABLED",
+    "CLASSIFICATION_BACKEND",
+    "CLASSIFICATION_MIN_CONFIDENCE",
+    "CLASSIFICATION_SAMPLE_POLICY",
+    "MOTION_RETENTION_DAYS",
+    "MOTION_RETENTION_MAX_MB",
+    "RECORD_ENABLED",
+    "NOTIFY_TELEGRAM_ENABLED",
 }
 
 
@@ -42,6 +50,15 @@ def motion_status():
     return get_services().motion.get_status()
 
 
+@motion_bp.route("/cam/<profile_id>/motion_status")
+@require_auth(api=True)
+def camera_motion_status(profile_id: str):
+    _, motion = get_services().camera_and_motion(profile_id)
+    if motion is None:
+        abort(404)
+    return motion.get_status()
+
+
 @motion_bp.get("/runtime_config")
 @require_auth(api=True)
 def runtime_config():
@@ -64,10 +81,7 @@ def update_runtime_config():
             jsonify(
                 {
                     "ok": False,
-                    "error": (
-                        "Parametro non consentito: "
-                        + ", ".join(invalid_keys)
-                    ),
+                    "error": ("Parametro non consentito: " + ", ".join(invalid_keys)),
                 }
             ),
             400,
@@ -140,6 +154,16 @@ def motion_event_preview(event_id: str):
         preview_path = event_dir / "latest.jpg"
     preview_path = _resolve_motion_file(preview_path)
     return send_file(preview_path, mimetype="image/jpeg")
+
+
+@motion_bp.route("/motion_event/<event_id>/video.mp4")
+@require_auth()
+def motion_event_video(event_id: str):
+    if not EVENT_ID_PATTERN.fullmatch(event_id):
+        abort(404)
+    video_path = _resolve_motion_file(_motion_root() / event_id / "event.mp4")
+    # conditional=True enables HTTP Range requests so the player can seek.
+    return send_file(video_path, mimetype="video/mp4", conditional=True)
 
 
 @motion_bp.route("/motion_event/<event_id>/<filename>")

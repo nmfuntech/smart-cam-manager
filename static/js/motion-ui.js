@@ -26,6 +26,14 @@ export function createMotionController(elements) {
     cfgMotionMinArea,
     cfgMotionMinAreaHint,
     cfgMotionMinAreaValue,
+    cfgClassificationEnabled,
+    cfgClassificationBackend,
+    cfgClassificationMinConfidence,
+    cfgClassificationMinConfidenceValue,
+    cfgClassificationSamplePolicy,
+    cfgRecordEnabled,
+    cfgNotifyTelegramEnabled,
+    motionCaptureVideo,
   } = elements;
 
   let selectedCaptureId = null;
@@ -63,6 +71,12 @@ export function createMotionController(elements) {
     MOTION_ENABLED: { element: cfgMotionEnabled, type: "bool" },
     MOTION_THRESHOLD: { element: cfgMotionThreshold, type: "int" },
     MOTION_MIN_AREA: { element: cfgMotionMinArea, type: "int" },
+    CLASSIFICATION_ENABLED: { element: cfgClassificationEnabled, type: "bool" },
+    CLASSIFICATION_BACKEND: { element: cfgClassificationBackend, type: "str" },
+    CLASSIFICATION_MIN_CONFIDENCE: { element: cfgClassificationMinConfidence, type: "float" },
+    CLASSIFICATION_SAMPLE_POLICY: { element: cfgClassificationSamplePolicy, type: "str" },
+    RECORD_ENABLED: { element: cfgRecordEnabled, type: "bool" },
+    NOTIFY_TELEGRAM_ENABLED: { element: cfgNotifyTelegramEnabled, type: "bool" },
   };
 
   function nearestStepByValue(steps, rawValue) {
@@ -126,6 +140,15 @@ export function createMotionController(elements) {
       cfgMotionMinArea.max = "3";
       cfgMotionMinArea.step = "1";
     }
+    if (cfgClassificationBackend && !cfgClassificationBackend.value) {
+      cfgClassificationBackend.value = "local";
+    }
+    if (cfgClassificationSamplePolicy && !cfgClassificationSamplePolicy.value) {
+      cfgClassificationSamplePolicy.value = "event_cover";
+    }
+    if (cfgClassificationMinConfidence && !cfgClassificationMinConfidence.value) {
+      cfgClassificationMinConfidence.value = "0.55";
+    }
 
     for (const [key, spec] of Object.entries(runtimeFieldMap)) {
       const value = config[key];
@@ -158,6 +181,18 @@ export function createMotionController(elements) {
     }
     if (cfgMotionMinArea) {
       cfgMotionMinArea.disabled = !active;
+    }
+    if (cfgClassificationEnabled) {
+      cfgClassificationEnabled.disabled = !active;
+    }
+    if (cfgClassificationBackend) {
+      cfgClassificationBackend.disabled = !active;
+    }
+    if (cfgClassificationMinConfidence) {
+      cfgClassificationMinConfidence.disabled = !active;
+    }
+    if (cfgClassificationSamplePolicy) {
+      cfgClassificationSamplePolicy.disabled = !active;
     }
     if (runtimeSave) {
       runtimeSave.disabled = !active;
@@ -195,6 +230,12 @@ export function createMotionController(elements) {
             `Scenario ${minAreaStep.level}/3 · ${minAreaStep.title} · Valore reale ${minAreaStep.value} px`;
         }
       }
+    }
+    if (cfgClassificationMinConfidenceValue && cfgClassificationMinConfidence) {
+      const confidence = Number.parseFloat(cfgClassificationMinConfidence.value);
+      const normalized = Number.isFinite(confidence) ? confidence : 0.55;
+      cfgClassificationMinConfidenceValue.textContent =
+        `Soglia minima ${normalized.toFixed(2)}`;
     }
   }
 
@@ -342,10 +383,21 @@ export function createMotionController(elements) {
     motionPreviewBadge.textContent = text;
   }
 
+  function hidePreviewVideo() {
+    if (!motionCaptureVideo) {
+      return;
+    }
+    motionCaptureVideo.pause?.();
+    motionCaptureVideo.removeAttribute("src");
+    motionCaptureVideo.load?.();
+    motionCaptureVideo.hidden = true;
+  }
+
   function showEmptyPreview(message = "Seleziona un evento") {
     selectedCaptureId = null;
     selectedCapturePinned = false;
     stopPreviewAnimation();
+    hidePreviewVideo();
     motionCapturePath.textContent = message;
     motionCaptureImage.removeAttribute("src");
     motionCaptureImage.style.display = "none";
@@ -429,7 +481,11 @@ export function createMotionController(elements) {
   }
 
   function formatCaptureLabel(capture) {
-    return `${capture.label} · ${capture.frame_count} frame`;
+    const classLabel = capture?.classification?.class_label;
+    const classBadge = classLabel && classLabel !== "unknown"
+      ? ` · ${classLabel}`
+      : "";
+    return `${capture.label} · ${capture.frame_count} frame${classBadge}`;
   }
 
   function showCapture(capture, options = {}) {
@@ -443,13 +499,28 @@ export function createMotionController(elements) {
     const pinSelection = options.pinSelection ?? false;
     selectedCaptureId = capture.id;
     selectedCapturePinned = pinSelection;
-    motionCaptureImage.style.display = "block";
     motionCaptureEmpty.style.display = "none";
     motionCapturePath.textContent = formatCaptureLabel(capture);
-    const playbackFrames = animate
-      ? capture.frames
-      : [capture.url];
-    startPreviewAnimation(playbackFrames);
+
+    if (motionCaptureVideo && capture.video_url) {
+      // Prefer the recorded MP4 clip when available.
+      stopPreviewAnimation();
+      motionCaptureImage.style.display = "none";
+      motionCaptureImage.removeAttribute("src");
+      motionCaptureVideo.hidden = false;
+      // Avoid reloading the same clip on every live poll (it would restart playback).
+      if (!motionCaptureVideo.currentSrc.endsWith(capture.video_url)) {
+        motionCaptureVideo.src = capture.video_url;
+        motionCaptureVideo.load?.();
+      }
+      setPreviewBadge("Video");
+    } else {
+      hidePreviewVideo();
+      motionCaptureImage.style.display = "block";
+      const playbackFrames = animate ? capture.frames : [capture.url];
+      startPreviewAnimation(playbackFrames);
+    }
+
     document.querySelectorAll(".capture-row").forEach((row) => {
       row.classList.toggle("selected", row.dataset.captureId === capture.id);
     });
@@ -509,7 +580,12 @@ export function createMotionController(elements) {
 
     const detail = document.createElement("span");
     detail.className = "capture-row-label";
-    detail.textContent = `${capture.frame_count} frame`;
+    const classLabel = capture?.classification?.class_label;
+    if (classLabel && classLabel !== "unknown") {
+      detail.textContent = `${capture.frame_count} frame · ${classLabel}`;
+    } else {
+      detail.textContent = `${capture.frame_count} frame`;
+    }
     meta.appendChild(detail);
 
     button.appendChild(meta);
@@ -684,6 +760,11 @@ export function createMotionController(elements) {
       cfgMotionMinArea.max = "3";
       cfgMotionMinArea.step = "1";
     }
+    if (cfgClassificationMinConfidence) {
+      cfgClassificationMinConfidence.min = "0.3";
+      cfgClassificationMinConfidence.max = "0.99";
+      cfgClassificationMinConfidence.step = "0.01";
+    }
 
     captureToggle.addEventListener("click", async () => {
       archiveExpanded = !archiveExpanded;
@@ -721,6 +802,22 @@ export function createMotionController(elements) {
         updateSliderHints();
       });
       cfgMotionMinArea.addEventListener("change", updateSliderHints);
+    }
+    if (cfgClassificationEnabled) {
+      cfgClassificationEnabled.addEventListener("change", markRuntimeDirty);
+    }
+    if (cfgClassificationBackend) {
+      cfgClassificationBackend.addEventListener("change", markRuntimeDirty);
+    }
+    if (cfgClassificationSamplePolicy) {
+      cfgClassificationSamplePolicy.addEventListener("change", markRuntimeDirty);
+    }
+    if (cfgClassificationMinConfidence) {
+      cfgClassificationMinConfidence.addEventListener("input", () => {
+        markRuntimeDirty();
+        updateSliderHints();
+      });
+      cfgClassificationMinConfidence.addEventListener("change", updateSliderHints);
     }
     updateSliderHints();
   }

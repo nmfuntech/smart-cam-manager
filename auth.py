@@ -1,5 +1,5 @@
-import logging
 import hmac
+import logging
 import os
 import secrets
 import threading
@@ -17,7 +17,7 @@ from flask import (
     session,
     url_for,
 )
-
+from werkzeug.security import check_password_hash
 
 AUTH_SESSION_KEY = "blackframe_auth_user"
 CSRF_SESSION_KEY = "blackframe_csrf_token"
@@ -75,6 +75,35 @@ def get_admin_username() -> str:
 def get_admin_password() -> str | None:
     value = os.getenv("APP_ADMIN_PASSWORD", "").strip()
     return value or None
+
+
+def get_admin_password_hash() -> str | None:
+    value = os.getenv("APP_ADMIN_PASSWORD_HASH", "").strip()
+    return value or None
+
+
+def admin_password_configured() -> bool:
+    return bool(get_admin_password_hash() or get_admin_password())
+
+
+def verify_admin_password(provided: str) -> bool:
+    """Verify a submitted password.
+
+    Prefers APP_ADMIN_PASSWORD_HASH (a werkzeug PBKDF2/scrypt hash, so no plaintext
+    secret is stored). Falls back to a constant-time comparison against the legacy
+    plaintext APP_ADMIN_PASSWORD for backward compatibility.
+    """
+    hashed = get_admin_password_hash()
+    if hashed:
+        try:
+            return check_password_hash(hashed, provided)
+        except Exception:
+            logger.exception("Verifica hash password fallita")
+            return False
+    expected = get_admin_password()
+    if not expected:
+        return False
+    return hmac.compare_digest(provided, expected)
 
 
 def is_authenticated() -> bool:
@@ -161,20 +190,24 @@ def rate_limit(scope: str, limit: int, window_seconds: int, api: bool = False):
             if allowed:
                 return view(*args, **kwargs)
             response = (
-                jsonify(
-                    {
-                        "ok": False,
-                        "error": "Troppi tentativi. Riprova piu tardi.",
-                    }
-                ),
-                429,
-            ) if api else (
-                render_template(
-                    "login.html",
-                    error=f"Troppi tentativi. Riprova tra {retry_after} secondi.",
-                    next_url=_normalize_next_url(request.form.get("next")),
-                ),
-                429,
+                (
+                    jsonify(
+                        {
+                            "ok": False,
+                            "error": "Troppi tentativi. Riprova piu tardi.",
+                        }
+                    ),
+                    429,
+                )
+                if api
+                else (
+                    render_template(
+                        "login.html",
+                        error=f"Troppi tentativi. Riprova tra {retry_after} secondi.",
+                        next_url=_normalize_next_url(request.form.get("next")),
+                    ),
+                    429,
+                )
             )
             result = response
             if isinstance(result, tuple):
@@ -231,10 +264,9 @@ def configure_auth(app) -> None:
     app.config["SESSION_COOKIE_NAME"] = "blackframe_session"
     app.config["SESSION_COOKIE_HTTPONLY"] = True
     app.config["SESSION_COOKIE_SAMESITE"] = "Strict"
-    app.config["SESSION_COOKIE_SECURE"] = (
-        os.getenv("APP_SESSION_COOKIE_SECURE", str(secure_cookie_default)).strip().lower()
-        in {"1", "true", "yes", "on"}
-    )
+    app.config["SESSION_COOKIE_SECURE"] = os.getenv(
+        "APP_SESSION_COOKIE_SECURE", str(secure_cookie_default)
+    ).strip().lower() in {"1", "true", "yes", "on"}
     csp = "; ".join(
         [
             "default-src 'self'",
@@ -276,7 +308,9 @@ def configure_auth(app) -> None:
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         response.headers.setdefault("Referrer-Policy", "same-origin")
         response.headers.setdefault("Cross-Origin-Opener-Policy", "same-origin")
-        response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+        response.headers.setdefault(
+            "Permissions-Policy", "camera=(), microphone=(), geolocation=()"
+        )
         if request.is_secure or app.config["SESSION_COOKIE_SECURE"]:
             response.headers.setdefault(
                 "Strict-Transport-Security",
@@ -301,18 +335,20 @@ def login():
 def login_submit():
     password = str(request.form.get("password", "")).strip()
     next_url = _normalize_next_url(request.form.get("next"))
-    expected = get_admin_password()
-    if not expected:
+    if not admin_password_configured():
         return (
             render_template(
                 "login.html",
-                error="Configura APP_ADMIN_PASSWORD prima di usare BLACKFRAME.",
+                error=(
+                    "Configura APP_ADMIN_PASSWORD (o APP_ADMIN_PASSWORD_HASH) "
+                    "prima di usare BLACKFRAME."
+                ),
                 next_url=next_url,
             ),
             503,
         )
 
-    if not hmac.compare_digest(password, expected):
+    if not verify_admin_password(password):
         return (
             render_template(
                 "login.html",

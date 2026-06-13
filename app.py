@@ -2,17 +2,23 @@ import logging
 import os
 import threading
 import time
-from dataclasses import dataclass
+from collections import deque
+from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 from urllib.parse import urlparse
 
 import cv2
 from dotenv import load_dotenv
 from flask import Flask
+
 from auth import auth_bp, configure_auth
+from classification import PersonPetClassifier
 from motion_events import MotionEventStore
-from runtime_config import RuntimeConfigManager
+from notifications import TelegramNotifier
+from recording import EventRecorder
 from routes import register_blueprints
+from runtime_config import RuntimeConfigManager
 from service_layer import (
     CameraProfileService,
     FeatureServices,
@@ -21,7 +27,6 @@ from service_layer import (
     RecordingService,
     WifiService,
 )
-
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -90,6 +95,25 @@ def get_motion_config() -> dict:
     save_dir = os.getenv("MOTION_SAVE_DIR", "captures/motion")
     event_gap = float(os.getenv("MOTION_EVENT_GAP", "4.0"))
     max_event_duration = float(os.getenv("MOTION_EVENT_MAX_DURATION", "45.0"))
+    retention_days = float(os.getenv("MOTION_RETENTION_DAYS", "14"))
+    retention_max_mb = float(os.getenv("MOTION_RETENTION_MAX_MB", "5000"))
+    retention_interval_sec = float(os.getenv("MOTION_RETENTION_INTERVAL_SEC", "3600"))
+    record_enabled = os.getenv("RECORD_ENABLED", "false").lower() == "true"
+    record_fps = float(os.getenv("RECORD_FPS", "10"))
+    record_preroll_sec = float(os.getenv("RECORD_PREROLL_SEC", "2.0"))
+    record_max_duration_sec = float(os.getenv("RECORD_MAX_DURATION_SEC", "60"))
+    classification_enabled = os.getenv("CLASSIFICATION_ENABLED", "false").lower() == "true"
+    classification_backend = os.getenv("CLASSIFICATION_BACKEND", "local").strip().lower()
+    classification_min_confidence = float(os.getenv("CLASSIFICATION_MIN_CONFIDENCE", "0.55"))
+    classification_sample_policy = (
+        os.getenv("CLASSIFICATION_SAMPLE_POLICY", "event_cover").strip().lower()
+    )
+    classification_local_model_path = os.getenv(
+        "CLASSIFICATION_LOCAL_MODEL_PATH", "models/person_pet.onnx"
+    ).strip()
+    classification_local_labels_path = os.getenv(
+        "CLASSIFICATION_LOCAL_LABELS_PATH", "models/person_pet_labels.txt"
+    ).strip()
 
     if blur_size % 2 == 0:
         blur_size += 1
@@ -111,6 +135,19 @@ def get_motion_config() -> dict:
         "save_dir": save_dir,
         "event_gap": event_gap,
         "max_event_duration": max_event_duration,
+        "retention_days": retention_days,
+        "retention_max_mb": retention_max_mb,
+        "retention_interval_sec": retention_interval_sec,
+        "record_enabled": record_enabled,
+        "record_fps": record_fps,
+        "record_preroll_sec": record_preroll_sec,
+        "record_max_duration_sec": record_max_duration_sec,
+        "classification_enabled": classification_enabled,
+        "classification_backend": classification_backend,
+        "classification_min_confidence": classification_min_confidence,
+        "classification_sample_policy": classification_sample_policy,
+        "classification_local_model_path": classification_local_model_path,
+        "classification_local_labels_path": classification_local_labels_path,
     }
 
 
@@ -131,18 +168,13 @@ def get_stream_config() -> dict:
 
     return {
         "open_timeout_sec": parse_float("RTSP_OPEN_TIMEOUT_SEC", 8.0, 1.0),
-        "reconnect_backoff_max_sec": parse_float(
-            "RTSP_RECONNECT_BACKOFF_MAX_SEC", 15.0, 1.0
-        ),
-        "snapshot_interval_online_ms": parse_int(
-            "STREAM_SNAPSHOT_INTERVAL_ONLINE_MS", 700, 100
-        ),
-        "snapshot_interval_offline_ms": parse_int(
-            "STREAM_SNAPSHOT_INTERVAL_OFFLINE_MS", 2500, 250
-        ),
+        "reconnect_backoff_max_sec": parse_float("RTSP_RECONNECT_BACKOFF_MAX_SEC", 15.0, 1.0),
+        "snapshot_interval_online_ms": parse_int("STREAM_SNAPSHOT_INTERVAL_ONLINE_MS", 700, 100),
+        "snapshot_interval_offline_ms": parse_int("STREAM_SNAPSHOT_INTERVAL_OFFLINE_MS", 2500, 250),
         "backlog_skip_frames": parse_int("RTSP_BACKLOG_SKIP_FRAMES", 1, 0),
         "jpeg_quality": parse_int("STREAM_JPEG_QUALITY", 85, 40),
         "max_width": parse_int("STREAM_MAX_WIDTH", 0, 0),
+        "preroll_seconds": parse_float("RECORD_PREROLL_SEC", 2.0, 0.0),
     }
 
 
@@ -173,14 +205,43 @@ def build_default_camera_profile() -> dict:
     }
 
 
+def profile_motion_dir(profile_id: str) -> str:
+    safe = "".join(ch for ch in str(profile_id) if ch.isalnum() or ch in ("-", "_"))
+    return str(Path("captures/motion") / (safe or "default"))
+
+
+def rtsp_url_from_profile(profile: dict) -> str:
+    user = profile.get("username", "")
+    password = profile.get("password", "")
+    host = profile.get("host", "")
+    port = int(profile.get("rtsp_port", 554) or 554)
+    stream_path = profile.get("stream_path", "stream1") or "stream1"
+    return f"rtsp://{user}:{password}@{host}:{port}/{stream_path}"
+
+
+def onvif_config_from_profile(profile: dict) -> dict:
+    return {
+        "host": profile.get("host", ""),
+        "port": int(profile.get("onvif_port", 2020) or 2020),
+        "username": profile.get("onvif_username") or profile.get("username"),
+        "password": profile.get("onvif_password") or profile.get("password"),
+        "move_speed": float(profile.get("move_speed", 0.6) or 0.6),
+        "move_timeout": float(profile.get("move_timeout", 0.35) or 0.35),
+    }
+
+
+def motion_config_for_profile(profile: dict) -> dict:
+    config = get_motion_config()
+    config["save_dir"] = profile_motion_dir(profile["id"])
+    return config
+
+
 class CameraStream:
     def __init__(self, rtsp_url: str, config: dict | None = None):
         stream_config = config or {}
         self.rtsp_url = rtsp_url
         self.open_timeout_sec = float(stream_config.get("open_timeout_sec", 8.0))
-        self.reconnect_backoff_max_sec = float(
-            stream_config.get("reconnect_backoff_max_sec", 15.0)
-        )
+        self.reconnect_backoff_max_sec = float(stream_config.get("reconnect_backoff_max_sec", 15.0))
         self.snapshot_interval_online_ms = int(
             stream_config.get("snapshot_interval_online_ms", 700)
         )
@@ -190,10 +251,12 @@ class CameraStream:
         self.backlog_skip_frames = int(stream_config.get("backlog_skip_frames", 1))
         self.jpeg_quality = int(stream_config.get("jpeg_quality", 85))
         self.max_width = int(stream_config.get("max_width", 0))
+        self.preroll_seconds = float(stream_config.get("preroll_seconds", 3.0))
         self.capture = None
         self.frame = None
         self.frame_sequence = 0
         self.raw_frame = None
+        self.preroll = deque(maxlen=150)
         self.last_frame_at = None
         self.last_success_at = None
         self.last_error = "In attesa del primo frame..."
@@ -209,8 +272,16 @@ class CameraStream:
         self.next_retry_in_seconds = 0.0
         self._retry_delay_seconds = 1.0
         self.lock = threading.Lock()
+        self._stopped = threading.Event()
         self.thread = threading.Thread(target=self._reader, daemon=True)
         self.thread.start()
+
+    def stop(self) -> None:
+        self._stopped.set()
+        with self.lock:
+            if self.capture is not None:
+                self.capture.release()
+            self.capture = None
 
     def _endpoint(self) -> str:
         parsed = urlparse(self.rtsp_url)
@@ -251,9 +322,7 @@ class CameraStream:
             self.reconnect_count += 1
             self.last_error = message
             self.last_error_stage = "read"
-            self.connection_state = (
-                "degraded" if self.last_success_at is not None else "offline"
-            )
+            self.connection_state = "degraded" if self.last_success_at is not None else "offline"
             self.last_read_error_at = time.time()
 
     def _open_capture(self) -> cv2.VideoCapture:
@@ -277,7 +346,7 @@ class CameraStream:
         return capture
 
     def _reader(self) -> None:
-        while True:
+        while not self._stopped.is_set():
             try:
                 if self.capture is None or not self.capture.isOpened():
                     try:
@@ -339,6 +408,8 @@ class CameraStream:
                     self.last_error = ""
                     self.last_error_stage = ""
                     self.connection_state = "online"
+                    self.preroll.append((self.last_frame_at, self.frame))
+                    self._trim_preroll(self.last_frame_at)
                 self._reset_backoff()
             except Exception:
                 logger.exception("Errore stream video")
@@ -361,6 +432,21 @@ class CameraStream:
             if self.raw_frame is None:
                 return None
             return self.raw_frame.copy()
+
+    def _trim_preroll(self, now: float) -> None:
+        cutoff = now - self.preroll_seconds
+        while self.preroll and self.preroll[0][0] < cutoff:
+            self.preroll.popleft()
+
+    def get_preroll_jpegs(self, seconds: float) -> list[bytes]:
+        """Return recent encoded JPEG frames within the requested time window."""
+        if seconds <= 0:
+            return []
+        with self.lock:
+            if not self.preroll:
+                return []
+            cutoff = self.preroll[-1][0] - seconds
+            return [jpeg for ts, jpeg in self.preroll if ts >= cutoff]
 
     def get_status(self) -> dict:
         with self.lock:
@@ -596,12 +682,38 @@ class PTZController:
                 self.available = False
                 self._setup()
 
+    def probe_async(self) -> None:
+        """Eagerly check ONVIF availability at startup and log the outcome.
+
+        Runs in a daemon thread so a slow/unreachable camera does not block boot.
+        """
+
+        def _probe() -> None:
+            with self.lock:
+                self._setup()
+            if self.available:
+                logger.info(
+                    "PTZ ONVIF disponibile su %s:%s",
+                    self.config["host"],
+                    self.config["port"],
+                )
+            else:
+                logger.warning("PTZ ONVIF non disponibile: %s", self.last_error)
+
+        threading.Thread(target=_probe, daemon=True).start()
+
 
 class MotionDetector:
-    def __init__(self, camera_stream: CameraStream, config: dict):
+    def __init__(self, camera_stream: CameraStream, config: dict, notifier=None, recorder=None):
         self.camera_stream = camera_stream
         self.config = config
         self.event_store = MotionEventStore(config)
+        self.classifier = PersonPetClassifier.from_config(config)
+        self.notifier = notifier
+        self.recorder = recorder
+        self._classified_events: set[str] = set()
+        self._notified_events: set[str] = set()
+        self._stopped = threading.Event()
         self.lock = threading.Lock()
         self.background_frame = None
         self.processed_frames = 0
@@ -634,10 +746,58 @@ class MotionDetector:
         return self.event_store
 
     def _save_motion_frame(self, frame, timestamp: str) -> str | None:
-        filepath, event_id = self._get_event_store().save_frame(frame, timestamp)
+        store = self._get_event_store()
+        filepath, event_id = store.save_frame(frame, timestamp)
         self.last_event_id = event_id
         self.last_capture_saved_at = time.time()
+        if event_id and self.recorder is not None:
+            self.recorder.start_event(store.current_event_dir)
+        classification_on = (
+            hasattr(self, "classifier") and self.classifier is not None and self.classifier.enabled
+        )
+        if event_id and classification_on:
+            self._classify_event_frame(event_id, frame)
+        elif event_id:
+            # No classifier: notify as soon as the event opens.
+            self._notify_event(event_id, None)
         return filepath
+
+    def _notify_event(self, event_id: str, classification: dict | None) -> None:
+        if self.notifier is None or not event_id:
+            return
+        if event_id in self._notified_events:
+            return
+        class_label = (classification or {}).get("class_label")
+        cover = Path(self.config["save_dir"]) / event_id / "cover.jpg"
+        image_path = str(cover) if cover.exists() else None
+        try:
+            sent = self.notifier.notify_event(
+                event_id=event_id,
+                class_label=class_label,
+                image_path=image_path,
+            )
+        except Exception:
+            logger.exception("Invio notifica evento fallito")
+            return
+        if sent:
+            self._notified_events.add(event_id)
+
+    def _classify_event_frame(self, event_id: str, frame) -> None:
+        if event_id in self._classified_events:
+            return
+        if self.classifier.sample_policy != "event_cover":
+            return
+        store = self._get_event_store()
+        # Dedup persisted on disk so a restart mid-event does not re-classify.
+        if store.event_has_classification(event_id):
+            self._classified_events.add(event_id)
+            return
+        result = self.classifier.classify(frame)
+        if result is None:
+            return
+        store.save_event_meta(event_id, {"classification": result})
+        self._classified_events.add(event_id)
+        self._notify_event(event_id, result)
 
     def _should_save_active_event_frame(self, now: float) -> bool:
         if not self.motion_detected:
@@ -646,9 +806,8 @@ class MotionDetector:
             return False
         if self.last_capture_saved_at is None:
             return True
-        return (
-            now - self.last_capture_saved_at
-            >= self.config.get("capture_interval", self.config["min_interval"])
+        return now - self.last_capture_saved_at >= self.config.get(
+            "capture_interval", self.config["min_interval"]
         )
 
     def _is_usable_motion_area(self, area: float, frame_area: float) -> bool:
@@ -668,8 +827,11 @@ class MotionDetector:
             if timestamp is not None:
                 self.last_motion_at_display = timestamp.strftime("%Y-%m-%d %H:%M:%S")
 
+    def stop(self) -> None:
+        self._stopped.set()
+
     def _run(self) -> None:
-        while True:
+        while not self._stopped.is_set():
             if not self.config["enabled"]:
                 with self.lock:
                     self.motion_detected = False
@@ -747,9 +909,7 @@ class MotionDetector:
                             self.last_motion_at = now
                             self.last_trigger_area = largest_usable_area
                             now_dt = datetime.now()
-                            self.last_motion_at_display = now_dt.strftime(
-                                "%Y-%m-%d %H:%M:%S"
-                            )
+                            self.last_motion_at_display = now_dt.strftime("%Y-%m-%d %H:%M:%S")
                             capture_timestamp = now_dt.strftime("%Y%m%d_%H%M%S")
                             self.last_capture_path = self._save_motion_frame(
                                 frame,
@@ -760,9 +920,7 @@ class MotionDetector:
                         self.clear_streak += 1
                         if self._should_save_active_event_frame(now):
                             now_dt = datetime.now()
-                            self.last_motion_at_display = now_dt.strftime(
-                                "%Y-%m-%d %H:%M:%S"
-                            )
+                            self.last_motion_at_display = now_dt.strftime("%Y-%m-%d %H:%M:%S")
                             capture_timestamp = now_dt.strftime("%Y%m%d_%H%M%S")
                             self.last_capture_path = self._save_motion_frame(
                                 frame,
@@ -776,6 +934,8 @@ class MotionDetector:
                         if enough_quiet and out_of_cooldown:
                             self.motion_detected = False
                             self._get_event_store().close_current_event()
+                            if self.recorder is not None:
+                                self.recorder.stop_event()
             except Exception:
                 logger.exception("Errore motion detection")
                 with self.lock:
@@ -845,9 +1005,51 @@ class MotionDetector:
                     self.last_motion_at = None
                     self.last_motion_at_display = None
                     self.last_capture_saved_at = None
+                    self._classified_events.clear()
+                    self._notified_events.clear()
                     self._restore_last_capture()
                 elif key == "MOTION_EVENT_GAP":
                     self.config["event_gap"] = float(value)
+                elif key == "MOTION_RETENTION_DAYS":
+                    self.config["retention_days"] = float(value)
+                elif key == "MOTION_RETENTION_MAX_MB":
+                    self.config["retention_max_mb"] = float(value)
+                elif key == "RECORD_ENABLED":
+                    self.config["record_enabled"] = bool(value)
+                elif key == "RECORD_FPS":
+                    self.config["record_fps"] = float(value)
+                elif key == "RECORD_PREROLL_SEC":
+                    self.config["record_preroll_sec"] = float(value)
+                elif key == "RECORD_MAX_DURATION_SEC":
+                    self.config["record_max_duration_sec"] = float(value)
+                elif key == "CLASSIFICATION_ENABLED":
+                    self.config["classification_enabled"] = bool(value)
+                elif key == "CLASSIFICATION_BACKEND":
+                    self.config["classification_backend"] = str(value).strip().lower()
+                elif key == "CLASSIFICATION_MIN_CONFIDENCE":
+                    self.config["classification_min_confidence"] = float(value)
+                elif key == "CLASSIFICATION_SAMPLE_POLICY":
+                    self.config["classification_sample_policy"] = str(value).strip().lower()
+                elif key == "CLASSIFICATION_LOCAL_MODEL_PATH":
+                    self.config["classification_local_model_path"] = str(value).strip()
+                elif key == "CLASSIFICATION_LOCAL_LABELS_PATH":
+                    self.config["classification_local_labels_path"] = str(value).strip()
+
+            classifier_changed = any(
+                key
+                in {
+                    "CLASSIFICATION_ENABLED",
+                    "CLASSIFICATION_BACKEND",
+                    "CLASSIFICATION_MIN_CONFIDENCE",
+                    "CLASSIFICATION_SAMPLE_POLICY",
+                    "CLASSIFICATION_LOCAL_MODEL_PATH",
+                    "CLASSIFICATION_LOCAL_LABELS_PATH",
+                }
+                for key in updates
+            )
+            if classifier_changed:
+                self.classifier = PersonPetClassifier.from_config(self.config)
+                self._classified_events.clear()
 
             reset_background = any(
                 key
@@ -887,7 +1089,63 @@ class MotionDetector:
             self.current_area = 0.0
             self.last_capture_saved_at = None
             self.motion_detected = False
+            self._classified_events.clear()
+            self._notified_events.clear()
             return removed
+
+    def purge_old_events(self) -> int:
+        days = float(self.config.get("retention_days", 0) or 0)
+        max_mb = float(self.config.get("retention_max_mb", 0) or 0)
+        if days <= 0 and max_mb <= 0:
+            return 0
+        return self._get_event_store().purge_old_events(days, max_mb)
+
+
+class RetentionJanitor:
+    """Daemon thread that periodically deletes old motion events to bound disk usage."""
+
+    def __init__(self, motion: MotionDetector):
+        self.motion = motion
+        self.thread = threading.Thread(target=self._run, daemon=True)
+        self.thread.start()
+
+    def _run(self) -> None:
+        # Run once shortly after boot, then on the configured interval.
+        time.sleep(10)
+        while True:
+            interval = float(self.motion.config.get("retention_interval_sec", 3600) or 3600)
+            try:
+                removed = self.motion.purge_old_events()
+                if removed:
+                    logger.info("Retention: rimossi %s eventi di movimento", removed)
+            except Exception:
+                logger.exception("Errore retention eventi")
+            time.sleep(max(interval, 60))
+
+
+@dataclass
+class CameraRuntime:
+    """Bundle of background workers for one monitored (non-active) camera profile."""
+
+    profile_id: str
+    camera: CameraStream
+    motion: MotionDetector
+    recorder: EventRecorder
+    ptz: PTZController | None = None
+
+    def stop(self) -> None:
+        self.motion.stop()
+        self.camera.stop()
+        if self.recorder is not None:
+            self.recorder.stop_event()
+
+
+def build_camera_runtime(profile: dict, notifier=None) -> CameraRuntime:
+    camera = CameraStream(rtsp_url_from_profile(profile), get_stream_config())
+    motion_config = motion_config_for_profile(profile)
+    recorder = EventRecorder(camera, motion_config)
+    motion = MotionDetector(camera, motion_config, notifier=notifier, recorder=recorder)
+    return CameraRuntime(profile["id"], camera, motion, recorder, None)
 
 
 @dataclass
@@ -897,6 +1155,32 @@ class AppServices:
     motion: MotionDetector
     features: FeatureServices
     runtime_config: RuntimeConfigManager
+    monitors: dict = field(default_factory=dict)
+
+    def camera_and_motion(self, profile_id: str):
+        """Resolve the (camera, motion) pair for a profile: active main pair or a monitor."""
+        active_id = self.features.camera_profiles.get_active_profile_id()
+        if profile_id == active_id:
+            return self.camera, self.motion
+        runtime = self.monitors.get(profile_id)
+        if runtime is None:
+            return None, None
+        return runtime.camera, runtime.motion
+
+    def start_monitor(self, profile_id: str) -> bool:
+        active_id = self.features.camera_profiles.get_active_profile_id()
+        if profile_id == active_id or profile_id in self.monitors:
+            return True
+        profile = self.features.camera_profiles.get_profile(profile_id)
+        if not profile:
+            return False
+        self.monitors[profile_id] = build_camera_runtime(profile, self.features.telegram)
+        return True
+
+    def stop_monitor(self, profile_id: str) -> None:
+        runtime = self.monitors.pop(profile_id, None)
+        if runtime is not None:
+            runtime.stop()
 
 
 def build_services() -> AppServices:
@@ -912,22 +1196,45 @@ def build_services() -> AppServices:
                 allow_sensitive=True,
                 allow_internal=True,
             )
+    motion_config = get_motion_config()
     camera = CameraStream(get_rtsp_url(), get_stream_config())
     ptz = PTZController(get_onvif_config())
-    motion = MotionDetector(camera, get_motion_config())
+    ptz.probe_async()
+    notifier = TelegramNotifier()
+    recorder = EventRecorder(camera, motion_config)
+    motion = MotionDetector(camera, motion_config, notifier=notifier, recorder=recorder)
+    RetentionJanitor(motion)
     features = FeatureServices(
         presets=PresetService(),
         notifications=NotificationService(),
         recording=RecordingService(),
+        telegram=notifier,
         camera_profiles=camera_profiles,
         wifi=WifiService(),
     )
+
+    # Start background runtimes for any additional profiles flagged as monitored,
+    # so they capture events and fire notifications even while the viewer shows
+    # the active camera.
+    monitors: dict[str, CameraRuntime] = {}
+    try:
+        for summary in camera_profiles.list_profiles():
+            pid = summary.get("id")
+            if not summary.get("monitored") or pid == active_profile_id:
+                continue
+            full_profile = camera_profiles.get_profile(pid)
+            if full_profile:
+                monitors[pid] = build_camera_runtime(full_profile, notifier)
+    except Exception:
+        logger.exception("Avvio monitor multi-camera fallito")
+
     return AppServices(
         camera=camera,
         ptz=ptz,
         motion=motion,
         features=features,
         runtime_config=runtime_config,
+        monitors=monitors,
     )
 
 
@@ -938,6 +1245,7 @@ def create_app(services: AppServices | None = None) -> Flask:
     app.register_blueprint(auth_bp)
     register_blueprints(app)
     return app
+
 
 app = create_app()
 

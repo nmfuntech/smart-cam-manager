@@ -6,6 +6,7 @@ const cameras = createCameraConfigController({
   activeSummary: document.getElementById("camera-active-summary"),
   profileList: document.getElementById("camera-profile-list"),
   form: document.getElementById("camera-form"),
+  formTitle: document.getElementById("camera-form-title"),
   openViewerOnSave: true,
 });
 

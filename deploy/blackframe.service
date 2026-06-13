@@ -1,0 +1,24 @@
+[Unit]
+Description=BLACKFRAME camera monitoring (Flask + gunicorn)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Adjust User/WorkingDirectory to your install. Run as a non-root dedicated user.
+User=blackframe
+WorkingDirectory=/opt/blackframe
+EnvironmentFile=/opt/blackframe/.env
+# Single worker is mandatory (in-memory + file state). See deploy/gunicorn.conf.py.
+ExecStart=/usr/bin/env poetry run gunicorn -c deploy/gunicorn.conf.py app:app
+Restart=on-failure
+RestartSec=5
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/opt/blackframe/captures /opt/blackframe/data
+
+[Install]
+WantedBy=multi-user.target

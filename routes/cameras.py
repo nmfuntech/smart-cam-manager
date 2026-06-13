@@ -1,6 +1,6 @@
-from auth import rate_limit, require_auth, require_csrf
 from flask import Blueprint, current_app, jsonify, render_template, request
 
+from auth import rate_limit, require_auth, require_csrf
 
 cameras_bp = Blueprint("cameras", __name__)
 
@@ -90,3 +90,55 @@ def activate_camera(profile_id: str):
     except Exception:
         current_app.logger.exception("Attivazione camera fallita")
         return jsonify({"ok": False, "error": "Errore interno durante attivazione camera"}), 500
+
+
+@cameras_bp.delete("/api/cameras/<profile_id>")
+@require_auth(api=True)
+@require_csrf(api=True)
+@rate_limit("camera-delete", limit=20, window_seconds=60, api=True)
+def delete_camera(profile_id: str):
+    services = get_services()
+    prev_active = services.features.camera_profiles.get_active_profile_id()
+    try:
+        services.stop_monitor(profile_id)
+        new_active = services.features.camera_profiles.delete_profile(profile_id)
+        # Only reconnect the main runtime if we removed the active camera.
+        if profile_id == prev_active and new_active:
+            try:
+                apply_profile(new_active)
+            except Exception:
+                current_app.logger.exception("Riattivazione profilo dopo eliminazione fallita")
+        return jsonify({"ok": True, "active_profile_id": new_active, **build_camera_payload()})
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 404
+    except Exception:
+        current_app.logger.exception("Eliminazione camera fallita")
+        return jsonify({"ok": False, "error": "Errore interno durante eliminazione camera"}), 500
+
+
+@cameras_bp.post("/api/cameras/<profile_id>/monitor")
+@require_auth(api=True)
+@require_csrf(api=True)
+@rate_limit("camera-monitor", limit=20, window_seconds=60, api=True)
+def toggle_monitor(profile_id: str):
+    services = get_services()
+    payload = request.get_json(silent=True) or {}
+    monitored = bool(payload.get("monitored", True))
+    profile = services.features.camera_profiles.get_profile(profile_id)
+    if not profile:
+        return jsonify({"ok": False, "error": "Profilo camera non trovato"}), 404
+    try:
+        profile["monitored"] = monitored
+        services.features.camera_profiles.save_profile(profile)
+        if monitored:
+            services.start_monitor(profile_id)
+        else:
+            services.stop_monitor(profile_id)
+        return jsonify(
+            {"ok": True, "profile_id": profile_id, "monitored": monitored, **build_camera_payload()}
+        )
+    except Exception:
+        current_app.logger.exception("Aggiornamento monitoraggio camera fallito")
+        return jsonify(
+            {"ok": False, "error": "Errore interno durante aggiornamento monitoraggio"}
+        ), 500

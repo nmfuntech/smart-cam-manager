@@ -1,3 +1,4 @@
+import json
 import re
 import shutil
 import time
@@ -9,6 +10,7 @@ import cv2
 
 class MotionEventStore:
     CLOSED_MARKER_NAME = ".closed"
+    META_FILE_NAME = "meta.json"
 
     def __init__(self, config: dict):
         self.config = config
@@ -49,8 +51,7 @@ class MotionEventStore:
         self.current_event_last_at = now
         self.current_event_frame_count += 1
         filepath = (
-            self.current_event_dir
-            / f"frame_{timestamp}_{self.current_event_frame_count:03d}.jpg"
+            self.current_event_dir / f"frame_{timestamp}_{self.current_event_frame_count:03d}.jpg"
         )
         ok = cv2.imwrite(str(filepath), frame)
         if not ok:
@@ -75,6 +76,20 @@ class MotionEventStore:
         self.current_event_last_at = None
         self.current_event_started_at = None
         self.current_event_frame_count = 0
+
+    def save_event_meta(self, event_id: str, data: dict) -> None:
+        if not event_id or not isinstance(data, dict):
+            return
+        event_dir = Path(self.config["save_dir"]) / event_id
+        if not event_dir.exists() or not event_dir.is_dir():
+            return
+        meta_path = event_dir / self.META_FILE_NAME
+        existing = self._load_event_meta(event_dir) or {}
+        existing.update(data)
+        meta_path.write_text(
+            json.dumps(existing, ensure_ascii=True, indent=2),
+            encoding="utf-8",
+        )
 
     def get_event(self, event_id: str):
         for event in self.list_events(limit=500, include_frames=True):
@@ -110,6 +125,70 @@ class MotionEventStore:
                 removed += 1
 
         return removed
+
+    def event_has_classification(self, event_id: str) -> bool:
+        """Check on disk whether an event was already classified (dedup survives restart)."""
+        if not event_id:
+            return False
+        event_dir = Path(self.config["save_dir"]) / event_id
+        meta = self._load_event_meta(event_dir)
+        return bool(meta.get("classification"))
+
+    def purge_old_events(self, max_age_days: float = 0.0, max_total_mb: float = 0.0) -> int:
+        """Delete closed events older than max_age_days and/or beyond the max_total_mb quota.
+
+        The currently-open event is never removed. Oldest events are removed first.
+        A value of 0 (or less) disables that limit.
+        """
+        save_dir = Path(self.config["save_dir"])
+        if not save_dir.exists():
+            return 0
+
+        entries = []
+        for path in sorted(save_dir.glob("motion_event_*")):
+            if not path.is_dir():
+                continue
+            if self.current_event_dir is not None and path == self.current_event_dir:
+                continue
+            ts = self._timestamp_from_name(path.name)
+            event_time = ts.timestamp() if ts is not None else path.stat().st_mtime
+            entries.append({"path": path, "time": event_time, "size": self._dir_size(path)})
+
+        entries.sort(key=lambda item: item["time"])
+        removed = 0
+
+        if max_age_days and max_age_days > 0:
+            cutoff = time.time() - max_age_days * 86400
+            survivors = []
+            for item in entries:
+                if item["time"] < cutoff:
+                    shutil.rmtree(item["path"], ignore_errors=True)
+                    removed += 1
+                else:
+                    survivors.append(item)
+            entries = survivors
+
+        if max_total_mb and max_total_mb > 0:
+            quota_bytes = max_total_mb * 1024 * 1024
+            total = sum(item["size"] for item in entries)
+            for item in entries:
+                if total <= quota_bytes:
+                    break
+                shutil.rmtree(item["path"], ignore_errors=True)
+                total -= item["size"]
+                removed += 1
+
+        return removed
+
+    def _dir_size(self, path: Path) -> int:
+        total = 0
+        for child in path.glob("**/*"):
+            if child.is_file():
+                try:
+                    total += child.stat().st_size
+                except OSError:
+                    continue
+        return total
 
     def _iter_saved_events(self, save_dir: Path, include_frames: bool):
         events = []
@@ -159,10 +238,14 @@ class MotionEventStore:
             "frame_count": len(frames),
             "timestamp": self._timestamp_from_name(event_dir.name),
         }
+        if (event_dir / "event.mp4").exists():
+            event["video_url"] = f"/motion_event/{event_dir.name}/video.mp4"
+        meta = self._load_event_meta(event_dir)
+        if meta:
+            event.update(meta)
         if include_frames:
             event["frames"] = [
-                f"/motion_event/{event_dir.name}/{frame_path.name}"
-                for frame_path in frames
+                f"/motion_event/{event_dir.name}/{frame_path.name}" for frame_path in frames
             ] or [f"/motion_event/{event_dir.name}/preview.jpg"]
         return event
 
@@ -182,9 +265,7 @@ class MotionEventStore:
             "timestamp": first_ts,
         }
         if include_frames:
-            event["frames"] = [
-                f"/motion_capture/{path.name}" for path, _ in grouped_paths
-            ]
+            event["frames"] = [f"/motion_capture/{path.name}" for path, _ in grouped_paths]
         return event
 
     def _timestamp_from_name(self, name: str):
@@ -199,6 +280,21 @@ class MotionEventStore:
     def _marker_path(self, event_dir: Path) -> Path:
         return event_dir / self.CLOSED_MARKER_NAME
 
+    def _meta_path(self, event_dir: Path) -> Path:
+        return event_dir / self.META_FILE_NAME
+
+    def _load_event_meta(self, event_dir: Path) -> dict:
+        meta_path = self._meta_path(event_dir)
+        if not meta_path.exists():
+            return {}
+        try:
+            payload = json.loads(meta_path.read_text(encoding="utf-8"))
+            if isinstance(payload, dict):
+                return payload
+        except Exception:
+            return {}
+        return {}
+
     def _close_event_dir(self, event_dir: Path) -> None:
         if not event_dir.exists():
             return
@@ -208,7 +304,9 @@ class MotionEventStore:
         marker_path = self._marker_path(event_dir)
         if marker_path.exists():
             return True
-        is_current_event = self.current_event_dir is not None and event_dir == self.current_event_dir
+        is_current_event = (
+            self.current_event_dir is not None and event_dir == self.current_event_dir
+        )
         if not self._is_event_stale(event_dir):
             return False
         if is_current_event:
