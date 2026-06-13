@@ -8,6 +8,8 @@ detection loop so it cannot drop detection frames.
 """
 
 import logging
+import shutil
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -18,6 +20,75 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 RECORDING_FILE_NAME = "event.mp4"
+
+# Browsers only play H.264 in an HTML5 <video>; mp4v (MPEG-4 Part 2) is rejected.
+# Try avc1 (H.264) first and fall back to mp4v if the FFmpeg build lacks an encoder.
+_VIDEO_FOURCC_PREFERENCE = ("avc1", "mp4v")
+
+
+def finalize_faststart(path: "Path | str") -> None:
+    """Move the MP4 moov atom to the front (faststart) so browsers can stream it.
+
+    OpenCV's VideoWriter writes moov at the end, which many browsers refuse to play
+    over HTTP. Uses ffmpeg stream-copy (no re-encode) when available; otherwise no-op.
+    """
+    path = Path(path)
+    if not path.is_file() or shutil.which("ffmpeg") is None:
+        return
+    tmp = path.with_suffix(".faststart.mp4")
+    try:
+        result = subprocess.run(
+            [
+                "ffmpeg",
+                "-y",
+                "-v",
+                "error",
+                "-i",
+                str(path),
+                "-c",
+                "copy",
+                "-movflags",
+                "+faststart",
+                str(tmp),
+            ],
+            capture_output=True,
+            timeout=120,
+        )
+        if result.returncode == 0 and tmp.is_file() and tmp.stat().st_size > 0:
+            tmp.replace(path)
+        else:
+            tmp.unlink(missing_ok=True)
+            logger.warning(
+                "Faststart fallito per %s: %s", path, result.stderr.decode(errors="ignore")
+            )
+    except Exception:
+        tmp.unlink(missing_ok=True)
+        logger.exception("Errore faststart per %s", path)
+
+
+def scaled_size(frame, max_width: int) -> tuple[int, int]:
+    """Target (width, height) for recording, downscaled to max_width (0 = no limit)."""
+    width, height = frame.shape[1], frame.shape[0]
+    if max_width and width > max_width:
+        height = int(round(height * max_width / width))
+        height -= height % 2  # keep even dimensions for H.264
+        width = max_width
+    return (width, max(2, height))
+
+
+def open_mp4_writer(path: "Path | str", fps: float, size) -> "cv2.VideoWriter | None":
+    """Open a VideoWriter preferring browser-playable H.264, falling back to mp4v."""
+    path = str(path)
+    for tag in _VIDEO_FOURCC_PREFERENCE:
+        fourcc = cv2.VideoWriter_fourcc(*tag)
+        writer = cv2.VideoWriter(path, fourcc, fps, size)
+        if writer.isOpened():
+            if tag != "avc1":
+                logger.warning("Codec H.264 non disponibile, uso fallback %s per %s", tag, path)
+            return writer
+        writer.release()
+    logger.warning("Impossibile aprire VideoWriter per %s", path)
+    return None
 
 
 class EventRecorder:
@@ -54,9 +125,22 @@ class EventRecorder:
             )
             self._thread.start()
 
-    def stop_event(self) -> None:
+    def stop_event(self, on_complete=None) -> None:
         with self.lock:
+            thread = self._thread
+            path = self._active_dir / RECORDING_FILE_NAME if self._active_dir else None
             self._stop_locked()
+        if on_complete is not None and thread is not None and path is not None:
+
+            def _wait_and_notify():
+                thread.join(timeout=30)
+                if path.exists():
+                    try:
+                        on_complete(path)
+                    except Exception:
+                        logger.exception("Errore callback completamento registrazione")
+
+            threading.Thread(target=_wait_and_notify, daemon=True).start()
 
     def _stop_locked(self) -> None:
         if self._stop is not None:
@@ -85,7 +169,7 @@ class EventRecorder:
                     time.sleep(interval)
                     continue
                 if writer is None:
-                    size = (frame.shape[1], frame.shape[0])
+                    size = scaled_size(frame, int(self.config.get("record_max_width", 0) or 0))
                     writer = self._open_writer(event_dir, fps, size)
                     if writer is None:
                         return
@@ -104,14 +188,14 @@ class EventRecorder:
         finally:
             if writer is not None:
                 writer.release()
+                # Rewrite with moov atom at the front so browsers can stream the clip.
+                finalize_faststart(event_dir / RECORDING_FILE_NAME)
 
     def _open_writer(self, event_dir: Path, fps: float, size):
         event_dir.mkdir(parents=True, exist_ok=True)
         path = event_dir / RECORDING_FILE_NAME
-        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-        writer = cv2.VideoWriter(str(path), fourcc, fps, size)
-        if not writer.isOpened():
-            logger.warning("Impossibile aprire VideoWriter per %s", path)
+        writer = open_mp4_writer(path, fps, size)
+        if writer is None:
             return None
         return writer
 

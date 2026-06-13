@@ -24,6 +24,7 @@ const motion = createMotionController({
   captureSummary: document.getElementById("capture-summary"),
   captureToggle: document.getElementById("capture-toggle"),
   captureClear: document.getElementById("capture-clear"),
+  captureOpenFolder: document.getElementById("capture-open-folder"),
   runtimeSave: document.getElementById("runtime-save"),
   runtimeFeedback: document.getElementById("runtime-feedback"),
   cfgMotionEnabled: document.getElementById("cfg-motion-enabled"),

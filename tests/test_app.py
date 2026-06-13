@@ -259,6 +259,85 @@ class MotionDetectorEventTests(unittest.TestCase):
         self.assertFalse(detector._is_usable_motion_area(500000, 1000000))
         self.assertTrue(detector._is_usable_motion_area(120000, 1000000))
 
+    def _make_detect_detector(self, **overrides):
+        detector = self.app_module.MotionDetector.__new__(self.app_module.MotionDetector)
+        detector.config = {
+            "scale_width": 0,
+            "blur_size": 5,
+            "mog2_history": 50,
+            "mog2_var_threshold": 35,
+            "morph_kernel": 3,
+            "morph_dilate_iter": 2,
+            "global_change_ratio": 0.5,
+            "min_area": 600,
+            "max_area_ratio": 0.95,
+            "learning_rate": -1,
+            "learning_rate_active": 0.0005,
+        }
+        detector.config.update(overrides)
+        detector.motion_detected = False
+        detector._build_subtractor()
+        return detector
+
+    def _warmup(self, detector, base, frames=40):
+        import numpy as np
+
+        rng = np.random.default_rng(0)
+        for _ in range(frames):
+            noisy = np.clip(
+                base.astype("int16") + rng.normal(0, 4, base.shape).astype("int16"), 0, 255
+            ).astype("uint8")
+            detector._detect_motion(noisy)
+
+    def test_detect_motion_ignores_gaussian_noise(self):
+        import numpy as np
+
+        base = np.full((240, 320, 3), 120, dtype="uint8")
+        detector = self._make_detect_detector()
+        self._warmup(detector, base)
+
+        rng = np.random.default_rng(99)
+        noisy = np.clip(
+            base.astype("int16") + rng.normal(0, 4, base.shape).astype("int16"), 0, 255
+        ).astype("uint8")
+        motion_now, area, _ = detector._detect_motion(noisy)
+
+        self.assertFalse(motion_now)
+        self.assertEqual(area, 0.0)
+
+    def test_detect_motion_triggers_on_moved_blob(self):
+        import numpy as np
+
+        base = np.full((240, 320, 3), 120, dtype="uint8")
+        detector = self._make_detect_detector()
+        self._warmup(detector, base)
+
+        triggered = False
+        last_area = 0.0
+        for _ in range(5):
+            frame = base.copy()
+            import cv2
+
+            cv2.rectangle(frame, (130, 90), (200, 160), (255, 255, 255), -1)
+            motion_now, last_area, _ = detector._detect_motion(frame)
+            triggered = triggered or motion_now
+
+        self.assertTrue(triggered)
+        self.assertGreater(last_area, detector.config["min_area"])
+
+    def test_detect_motion_ignores_global_lighting_shift(self):
+        import numpy as np
+
+        base = np.full((240, 320, 3), 120, dtype="uint8")
+        detector = self._make_detect_detector()
+        self._warmup(detector, base)
+
+        shifted = np.clip(base.astype("int16") + 60, 0, 255).astype("uint8")
+        motion_now, area, _ = detector._detect_motion(shifted)
+
+        self.assertFalse(motion_now)
+        self.assertEqual(area, 0.0)
+
     def test_saved_event_exposes_classification_metadata(self):
         event_dir = Path(self.tmpdir) / "motion_event_20260417_120001"
         event_dir.mkdir(parents=True, exist_ok=True)
@@ -409,7 +488,8 @@ class ConfigTests(unittest.TestCase):
             os.environ.pop("MOTION_MIN_AREA", None)
             config = self.app_module.get_motion_config()
 
-        self.assertEqual(config["min_area"], 1400)
+        # Min area is now relative to the downscaled detection frame (MOTION_SCALE_WIDTH).
+        self.assertEqual(config["min_area"], 600)
 
     def test_default_capture_interval_keeps_active_event_multiframe(self):
         with mock.patch.dict(os.environ, {"MOTION_CAPTURE_INTERVAL": ""}, clear=False):

@@ -14,6 +14,7 @@ from flask import Flask
 
 from auth import auth_bp, configure_auth
 from classification import PersonPetClassifier
+from continuous_recording import ContinuousRecorder
 from motion_events import MotionEventStore
 from notifications import TelegramNotifier
 from recording import EventRecorder
@@ -80,17 +81,24 @@ def get_onvif_config() -> dict:
 
 def get_motion_config() -> dict:
     enabled = os.getenv("MOTION_ENABLED", "true").lower() == "true"
-    min_area = int(os.getenv("MOTION_MIN_AREA", "1400"))
-    threshold = int(os.getenv("MOTION_THRESHOLD", "24"))
-    blur_size = int(os.getenv("MOTION_BLUR_SIZE", "21"))
+    min_area = int(os.getenv("MOTION_MIN_AREA", "600"))
+    threshold = int(os.getenv("MOTION_THRESHOLD", "35"))
+    blur_size = int(os.getenv("MOTION_BLUR_SIZE", "5"))
     cooldown = float(os.getenv("MOTION_COOLDOWN", "3"))
     min_interval = float(os.getenv("MOTION_FRAME_INTERVAL", "0.12"))
     capture_interval = float(os.getenv("MOTION_CAPTURE_INTERVAL", "0.18"))
     max_area_ratio = float(os.getenv("MOTION_MAX_AREA_RATIO", "0.45"))
     warmup_frames = int(os.getenv("MOTION_WARMUP_FRAMES", "12"))
-    trigger_frames = int(os.getenv("MOTION_TRIGGER_FRAMES", "2"))
+    trigger_frames = int(os.getenv("MOTION_TRIGGER_FRAMES", "3"))
     clear_frames = int(os.getenv("MOTION_CLEAR_FRAMES", "8"))
     background_alpha = float(os.getenv("MOTION_BACKGROUND_ALPHA", "0.03"))
+    mog2_history = int(os.getenv("MOTION_MOG2_HISTORY", "500"))
+    scale_width = int(os.getenv("MOTION_SCALE_WIDTH", "480"))
+    morph_kernel = int(os.getenv("MOTION_MORPH_KERNEL", "3"))
+    morph_dilate_iter = int(os.getenv("MOTION_MORPH_DILATE_ITER", "2"))
+    global_change_ratio = float(os.getenv("MOTION_GLOBAL_CHANGE_RATIO", "0.5"))
+    learning_rate = float(os.getenv("MOTION_LEARNING_RATE", "-1"))
+    learning_rate_active = float(os.getenv("MOTION_LEARNING_RATE_ACTIVE", "0.0005"))
     save_frames = os.getenv("MOTION_SAVE_FRAMES", "true").lower() == "true"
     save_dir = os.getenv("MOTION_SAVE_DIR", "captures/motion")
     event_gap = float(os.getenv("MOTION_EVENT_GAP", "4.0"))
@@ -102,6 +110,12 @@ def get_motion_config() -> dict:
     record_fps = float(os.getenv("RECORD_FPS", "10"))
     record_preroll_sec = float(os.getenv("RECORD_PREROLL_SEC", "2.0"))
     record_max_duration_sec = float(os.getenv("RECORD_MAX_DURATION_SEC", "60"))
+    record_max_width = int(os.getenv("RECORD_MAX_WIDTH", "1280"))
+    continuous_record_enabled = os.getenv("CONTINUOUS_RECORD_ENABLED", "false").lower() == "true"
+    continuous_record_segment_min = float(os.getenv("CONTINUOUS_RECORD_SEGMENT_MIN", "10"))
+    continuous_record_retain_hours = float(os.getenv("CONTINUOUS_RECORD_RETAIN_HOURS", "3"))
+    continuous_record_dir = os.getenv("CONTINUOUS_RECORD_DIR", "captures/continuous")
+    notify_prefer_video = os.getenv("NOTIFY_PREFER_VIDEO", "true").lower() == "true"
     classification_enabled = os.getenv("CLASSIFICATION_ENABLED", "false").lower() == "true"
     classification_backend = os.getenv("CLASSIFICATION_BACKEND", "local").strip().lower()
     classification_min_confidence = float(os.getenv("CLASSIFICATION_MIN_CONFIDENCE", "0.55"))
@@ -117,11 +131,14 @@ def get_motion_config() -> dict:
 
     if blur_size % 2 == 0:
         blur_size += 1
+    if morph_kernel % 2 == 0:
+        morph_kernel += 1
 
     return {
         "enabled": enabled,
         "min_area": min_area,
         "threshold": threshold,
+        "mog2_var_threshold": threshold,
         "blur_size": blur_size,
         "cooldown": cooldown,
         "min_interval": min_interval,
@@ -131,6 +148,13 @@ def get_motion_config() -> dict:
         "trigger_frames": trigger_frames,
         "clear_frames": clear_frames,
         "background_alpha": background_alpha,
+        "mog2_history": mog2_history,
+        "scale_width": scale_width,
+        "morph_kernel": morph_kernel,
+        "morph_dilate_iter": morph_dilate_iter,
+        "global_change_ratio": global_change_ratio,
+        "learning_rate": learning_rate,
+        "learning_rate_active": learning_rate_active,
         "save_frames": save_frames,
         "save_dir": save_dir,
         "event_gap": event_gap,
@@ -142,6 +166,12 @@ def get_motion_config() -> dict:
         "record_fps": record_fps,
         "record_preroll_sec": record_preroll_sec,
         "record_max_duration_sec": record_max_duration_sec,
+        "record_max_width": record_max_width,
+        "continuous_record_enabled": continuous_record_enabled,
+        "continuous_record_segment_min": continuous_record_segment_min,
+        "continuous_record_retain_hours": continuous_record_retain_hours,
+        "continuous_record_dir": continuous_record_dir,
+        "notify_prefer_video": notify_prefer_video,
         "classification_enabled": classification_enabled,
         "classification_backend": classification_backend,
         "classification_min_confidence": classification_min_confidence,
@@ -426,6 +456,13 @@ class CameraStream:
     def get_frame_packet(self) -> tuple[bytes | None, int]:
         with self.lock:
             return self.frame, self.frame_sequence
+
+    @property
+    def frame_size(self) -> tuple[int, int] | None:
+        with self.lock:
+            if self.raw_frame is None:
+                return None
+            return (self.raw_frame.shape[1], self.raw_frame.shape[0])
 
     def get_raw_frame(self):
         with self.lock:
@@ -715,7 +752,6 @@ class MotionDetector:
         self._notified_events: set[str] = set()
         self._stopped = threading.Event()
         self.lock = threading.Lock()
-        self.background_frame = None
         self.processed_frames = 0
         self.trigger_streak = 0
         self.clear_streak = 0
@@ -728,17 +764,81 @@ class MotionDetector:
         self.last_event_id = None
         self.last_error = ""
         self.last_capture_saved_at = None
+        self._bg_subtractor = None
+        self._kernel_open = None
+        self._kernel_dilate = None
+        self._needs_subtractor_rebuild = False
+        self._build_subtractor()
         self._restore_last_capture()
         self.thread = threading.Thread(target=self._run, daemon=True)
         self.thread.start()
 
+    def _build_subtractor(self) -> None:
+        """(Re)build the MOG2 subtractor and morphology kernels. Runs only on the _run thread."""
+        self._bg_subtractor = cv2.createBackgroundSubtractorMOG2(
+            history=int(self.config.get("mog2_history", 500)),
+            varThreshold=float(self.config.get("mog2_var_threshold", 35)),
+            detectShadows=True,
+        )
+        k = int(self.config.get("morph_kernel", 3))
+        if k % 2 == 0:
+            k += 1
+        self._kernel_open = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
+        self._kernel_dilate = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
+        self.processed_frames = 0
+        self._needs_subtractor_rebuild = False
+
+    def _current_learning_rate(self) -> float:
+        if self.motion_detected:
+            # Almost frozen during an active event so a still subject is not absorbed.
+            return float(self.config.get("learning_rate_active", 0.0005))
+        return float(self.config.get("learning_rate", -1))
+
     def _preprocess(self, frame):
+        w = int(self.config.get("scale_width", 0) or 0)
+        if w and frame.shape[1] > w:
+            h = int(frame.shape[0] * w / frame.shape[1])
+            frame = cv2.resize(frame, (w, h), interpolation=cv2.INTER_AREA)
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         return cv2.GaussianBlur(
             gray,
             (self.config["blur_size"], self.config["blur_size"]),
             0,
         )
+
+    def _detect_motion(self, frame):
+        """Pixel-level motion detection. Returns (motion_now, largest_usable_area, frame_area).
+
+        Pure detection: no lock, no streak state. Runs only on the _run thread because
+        the MOG2 subtractor is stateful.
+        """
+        processed = self._preprocess(frame)
+        frame_area = float(processed.shape[0] * processed.shape[1])
+
+        fg = self._bg_subtractor.apply(processed, learningRate=self._current_learning_rate())
+        # MOG2 marks foreground as 255 and shadows as 127; keep only solid foreground.
+        mask = cv2.inRange(fg, 250, 255)
+
+        # Global-change guard: a lighting/exposure shift lights up most of the frame.
+        global_ratio = self.config.get("global_change_ratio", 0.5)
+        if global_ratio > 0 and cv2.countNonZero(mask) > frame_area * global_ratio:
+            return False, 0.0, frame_area
+
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, self._kernel_open)
+        dilate_iter = int(self.config.get("morph_dilate_iter", 2))
+        if dilate_iter > 0:
+            mask = cv2.dilate(mask, self._kernel_dilate, iterations=dilate_iter)
+
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        largest_usable_area = 0.0
+        motion_now = False
+        for contour in contours:
+            area = cv2.contourArea(contour)
+            if self._is_usable_motion_area(area, frame_area):
+                if area > largest_usable_area:
+                    largest_usable_area = area
+                motion_now = True
+        return motion_now, largest_usable_area, frame_area
 
     def _get_event_store(self) -> MotionEventStore:
         if not hasattr(self, "event_store") or self.event_store is None:
@@ -757,10 +857,37 @@ class MotionDetector:
         )
         if event_id and classification_on:
             self._classify_event_frame(event_id, frame)
-        elif event_id:
-            # No classifier: notify as soon as the event opens.
+        elif event_id and not self._prefer_video_notify():
+            # No classifier and video notification not preferred: notify immediately with photo.
             self._notify_event(event_id, None)
         return filepath
+
+    def _prefer_video_notify(self) -> bool:
+        return (
+            self.recorder is not None
+            and self.recorder.enabled
+            and bool(self.config.get("notify_prefer_video", True))
+        )
+
+    def _make_video_notify_callback(self, event_id: str, class_label: str | None):
+        def _callback(video_path: Path):
+            if self.notifier is None or not event_id:
+                return
+            if event_id in self._notified_events:
+                return
+            try:
+                sent = self.notifier.notify_event_video(
+                    event_id=event_id,
+                    class_label=class_label,
+                    video_path=str(video_path),
+                )
+            except Exception:
+                logger.exception("Invio video Telegram fallito")
+                return
+            if sent:
+                self._notified_events.add(event_id)
+
+        return _callback
 
     def _notify_event(self, event_id: str, classification: dict | None) -> None:
         if self.notifier is None or not event_id:
@@ -781,6 +908,20 @@ class MotionDetector:
             return
         if sent:
             self._notified_events.add(event_id)
+
+    def _get_last_class_label(self, event_id: str | None) -> str | None:
+        if not event_id:
+            return None
+        try:
+            import json
+
+            meta_path = Path(self.config["save_dir"]) / event_id / "meta.json"
+            if not meta_path.exists():
+                return None
+            data = json.loads(meta_path.read_text(encoding="utf-8"))
+            return (data.get("classification") or {}).get("class_label")
+        except Exception:
+            return None
 
     def _classify_event_frame(self, event_id: str, frame) -> None:
         if event_id in self._classified_events:
@@ -841,52 +982,16 @@ class MotionDetector:
                 time.sleep(1)
                 continue
 
+            if self._needs_subtractor_rebuild:
+                self._build_subtractor()
+
             frame = self.camera_stream.get_raw_frame()
             if frame is None:
                 time.sleep(self.config["min_interval"])
                 continue
 
             try:
-                processed = self._preprocess(frame)
-
-                if self.background_frame is None:
-                    self.background_frame = processed.astype("float")
-                    self.processed_frames = 1
-                    time.sleep(self.config["min_interval"])
-                    continue
-
-                cv2.accumulateWeighted(
-                    processed,
-                    self.background_frame,
-                    self.config["background_alpha"],
-                )
-                background_uint8 = cv2.convertScaleAbs(self.background_frame)
-                delta = cv2.absdiff(background_uint8, processed)
-                thresh = cv2.threshold(
-                    delta,
-                    self.config["threshold"],
-                    255,
-                    cv2.THRESH_BINARY,
-                )[1]
-                thresh = cv2.dilate(thresh, None, iterations=2)
-                contours, _ = cv2.findContours(
-                    thresh,
-                    cv2.RETR_EXTERNAL,
-                    cv2.CHAIN_APPROX_SIMPLE,
-                )
-
-                largest_area = 0.0
-                largest_usable_area = 0.0
-                motion_now = False
-                frame_area = float(processed.shape[0] * processed.shape[1])
-                for contour in contours:
-                    area = cv2.contourArea(contour)
-                    if area > largest_area:
-                        largest_area = area
-                    if self._is_usable_motion_area(area, frame_area):
-                        if area > largest_usable_area:
-                            largest_usable_area = area
-                        motion_now = True
+                motion_now, largest_usable_area, frame_area = self._detect_motion(frame)
 
                 now = time.time()
                 with self.lock:
@@ -933,9 +1038,17 @@ class MotionDetector:
                         )
                         if enough_quiet and out_of_cooldown:
                             self.motion_detected = False
+                            closed_event_id = self.last_event_id
+                            closed_class_label = self._get_last_class_label(closed_event_id)
                             self._get_event_store().close_current_event()
                             if self.recorder is not None:
-                                self.recorder.stop_event()
+                                self.recorder.stop_event(
+                                    on_complete=self._make_video_notify_callback(
+                                        closed_event_id, closed_class_label
+                                    )
+                                    if self._prefer_video_notify()
+                                    else None
+                                )
             except Exception:
                 logger.exception("Errore motion detection")
                 with self.lock:
@@ -977,6 +1090,7 @@ class MotionDetector:
                     self.config["min_area"] = int(value)
                 elif key == "MOTION_THRESHOLD":
                     self.config["threshold"] = int(value)
+                    self.config["mog2_var_threshold"] = int(value)
                 elif key == "MOTION_BLUR_SIZE":
                     self.config["blur_size"] = int(value)
                 elif key == "MOTION_COOLDOWN":
@@ -994,7 +1108,22 @@ class MotionDetector:
                 elif key == "MOTION_CLEAR_FRAMES":
                     self.config["clear_frames"] = int(value)
                 elif key == "MOTION_BACKGROUND_ALPHA":
+                    # Deprecated: legacy running-average alpha, no longer used by MOG2.
                     self.config["background_alpha"] = float(value)
+                elif key == "MOTION_MOG2_HISTORY":
+                    self.config["mog2_history"] = int(value)
+                elif key == "MOTION_SCALE_WIDTH":
+                    self.config["scale_width"] = int(value)
+                elif key == "MOTION_MORPH_KERNEL":
+                    self.config["morph_kernel"] = int(value)
+                elif key == "MOTION_MORPH_DILATE_ITER":
+                    self.config["morph_dilate_iter"] = int(value)
+                elif key == "MOTION_GLOBAL_CHANGE_RATIO":
+                    self.config["global_change_ratio"] = float(value)
+                elif key == "MOTION_LEARNING_RATE":
+                    self.config["learning_rate"] = float(value)
+                elif key == "MOTION_LEARNING_RATE_ACTIVE":
+                    self.config["learning_rate_active"] = float(value)
                 elif key == "MOTION_SAVE_FRAMES":
                     self.config["save_frames"] = bool(value)
                 elif key == "MOTION_SAVE_DIR":
@@ -1022,6 +1151,16 @@ class MotionDetector:
                     self.config["record_preroll_sec"] = float(value)
                 elif key == "RECORD_MAX_DURATION_SEC":
                     self.config["record_max_duration_sec"] = float(value)
+                elif key == "RECORD_MAX_WIDTH":
+                    self.config["record_max_width"] = int(value)
+                elif key == "CONTINUOUS_RECORD_ENABLED":
+                    self.config["continuous_record_enabled"] = bool(value)
+                elif key == "CONTINUOUS_RECORD_SEGMENT_MIN":
+                    self.config["continuous_record_segment_min"] = float(value)
+                elif key == "CONTINUOUS_RECORD_RETAIN_HOURS":
+                    self.config["continuous_record_retain_hours"] = float(value)
+                elif key == "NOTIFY_PREFER_VIDEO":
+                    self.config["notify_prefer_video"] = bool(value)
                 elif key == "CLASSIFICATION_ENABLED":
                     self.config["classification_enabled"] = bool(value)
                 elif key == "CLASSIFICATION_BACKEND":
@@ -1056,14 +1195,17 @@ class MotionDetector:
                 in {
                     "MOTION_THRESHOLD",
                     "MOTION_BLUR_SIZE",
-                    "MOTION_BACKGROUND_ALPHA",
                     "MOTION_MIN_AREA",
                     "MOTION_FRAME_INTERVAL",
+                    "MOTION_MOG2_HISTORY",
+                    "MOTION_SCALE_WIDTH",
+                    "MOTION_MORPH_KERNEL",
                 }
                 for key in updates
             )
             if reset_background:
-                self.background_frame = None
+                # Defer rebuild to the _run thread: MOG2 is stateful and applied there.
+                self._needs_subtractor_rebuild = True
                 self.processed_frames = 0
                 self.trigger_streak = 0
                 self.clear_streak = 0
@@ -1131,6 +1273,7 @@ class CameraRuntime:
     camera: CameraStream
     motion: MotionDetector
     recorder: EventRecorder
+    continuous: ContinuousRecorder | None = None
     ptz: PTZController | None = None
 
     def stop(self) -> None:
@@ -1138,14 +1281,24 @@ class CameraRuntime:
         self.camera.stop()
         if self.recorder is not None:
             self.recorder.stop_event()
+        if self.continuous is not None:
+            self.continuous.stop()
 
 
 def build_camera_runtime(profile: dict, notifier=None) -> CameraRuntime:
     camera = CameraStream(rtsp_url_from_profile(profile), get_stream_config())
     motion_config = motion_config_for_profile(profile)
     recorder = EventRecorder(camera, motion_config)
+    continuous = ContinuousRecorder(camera, motion_config, camera_id=profile["id"])
     motion = MotionDetector(camera, motion_config, notifier=notifier, recorder=recorder)
-    return CameraRuntime(profile["id"], camera, motion, recorder, None)
+    continuous.start()
+    return CameraRuntime(
+        profile_id=profile["id"],
+        camera=camera,
+        motion=motion,
+        recorder=recorder,
+        continuous=continuous,
+    )
 
 
 @dataclass
@@ -1156,6 +1309,7 @@ class AppServices:
     features: FeatureServices
     runtime_config: RuntimeConfigManager
     monitors: dict = field(default_factory=dict)
+    continuous: ContinuousRecorder | None = None
 
     def camera_and_motion(self, profile_id: str):
         """Resolve the (camera, motion) pair for a profile: active main pair or a monitor."""
@@ -1202,8 +1356,10 @@ def build_services() -> AppServices:
     ptz.probe_async()
     notifier = TelegramNotifier()
     recorder = EventRecorder(camera, motion_config)
+    continuous = ContinuousRecorder(camera, motion_config, camera_id=active_profile_id or "default")
     motion = MotionDetector(camera, motion_config, notifier=notifier, recorder=recorder)
     RetentionJanitor(motion)
+    continuous.start()
     features = FeatureServices(
         presets=PresetService(),
         notifications=NotificationService(),
@@ -1235,6 +1391,7 @@ def build_services() -> AppServices:
         features=features,
         runtime_config=runtime_config,
         monitors=monitors,
+        continuous=continuous,
     )
 
 

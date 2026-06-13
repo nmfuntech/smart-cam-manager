@@ -1,4 +1,6 @@
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 from flask import Blueprint, Response, abort, current_app, jsonify, request, send_file
@@ -13,6 +15,9 @@ PUBLIC_RUNTIME_UPDATE_KEYS = {
     "MOTION_ENABLED",
     "MOTION_THRESHOLD",
     "MOTION_MIN_AREA",
+    "MOTION_MOG2_HISTORY",
+    "MOTION_GLOBAL_CHANGE_RATIO",
+    "MOTION_MORPH_KERNEL",
     "CLASSIFICATION_ENABLED",
     "CLASSIFICATION_BACKEND",
     "CLASSIFICATION_MIN_CONFIDENCE",
@@ -20,7 +25,12 @@ PUBLIC_RUNTIME_UPDATE_KEYS = {
     "MOTION_RETENTION_DAYS",
     "MOTION_RETENTION_MAX_MB",
     "RECORD_ENABLED",
+    "RECORD_MAX_WIDTH",
     "NOTIFY_TELEGRAM_ENABLED",
+    "NOTIFY_PREFER_VIDEO",
+    "CONTINUOUS_RECORD_ENABLED",
+    "CONTINUOUS_RECORD_SEGMENT_MIN",
+    "CONTINUOUS_RECORD_RETAIN_HOURS",
 }
 
 
@@ -134,6 +144,37 @@ def delete_motion_captures():
     return jsonify({"ok": True, "removed": removed})
 
 
+@motion_bp.post("/api/open_captures_folder")
+@require_auth(api=True)
+@require_csrf(api=True)
+@rate_limit("open-folder", limit=20, window_seconds=60, api=True)
+def open_captures_folder():
+    """Open the local clips folder in the OS file manager.
+
+    Only works when the server runs on the same machine as the browser (the local
+    surveillance use case). Opens the configured save_dir; no user input is used.
+    """
+    folder = _motion_root()
+    folder.mkdir(parents=True, exist_ok=True)
+    try:
+        if sys.platform == "darwin":
+            cmd = ["open", str(folder)]
+        elif sys.platform.startswith("win"):
+            cmd = ["explorer", str(folder)]
+        else:
+            cmd = ["xdg-open", str(folder)]
+        subprocess.Popen(cmd)
+    except FileNotFoundError:
+        return (
+            jsonify({"ok": False, "error": "Gestore file non disponibile su questo sistema"}),
+            500,
+        )
+    except Exception:
+        current_app.logger.exception("Apertura cartella clip fallita")
+        return jsonify({"ok": False, "error": "Impossibile aprire la cartella"}), 500
+    return jsonify({"ok": True, "path": str(folder)})
+
+
 @motion_bp.route("/motion_event/<event_id>")
 @require_auth(api=True)
 def motion_event(event_id: str):
@@ -176,6 +217,42 @@ def motion_event_frame(event_id: str, filename: str):
     event_dir = _motion_root() / event_id
     file_path = _resolve_motion_file(event_dir / filename)
     return send_file(file_path, mimetype="image/jpeg")
+
+
+@motion_bp.get("/api/disk_estimate")
+@require_auth(api=True)
+def disk_estimate():
+    """Stima spazio disco per la registrazione continua.
+
+    Query param: retain_hours (float, default 3).
+    """
+    try:
+        retain_hours = float(request.args.get("retain_hours", 3))
+        retain_hours = max(0.1, retain_hours)
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "retain_hours non valido"}), 400
+
+    services = get_services()
+    fps = float(services.motion.config.get("record_fps", 10) or 10)
+    size = services.camera.frame_size  # (width, height) or None
+    width, height = size if size else (1920, 1080)
+
+    # Empirical estimate: mp4v at ~0.1 bits/pixel/frame
+    bits_per_pixel = 0.1
+    bitrate_bps = width * height * fps * bits_per_pixel
+    total_bits = bitrate_bps * retain_hours * 3600
+    estimated_mb = total_bits / (8 * 1024 * 1024)
+
+    return jsonify(
+        {
+            "ok": True,
+            "estimated_mb": round(estimated_mb, 1),
+            "fps": fps,
+            "width": width,
+            "height": height,
+            "retain_hours": retain_hours,
+        }
+    )
 
 
 @motion_bp.route("/motion_capture/<filename>")

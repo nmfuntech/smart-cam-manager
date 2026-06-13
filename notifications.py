@@ -30,7 +30,12 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _build_multipart(fields: dict[str, str], file_field: str | None, file_path: str | None):
+def _build_multipart(
+    fields: dict[str, str],
+    file_field: str | None,
+    file_path: str | None,
+    file_content_type: str = "image/jpeg",
+):
     """Encode a multipart/form-data body. Returns (content_type, body_bytes)."""
     boundary = f"----blackframe{uuid.uuid4().hex}"
     crlf = b"\r\n"
@@ -47,7 +52,7 @@ def _build_multipart(fields: dict[str, str], file_field: str | None, file_path: 
         body += (
             f'Content-Disposition: form-data; name="{file_field}"; filename="{filename}"'
         ).encode() + crlf
-        body += b"Content-Type: image/jpeg" + crlf + crlf
+        body += f"Content-Type: {file_content_type}".encode() + crlf + crlf
         body += file_bytes + crlf
     body += b"--" + boundary.encode() + b"--" + crlf
     content_type = f"multipart/form-data; boundary={boundary}"
@@ -147,6 +152,70 @@ class TelegramNotifier:
             logger.warning("Invio Telegram fallito: %s", exc)
         except Exception:
             logger.exception("Errore inatteso invio Telegram")
+
+    def notify_event_video(
+        self,
+        event_id: str,
+        class_label: str | None = None,
+        video_path: str | None = None,
+    ) -> bool:
+        """Queue a Telegram sendVideo notification. Returns True if accepted for sending."""
+        if not self.enabled:
+            return False
+        token = self._bot_token()
+        chat_id = self._chat_id()
+        if not token or not chat_id:
+            logger.warning("Telegram non configurato: token o chat_id mancanti")
+            return False
+
+        allowed = self._allowed_classes()
+        if allowed and (class_label is None or class_label not in allowed):
+            return False
+
+        with self._lock:
+            now = time.monotonic()
+            if self._last_sent_at is not None and now - self._last_sent_at < self._min_interval():
+                return False
+            self._last_sent_at = now
+
+        threading.Thread(
+            target=self._send_video,
+            args=(token, chat_id, event_id, class_label, video_path),
+            daemon=True,
+        ).start()
+        return True
+
+    def _send_video(
+        self,
+        token: str,
+        chat_id: str,
+        event_id: str,
+        class_label: str | None,
+        video_path: str | None,
+    ) -> None:
+        caption = self._caption(event_id, class_label)
+        try:
+            if video_path and Path(video_path).is_file():
+                url = f"{TELEGRAM_API_BASE}/bot{token}/sendVideo"
+                content_type, body = _build_multipart(
+                    {"chat_id": chat_id, "caption": caption, "supports_streaming": "true"},
+                    "video",
+                    video_path,
+                    file_content_type="video/mp4",
+                )
+            else:
+                url = f"{TELEGRAM_API_BASE}/bot{token}/sendMessage"
+                content_type, body = _build_multipart(
+                    {"chat_id": chat_id, "text": caption}, None, None
+                )
+            req = urllib.request.Request(url, data=body, method="POST")
+            req.add_header("Content-Type", content_type)
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                resp.read()
+        except (urllib.error.URLError, OSError) as exc:
+            logger.warning("Invio video Telegram fallito: %s", exc)
+        except Exception:
+            logger.exception("Errore inatteso invio video Telegram")
 
     def status(self) -> dict:
         return {

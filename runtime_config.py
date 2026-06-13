@@ -45,6 +45,22 @@ class RuntimeConfigManager:
                 minimum=1,
                 must_be_odd=True,
             ),
+            "MOTION_MOG2_HISTORY": ConfigField("MOTION_MOG2_HISTORY", "int", minimum=1),
+            "MOTION_SCALE_WIDTH": ConfigField("MOTION_SCALE_WIDTH", "int", minimum=0),
+            "MOTION_MORPH_KERNEL": ConfigField(
+                "MOTION_MORPH_KERNEL",
+                "int",
+                minimum=1,
+                must_be_odd=True,
+            ),
+            "MOTION_MORPH_DILATE_ITER": ConfigField("MOTION_MORPH_DILATE_ITER", "int", minimum=0),
+            "MOTION_GLOBAL_CHANGE_RATIO": ConfigField(
+                "MOTION_GLOBAL_CHANGE_RATIO", "float", minimum=0
+            ),
+            "MOTION_LEARNING_RATE": ConfigField("MOTION_LEARNING_RATE", "float"),
+            "MOTION_LEARNING_RATE_ACTIVE": ConfigField(
+                "MOTION_LEARNING_RATE_ACTIVE", "float", minimum=0
+            ),
             "CLASSIFICATION_ENABLED": ConfigField("CLASSIFICATION_ENABLED", "bool"),
             "CLASSIFICATION_BACKEND": ConfigField("CLASSIFICATION_BACKEND", "str"),
             "CLASSIFICATION_MIN_CONFIDENCE": ConfigField(
@@ -98,6 +114,7 @@ class RuntimeConfigManager:
             "RECORD_FPS": ConfigField("RECORD_FPS", "float", minimum=1),
             "RECORD_PREROLL_SEC": ConfigField("RECORD_PREROLL_SEC", "float", minimum=0),
             "RECORD_MAX_DURATION_SEC": ConfigField("RECORD_MAX_DURATION_SEC", "float", minimum=1),
+            "RECORD_MAX_WIDTH": ConfigField("RECORD_MAX_WIDTH", "int", minimum=0),
             "NOTIFY_TELEGRAM_ENABLED": ConfigField("NOTIFY_TELEGRAM_ENABLED", "bool"),
             "NOTIFY_TELEGRAM_BOT_TOKEN": ConfigField(
                 "NOTIFY_TELEGRAM_BOT_TOKEN", "str", sensitive=True
@@ -106,6 +123,17 @@ class RuntimeConfigManager:
                 "NOTIFY_TELEGRAM_CHAT_ID", "str", sensitive=True
             ),
             "NOTIFY_MIN_INTERVAL_SEC": ConfigField("NOTIFY_MIN_INTERVAL_SEC", "float", minimum=0),
+            "NOTIFY_PREFER_VIDEO": ConfigField("NOTIFY_PREFER_VIDEO", "bool"),
+            "CONTINUOUS_RECORD_ENABLED": ConfigField("CONTINUOUS_RECORD_ENABLED", "bool"),
+            "CONTINUOUS_RECORD_SEGMENT_MIN": ConfigField(
+                "CONTINUOUS_RECORD_SEGMENT_MIN", "float", minimum=1
+            ),
+            "CONTINUOUS_RECORD_RETAIN_HOURS": ConfigField(
+                "CONTINUOUS_RECORD_RETAIN_HOURS", "float", minimum=0.1
+            ),
+            "CONTINUOUS_RECORD_DIR": ConfigField(
+                "CONTINUOUS_RECORD_DIR", "str", internal_only=True
+            ),
         }
 
     def get_public_config(self) -> dict:
