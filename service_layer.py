@@ -197,6 +197,8 @@ class WifiService:
             detectors = [self._detect_macos_wifi]
         elif system == "linux":
             detectors = [self._detect_linux_wifi]
+        elif system == "windows":
+            detectors = [self._detect_windows_wifi]
 
         for detector in detectors:
             info = detector()
@@ -223,50 +225,91 @@ class WifiService:
         return completed.stdout.strip()
 
     def _detect_macos_wifi(self) -> dict | None:
+        interface = self._macos_wifi_interface()
+        if not interface:
+            return None
+
+        # macOS recenti (Sequoia+) hanno svuotato l'SSID da networksetup per privacy:
+        # prova in cascata networksetup, poi ipconfig getsummary, poi system_profiler.
+        for resolver, source in (
+            (self._macos_ssid_networksetup, "networksetup"),
+            (self._macos_ssid_ipconfig, "ipconfig"),
+            (self._macos_ssid_system_profiler, "system_profiler"),
+        ):
+            ssid = resolver(interface)
+            if ssid:
+                return {
+                    "connected": True,
+                    "ssid": ssid,
+                    "interface": interface,
+                    "source": source,
+                    "error": "",
+                }
+
+        return {
+            "connected": False,
+            "ssid": None,
+            "interface": interface,
+            "source": "macos",
+            "error": "Nessuna rete Wi-Fi collegata o SSID non rilevabile",
+        }
+
+    def _macos_wifi_interface(self) -> str | None:
         hardware = self._run_command(["networksetup", "-listallhardwareports"])
         if not hardware:
             return None
-
-        interface = None
-        blocks = hardware.split("\n\n")
-        for block in blocks:
+        for block in hardware.split("\n\n"):
             if "Hardware Port: Wi-Fi" not in block:
                 continue
             match = re.search(r"Device: (\S+)", block)
             if match:
-                interface = match.group(1)
-                break
+                return match.group(1)
+        return None
 
-        if not interface:
-            return None
-
+    def _macos_ssid_networksetup(self, interface: str) -> str | None:
         network = self._run_command(["networksetup", "-getairportnetwork", interface])
-        if not network:
-            return {
-                "connected": False,
-                "ssid": None,
-                "interface": interface,
-                "source": "networksetup",
-                "error": "Stato Wi-Fi non disponibile",
-            }
-
-        if "You are not associated" in network:
-            return {
-                "connected": False,
-                "ssid": None,
-                "interface": interface,
-                "source": "networksetup",
-                "error": "Nessuna rete Wi-Fi collegata",
-            }
-
+        if not network or "You are not associated" in network:
+            return None
         match = re.search(r"Current Wi-Fi Network: (.+)$", network)
+        return match.group(1).strip() if match else None
+
+    def _macos_ssid_ipconfig(self, interface: str) -> str | None:
+        summary = self._run_command(["ipconfig", "getsummary", interface])
+        if not summary:
+            return None
+        # Una riga "SSID : <nome>"; ancorata a inizio riga per non catturare BSSID.
+        match = re.search(r"^\s*SSID\s*:\s*(.+)$", summary, re.MULTILINE)
+        return match.group(1).strip() if match else None
+
+    def _macos_ssid_system_profiler(self, interface: str) -> str | None:
+        report = self._run_command(["system_profiler", "SPAirPortDataType"])
+        if not report:
+            return None
+        # Il network corrente è la riga "<SSID>:" subito dopo "Current Network Information:".
+        lines = report.splitlines()
+        for index, line in enumerate(lines):
+            if "Current Network Information:" not in line:
+                continue
+            for candidate in lines[index + 1 :]:
+                name = candidate.strip()
+                if name:
+                    return name.rstrip(":") or None
+            return None
+        return None
+
+    def _detect_windows_wifi(self) -> dict | None:
+        output = self._run_command(["netsh", "wlan", "show", "interfaces"])
+        if not output:
+            return None
+        # Ancorata a inizio riga per escludere "BSSID".
+        match = re.search(r"^\s*SSID\s*:\s*(.+)$", output, re.MULTILINE)
         ssid = match.group(1).strip() if match else None
         return {
             "connected": bool(ssid),
             "ssid": ssid,
-            "interface": interface,
-            "source": "networksetup",
-            "error": "" if ssid else "SSID non rilevato",
+            "interface": None,
+            "source": "netsh",
+            "error": "" if ssid else "Nessuna rete Wi-Fi collegata",
         }
 
     def _detect_linux_wifi(self) -> dict | None:

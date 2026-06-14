@@ -472,6 +472,79 @@ class MultiCameraRegistryTests(unittest.TestCase):
         self.assertEqual(services.camera_and_motion("B"), (monitor_camera, monitor_motion))
         self.assertEqual(services.camera_and_motion("missing"), (None, None))
 
+    def _build_two_profile_app(self):
+        tmpdir = tempfile.mkdtemp(prefix="camera-view-monitor-")
+        self.addCleanup(lambda: shutil.rmtree(tmpdir, ignore_errors=True))
+        features = self.app_module.FeatureServices(
+            presets=self.app_module.PresetService(str(Path(tmpdir) / "presets.json")),
+            notifications=self.app_module.NotificationService(),
+            recording=self.app_module.RecordingService(str(Path(tmpdir) / "rec")),
+            camera_profiles=self.app_module.CameraProfileService(
+                str(Path(tmpdir) / "profiles.json")
+            ),
+            wifi=self.app_module.WifiService(),
+        )
+        base = {
+            "host": "192.168.1.40",
+            "rtsp_port": 554,
+            "stream_path": "stream1",
+            "username": "user",
+            "password": "pass",
+            "onvif_port": 2020,
+            "move_speed": 0.6,
+            "move_timeout": 0.35,
+        }
+        active = features.camera_profiles.save_profile({**base, "name": "Attiva", "activate": True})
+        secondary = features.camera_profiles.save_profile({**base, "name": "Secondaria"})
+        services = self.app_module.AppServices(
+            camera=object(),
+            ptz=object(),
+            motion=object(),
+            features=features,
+            runtime_config=object(),
+            monitors={secondary["id"]: object()},
+        )
+        app = self.app_module.create_app(services)
+        return app, active, secondary
+
+    def test_camera_view_renders_monitored_secondary_without_redirect(self):
+        app, _active, secondary = self._build_two_profile_app()
+        client = app.test_client()
+        authenticate_client(client)
+
+        response = client.get(f"/camera/{secondary['id']}")
+
+        self.assertEqual(response.status_code, 200)
+        # Live-only view: feed base points at the per-camera endpoints.
+        self.assertIn(f"/cam/{secondary['id']}".encode(), response.data)
+
+    def test_camera_view_redirects_unmonitored_secondary_to_active(self):
+        app, active, _secondary = self._build_two_profile_app()
+        # Drop the monitor so the secondary is neither active nor monitored.
+        app.config["services"].monitors = {}
+        # Create a third, unmonitored profile.
+        features = app.config["services"].features
+        third = features.camera_profiles.save_profile(
+            {
+                "name": "Terza",
+                "host": "192.168.1.41",
+                "rtsp_port": 554,
+                "stream_path": "stream1",
+                "username": "user",
+                "password": "pass",
+                "onvif_port": 2020,
+                "move_speed": 0.6,
+                "move_timeout": 0.35,
+            }
+        )
+        client = app.test_client()
+        authenticate_client(client)
+
+        response = client.get(f"/camera/{third['id']}")
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIn(f"/camera/{active['id']}", response.headers["Location"])
+
 
 class ConfigTests(unittest.TestCase):
     def setUp(self):

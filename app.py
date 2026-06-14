@@ -870,11 +870,21 @@ class MotionDetector:
             and bool(self.config.get("notify_prefer_video", True))
         )
 
+    def _already_notified(self, event_id: str) -> bool:
+        """Dedup notifications: in-memory fast path + on-disk marker surviving restarts."""
+        if event_id in self._notified_events:
+            return True
+        return self._get_event_store().event_was_notified(event_id)
+
+    def _mark_notified(self, event_id: str) -> None:
+        self._notified_events.add(event_id)
+        self._get_event_store().mark_event_notified(event_id)
+
     def _make_video_notify_callback(self, event_id: str, class_label: str | None):
         def _callback(video_path: Path):
             if self.notifier is None or not event_id:
                 return
-            if event_id in self._notified_events:
+            if self._already_notified(event_id):
                 return
             try:
                 sent = self.notifier.notify_event_video(
@@ -886,14 +896,14 @@ class MotionDetector:
                 logger.exception("Invio video Telegram fallito")
                 return
             if sent:
-                self._notified_events.add(event_id)
+                self._mark_notified(event_id)
 
         return _callback
 
     def _notify_event(self, event_id: str, classification: dict | None) -> None:
         if self.notifier is None or not event_id:
             return
-        if event_id in self._notified_events:
+        if self._already_notified(event_id):
             return
         class_label = (classification or {}).get("class_label")
         cover = Path(self.config["save_dir"]) / event_id / "cover.jpg"
@@ -908,7 +918,7 @@ class MotionDetector:
             logger.exception("Invio notifica evento fallito")
             return
         if sent:
-            self._notified_events.add(event_id)
+            self._mark_notified(event_id)
 
     def _get_last_class_label(self, event_id: str | None) -> str | None:
         if not event_id:

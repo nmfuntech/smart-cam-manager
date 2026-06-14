@@ -3,6 +3,8 @@ import { setPillState } from "./ui.js";
 
 export function createLiveController(elements) {
   const { overlay, cameraFrame, streamPill } = elements;
+  // "" for the active camera, "/cam/<id>" when viewing a monitored secondary camera.
+  const feedBase = document.body.dataset.feedBase || "";
   const OVERLAY_DEBOUNCE_MS = 500;
   let pendingOverlayTimer = null;
   let latestStatus = null;
@@ -76,7 +78,7 @@ export function createLiveController(elements) {
 
   async function refreshStatus() {
     try {
-      const { data } = await fetchJson("/stream_status");
+      const { data } = await fetchJson(`${feedBase}/stream_status`);
       latestStatus = data;
       const presentation = getPresentation(data);
 
@@ -103,7 +105,7 @@ export function createLiveController(elements) {
     if (feedInitialized || !cameraFrame) {
       return;
     }
-    cameraFrame.src = "/video_feed";
+    cameraFrame.src = `${feedBase}/video_feed`;
     feedInitialized = true;
   }
 

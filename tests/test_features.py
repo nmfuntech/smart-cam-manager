@@ -465,5 +465,128 @@ class RecordingConfigTests(unittest.TestCase):
         self.assertTrue(recorder.enabled)
 
 
+def _write_mp4v_clip(path: Path, frames: int = 6, size=(64, 48), fps: float = 10.0) -> bool:
+    """Write a tiny mp4v-coded clip with OpenCV; returns False if the writer fails."""
+    import cv2
+    import numpy as np
+
+    writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), fps, size)
+    if not writer.isOpened():
+        return False
+    for index in range(frames):
+        frame = np.full((size[1], size[0], 3), index * 10 % 255, dtype=np.uint8)
+        writer.write(frame)
+    writer.release()
+    return path.is_file() and path.stat().st_size > 0
+
+
+@unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "ffmpeg/ffprobe richiesti")
+class FinalizeRecordingTests(unittest.TestCase):
+    def setUp(self):
+        self.tmpdir = Path(tempfile.mkdtemp(prefix="finalize-"))
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_transcode_true_rewrites_mp4v_to_h264(self):
+        from recording import _video_codec, finalize_recording
+
+        path = self.tmpdir / "clip.mp4"
+        if not _write_mp4v_clip(path):
+            self.skipTest("VideoWriter mp4v non disponibile in questo build OpenCV")
+        self.assertEqual(_video_codec(path), "mpeg4")
+        finalize_recording(path, transcode=True)
+        self.assertEqual(_video_codec(path), "h264")
+
+    def test_transcode_false_keeps_codec(self):
+        from recording import _video_codec, finalize_recording
+
+        path = self.tmpdir / "segment.mp4"
+        if not _write_mp4v_clip(path):
+            self.skipTest("VideoWriter mp4v non disponibile in questo build OpenCV")
+        finalize_recording(path, transcode=False)
+        # Faststart only: still mpeg4, not transcoded.
+        self.assertEqual(_video_codec(path), "mpeg4")
+
+
+class NotificationDedupTests(unittest.TestCase):
+    def setUp(self):
+        self.tmpdir = Path(tempfile.mkdtemp(prefix="notify-dedup-"))
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_notified_marker_persists_on_disk(self):
+        store = make_store(self.tmpdir)
+        event_id = "motion_event_20260417_120000"
+        (self.tmpdir / event_id).mkdir(parents=True)
+
+        self.assertFalse(store.event_was_notified(event_id))
+        store.mark_event_notified(event_id)
+        self.assertTrue(store.event_was_notified(event_id))
+        # A fresh store (simulating a restart) still sees the marker.
+        self.assertTrue(make_store(self.tmpdir).event_was_notified(event_id))
+
+
+class BitrateEstimateTests(unittest.TestCase):
+    def setUp(self):
+        self.tmpdir = Path(tempfile.mkdtemp(prefix="bitrate-"))
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_fallback_uses_constant_when_no_samples(self):
+        from continuous_recording import MP4V_BITS_PER_PIXEL, estimate_bitrate_bps
+
+        bitrate, calibrated = estimate_bitrate_bps(640, 360, 10, sample_dir=self.tmpdir)
+        self.assertFalse(calibrated)
+        self.assertAlmostEqual(bitrate, 640 * 360 * 10 * MP4V_BITS_PER_PIXEL)
+
+    @unittest.skipUnless(
+        shutil.which("ffmpeg") and shutil.which("ffprobe"), "ffmpeg/ffprobe richiesti"
+    )
+    def test_calibrates_from_real_segments(self):
+        from continuous_recording import estimate_bitrate_bps
+
+        segment = self.tmpdir / "segment_20260417_120000.mp4"
+        if not _write_mp4v_clip(segment, frames=20):
+            self.skipTest("VideoWriter mp4v non disponibile in questo build OpenCV")
+        bitrate, calibrated = estimate_bitrate_bps(640, 360, 10, sample_dir=self.tmpdir)
+        self.assertTrue(calibrated)
+        self.assertGreater(bitrate, 0)
+
+
+class WifiServiceTests(unittest.TestCase):
+    def setUp(self):
+        from service_layer import WifiService
+
+        self.wifi = WifiService()
+
+    def test_macos_ssid_via_ipconfig_fallback(self):
+        summary = "  LinkStatusActive : TRUE\n  SSID : CasaWifi\n  BSSID : aa:bb\n"
+        with mock.patch.object(self.wifi, "_run_command", return_value=summary):
+            self.assertEqual(self.wifi._macos_ssid_ipconfig("en0"), "CasaWifi")
+
+    def test_macos_ipconfig_ignores_bssid_only(self):
+        with mock.patch.object(self.wifi, "_run_command", return_value="  BSSID : aa:bb\n"):
+            self.assertIsNone(self.wifi._macos_ssid_ipconfig("en0"))
+
+    def test_windows_netsh_parses_ssid(self):
+        output = (
+            "    Name      : Wi-Fi\n"
+            "    SSID      : Ufficio\n"
+            "    BSSID     : aa:bb\n"
+            "    State     : connected\n"
+        )
+        with mock.patch.object(self.wifi, "_run_command", return_value=output):
+            info = self.wifi._detect_windows_wifi()
+        self.assertEqual(info["ssid"], "Ufficio")
+        self.assertTrue(info["connected"])
+
+    def test_windows_no_connection_when_empty(self):
+        with mock.patch.object(self.wifi, "_run_command", return_value=""):
+            self.assertIsNone(self.wifi._detect_windows_wifi())
+
+
 if __name__ == "__main__":
     unittest.main()

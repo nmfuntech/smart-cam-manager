@@ -53,7 +53,12 @@ def index():
     active_profile_id = services.features.camera_profiles.get_active_profile_id()
     if active_profile_id:
         return redirect(url_for("video.camera_view", profile_id=active_profile_id))
-    return render_template("viewer.html", active_profile_id=None)
+    return render_template(
+        "viewer.html",
+        active_profile_id=None,
+        view_profile_id=None,
+        is_active_view=True,
+    )
 
 
 @video_bp.route("/camera/<profile_id>")
@@ -65,10 +70,20 @@ def camera_view(profile_id: str):
         return redirect(url_for("video.index"))
 
     active_profile_id = services.features.camera_profiles.get_active_profile_id()
-    if active_profile_id and profile_id != active_profile_id:
-        return redirect(url_for("video.camera_view", profile_id=active_profile_id))
+    is_active_view = profile_id == active_profile_id
+    # The active camera gets the full viewer. A monitored (background) camera gets a
+    # live-only view via its /cam/<id>/* endpoints. Anything else falls back to active.
+    if not is_active_view and profile_id not in services.monitors:
+        if active_profile_id:
+            return redirect(url_for("video.camera_view", profile_id=active_profile_id))
+        return redirect(url_for("video.index"))
 
-    return render_template("viewer.html", active_profile_id=active_profile_id or profile_id)
+    return render_template(
+        "viewer.html",
+        active_profile_id=active_profile_id or profile_id,
+        view_profile_id=profile_id,
+        is_active_view=is_active_view,
+    )
 
 
 @video_bp.route("/model-training")

@@ -13,15 +13,74 @@ from pathlib import Path
 
 import cv2
 
-from recording import finalize_faststart, open_mp4_writer, scaled_size
+from recording import (
+    _video_duration_sec,
+    finalize_recording,
+    open_mp4_writer,
+    scaled_size,
+)
 
 logger = logging.getLogger(__name__)
 
 SEGMENT_GLOB = "segment_*.mp4"
 
+# Fallback bitrate when no real segment can be measured: mpeg4/mp4v at roughly
+# 0.09 bits/pixel/frame. Continuous segments stay mp4v (see finalize_recording,
+# transcode=False), so this constant is tuned for mp4v, not H.264.
+MP4V_BITS_PER_PIXEL = 0.09
+
 
 def _get_config(config: dict, key: str, default):
     return config.get(key, default) or default
+
+
+def _observed_bitrate_bps(sample_dir: Path, sample_limit: int = 3) -> float | None:
+    """Measured bits/sec from the most recent real segments, or None if not measurable.
+
+    Sums encoded bytes and probed durations across up to ``sample_limit`` newest
+    segments so the estimate reflects the actual scene/codec, not a guess.
+    """
+    if not sample_dir.exists():
+        return None
+    segments = sorted(
+        sample_dir.glob(f"**/{SEGMENT_GLOB}"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    total_bytes = 0
+    total_seconds = 0.0
+    for segment in segments[:sample_limit]:
+        duration = _video_duration_sec(segment)
+        if duration is None:
+            continue
+        try:
+            total_bytes += segment.stat().st_size
+        except OSError:
+            continue
+        total_seconds += duration
+    if total_seconds <= 0 or total_bytes <= 0:
+        return None
+    return (total_bytes * 8) / total_seconds
+
+
+def estimate_bitrate_bps(
+    width: int,
+    height: int,
+    fps: float,
+    sample_dir: "Path | str | None" = None,
+) -> tuple[float, bool]:
+    """Estimate encoded video bitrate (bits/sec) and whether it was calibrated.
+
+    Calibrates from real segments under ``sample_dir`` when available; otherwise
+    falls back to a documented mp4v constant. Returns ``(bitrate_bps, calibrated)``.
+    """
+    if sample_dir is not None:
+        observed = _observed_bitrate_bps(Path(sample_dir))
+        if observed is not None:
+            return observed, True
+    fps = max(1.0, float(fps))
+    pixels = max(1, int(width) * int(height))
+    return pixels * fps * MP4V_BITS_PER_PIXEL, False
 
 
 class ContinuousRecorder:
@@ -91,7 +150,14 @@ class ContinuousRecorder:
 
     def _max_retention_bytes(self) -> int:
         hours = _get_config(self.config, "continuous_record_retain_hours", 3.0)
-        return int(hours * 3600 * 1024 * 1024)  # rough upper-bound; actual bitrate varies
+        max_width = int(self.config.get("record_max_width", 0) or 0)
+        # Coarse default frame size for the cold-start fallback (no segments yet);
+        # once real segments exist, estimate_bitrate_bps calibrates from them.
+        width = max_width or 1280
+        height = int(width * 9 / 16)
+        fps = _get_config(self.config, "record_fps", 10.0)
+        bitrate_bps, _ = estimate_bitrate_bps(width, height, fps, sample_dir=self._output_dir())
+        return int(bitrate_bps * hours * 3600 / 8)
 
     def _segment_loop(self, stop: threading.Event) -> None:
         while not stop.is_set():
@@ -145,7 +211,8 @@ class ContinuousRecorder:
                 logger.exception("Errore scrittura segmento continuo")
             finally:
                 writer.release()
-                finalize_faststart(segment_path)
+                # Bulk segments: faststart only (no transcode) to spare the mini PC CPU.
+                finalize_recording(segment_path, transcode=False)
 
             with self.lock:
                 self._current_segment = None

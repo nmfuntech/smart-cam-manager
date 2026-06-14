@@ -113,11 +113,17 @@ const telegram = createTelegramController({
   sidebarEnabledToggle: document.getElementById("cfg-notify-telegram-enabled"),
 });
 
-motion.bind();
-ptz.bind();
-cameras.bind();
-telegram.bind();
-bindMotionOverlayToggle();
+// A monitored secondary camera renders a live-only viewer: no PTZ, settings,
+// events gallery or Telegram dialog, so their controllers are not wired up.
+const isActiveView = document.body.dataset.activeView !== "false";
+
+if (isActiveView) {
+  motion.bind();
+  ptz.bind();
+  cameras.bind();
+  telegram.bind();
+  bindMotionOverlayToggle();
+}
 
 const POLL_MODE = {
   FAST: "fast",
@@ -229,9 +235,11 @@ function applyPollingMode(mode) {
       renderMotionOverlayState(enabled);
     }
   }, mode);
-  scheduleTask("runtimeConfig", () => motion.refreshRuntimeConfig(), mode);
-  scheduleTask("captureList", () => motion.refreshCaptureList(), mode);
-  scheduleTask("ptzStatus", () => ptz.refreshPtzStatus(), mode);
+  if (isActiveView) {
+    scheduleTask("runtimeConfig", () => motion.refreshRuntimeConfig(), mode);
+    scheduleTask("captureList", () => motion.refreshCaptureList(), mode);
+    scheduleTask("ptzStatus", () => ptz.refreshPtzStatus(), mode);
+  }
 }
 
 function refreshPollingMode() {
@@ -260,10 +268,12 @@ async function bootstrap() {
   if (typeof enabled === "boolean") {
     renderMotionOverlayState(enabled);
   }
-  await motion.refreshRuntimeConfig();
-  await motion.refreshCaptureList();
-  await ptz.refreshPtzStatus();
-  await cameras.refresh();
+  if (isActiveView) {
+    await motion.refreshRuntimeConfig();
+    await motion.refreshCaptureList();
+    await ptz.refreshPtzStatus();
+    await cameras.refresh();
+  }
 
   applyPollingMode(getCurrentMode());
   setInterval(() => refreshPollingMode(), MODE_CHECK_MS);

@@ -134,6 +134,18 @@ class MotionEventStore:
         meta = self._load_event_meta(event_dir)
         return bool(meta.get("classification"))
 
+    def event_was_notified(self, event_id: str) -> bool:
+        """Check on disk whether a notification was already sent (dedup survives restart)."""
+        if not event_id:
+            return False
+        event_dir = Path(self.config["save_dir"]) / event_id
+        meta = self._load_event_meta(event_dir)
+        return bool(meta.get("notified"))
+
+    def mark_event_notified(self, event_id: str) -> None:
+        """Persist that a notification was sent for this event."""
+        self.save_event_meta(event_id, {"notified": True})
+
     def purge_old_events(self, max_age_days: float = 0.0, max_total_mb: float = 0.0) -> int:
         """Delete closed events older than max_age_days and/or beyond the max_total_mb quota.
 

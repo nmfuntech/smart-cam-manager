@@ -37,6 +37,12 @@ export function createMotionController(elements) {
     motionCaptureVideo,
   } = elements;
 
+  // "" for the active camera, "/cam/<id>" for a monitored secondary camera.
+  // On a secondary (live-only) view the gallery/config DOM is not rendered, so the
+  // status poll targets the per-camera endpoint and skips gallery side-effects.
+  const feedBase = document.body.dataset.feedBase || "";
+  const isActiveView = document.body.dataset.activeView !== "false";
+
   let selectedCaptureId = null;
   let selectedCapturePinned = false;
   let latestCaptureId = null;
@@ -730,7 +736,7 @@ export function createMotionController(elements) {
 
   async function refreshMotionStatus() {
     try {
-      const { data } = await fetchJson(`/motion_status?ts=${Date.now()}`);
+      const { data } = await fetchJson(`${feedBase}/motion_status?ts=${Date.now()}`);
       monitoringEnabled = Boolean(data.enabled);
 
       motionThreshold.textContent = data.threshold ?? "-";
@@ -738,7 +744,7 @@ export function createMotionController(elements) {
       motionLastTriggerArea.textContent = data.last_trigger_area ?? 0;
       motionLastEvent.textContent = data.last_motion_at || "-";
 
-      if (data.last_capture_path) {
+      if (isActiveView && data.last_capture_path) {
         const refreshKey = `${data.last_event_id || ""}::${data.last_capture_path || ""}`;
         if (refreshKey && refreshKey !== lastMotionListRefreshKey) {
           lastMotionListRefreshKey = refreshKey;

@@ -7,6 +7,7 @@ from pathlib import Path
 from flask import Blueprint, Response, abort, current_app, jsonify, request, send_file
 
 from auth import rate_limit, require_auth, require_csrf
+from continuous_recording import estimate_bitrate_bps
 from notifications import discover_telegram_chats, send_telegram_test
 
 motion_bp = Blueprint("motion", __name__)
@@ -353,13 +354,14 @@ def disk_estimate():
         return jsonify({"ok": False, "error": "retain_hours non valido"}), 400
 
     services = get_services()
-    fps = float(services.motion.config.get("record_fps", 10) or 10)
+    config = services.motion.config
+    fps = float(config.get("record_fps", 10) or 10)
     size = services.camera.frame_size  # (width, height) or None
     width, height = size if size else (1920, 1080)
 
-    # Empirical estimate: mp4v at ~0.1 bits/pixel/frame
-    bits_per_pixel = 0.1
-    bitrate_bps = width * height * fps * bits_per_pixel
+    # Calibrate from real continuous segments when present; else mp4v fallback constant.
+    sample_dir = config.get("continuous_record_dir", "captures/continuous")
+    bitrate_bps, calibrated = estimate_bitrate_bps(width, height, fps, sample_dir=sample_dir)
     total_bits = bitrate_bps * retain_hours * 3600
     estimated_mb = total_bits / (8 * 1024 * 1024)
 
@@ -371,6 +373,7 @@ def disk_estimate():
             "width": width,
             "height": height,
             "retain_hours": retain_hours,
+            "calibrated": calibrated,
         }
     )
 

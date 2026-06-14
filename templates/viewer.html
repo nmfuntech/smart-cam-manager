@@ -16,7 +16,11 @@
       href="{{ url_for('static', filename='styles.css', v=static_asset_version) }}"
     />
   </head>
-  <body>
+  {% set feed_base = '' if is_active_view else '/cam/' + view_profile_id %}
+  <body
+    data-feed-base="{{ feed_base }}"
+    data-active-view="{{ 'true' if is_active_view else 'false' }}"
+  >
 
     <header class="app-header">
       <a class="app-header-brand" href="/">BLACKFRAME</a>
@@ -41,7 +45,9 @@
             <div class="status-stack">
               <span class="status-pill" id="stream-pill">Stream: verifica...</span>
               <span class="status-pill" id="motion-pill">Motion: verifica...</span>
+              {% if is_active_view %}
               <span class="status-pill" id="ptz-pill">PTZ: verifica...</span>
+              {% endif %}
             </div>
             <div class="stats-grid-compact">
               <div class="motion-stat">
@@ -67,6 +73,7 @@
             <span hidden id="ptz-host-label"></span>
           </section>
 
+          {% if is_active_view %}
           <!-- 2. RILEVAMENTO MOVIMENTO -->
           <section class="sidebar-block">
             <p class="sidebar-section-label">Rilevamento</p>
@@ -165,6 +172,7 @@
               </label>
             </div>
           </details>
+          {% endif %}
 
         </aside>
 
@@ -176,7 +184,7 @@
             <div class="viewer-frame">
               <img
                 id="camera-frame"
-                src="{{ url_for('video.video_feed') }}"
+                src="{{ feed_base }}/video_feed"
                 alt="Streaming live BLACKFRAME"
               />
               <div class="viewer-overlay" id="viewer-overlay">
@@ -185,6 +193,7 @@
             </div>
           </div>
 
+          {% if is_active_view %}
           <!-- Sezione eventi di movimento -->
           <section class="motion-shell compact-shell">
             <div class="motion-workspace">
@@ -228,11 +237,13 @@
               </div>
             </div>
           </section>
+          {% endif %}
 
         </div>
       </section>
     </main>
 
+    {% if is_active_view %}
     <dialog class="tg-dialog" id="telegram-dialog">
       <form method="dialog" class="tg-dialog-form">
         <div class="tg-dialog-head">
@@ -283,6 +294,7 @@
         <p class="runtime-feedback" id="tg-feedback">-</p>
       </form>
     </dialog>
+    {% endif %}
 
     <script
       type="module"

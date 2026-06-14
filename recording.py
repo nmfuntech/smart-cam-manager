@@ -26,44 +26,133 @@ RECORDING_FILE_NAME = "event.mp4"
 _VIDEO_FOURCC_PREFERENCE = ("avc1", "mp4v")
 
 
-def finalize_faststart(path: "Path | str") -> None:
-    """Move the MP4 moov atom to the front (faststart) so browsers can stream it.
+def _video_codec(path: "Path | str") -> str | None:
+    """Return the video stream codec name (e.g. "h264", "mpeg4") via ffprobe, or None."""
+    if shutil.which("ffprobe") is None:
+        return None
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=codec_name",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                str(path),
+            ],
+            capture_output=True,
+            timeout=30,
+        )
+    except Exception:
+        logger.exception("ffprobe fallito per %s", path)
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout.decode(errors="ignore").strip() or None
 
-    OpenCV's VideoWriter writes moov at the end, which many browsers refuse to play
-    over HTTP. Uses ffmpeg stream-copy (no re-encode) when available; otherwise no-op.
+
+def _video_duration_sec(path: "Path | str") -> float | None:
+    """Return the media duration in seconds via ffprobe, or None if unavailable."""
+    if shutil.which("ffprobe") is None:
+        return None
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                str(path),
+            ],
+            capture_output=True,
+            timeout=30,
+        )
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+    try:
+        duration = float(result.stdout.decode(errors="ignore").strip())
+    except ValueError:
+        return None
+    return duration if duration > 0 else None
+
+
+def finalize_recording(path: "Path | str", transcode: bool = False) -> None:
+    """Make an MP4 written by OpenCV browser-playable.
+
+    OpenCV's VideoWriter writes the moov atom at the end (browsers refuse to stream
+    it) and, on builds without an H.264 encoder, falls back to mpeg4/mp4v which the
+    HTML5 <video> element cannot decode at all.
+
+    - No ffmpeg available -> no-op (best effort, as before).
+    - Already H.264 -> stream-copy with +faststart (cheap container rewrite).
+    - Not H.264 and ``transcode=True`` -> re-encode to H.264 (reliable playback).
+      Used for short event clips / on-demand clips where the CPU cost is bounded.
+    - Not H.264 and ``transcode=False`` -> faststart only + WARN. Used for bulk
+      continuous segments so the mini PC is not pinned re-encoding every segment.
     """
     path = Path(path)
     if not path.is_file() or shutil.which("ffmpeg") is None:
         return
-    tmp = path.with_suffix(".faststart.mp4")
+
+    codec = _video_codec(path)
+    is_h264 = codec == "h264"
+    tmp = path.with_suffix(".finalize.mp4")
+    if is_h264 or not transcode:
+        ffmpeg_args = ["-c", "copy", "-movflags", "+faststart"]
+        action = "faststart"
+    else:
+        ffmpeg_args = [
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-pix_fmt",
+            "yuv420p",
+            "-movflags",
+            "+faststart",
+        ]
+        action = "transcodifica H.264"
+
     try:
         result = subprocess.run(
-            [
-                "ffmpeg",
-                "-y",
-                "-v",
-                "error",
-                "-i",
-                str(path),
-                "-c",
-                "copy",
-                "-movflags",
-                "+faststart",
-                str(tmp),
-            ],
+            ["ffmpeg", "-y", "-v", "error", "-i", str(path), *ffmpeg_args, str(tmp)],
             capture_output=True,
-            timeout=120,
+            timeout=300,
         )
         if result.returncode == 0 and tmp.is_file() and tmp.stat().st_size > 0:
             tmp.replace(path)
+            if not is_h264 and not transcode:
+                logger.warning(
+                    "Registrazione %s in codec %s non riproducibile nel browser "
+                    "(nessun encoder H.264 in OpenCV).",
+                    path,
+                    codec or "sconosciuto",
+                )
         else:
             tmp.unlink(missing_ok=True)
             logger.warning(
-                "Faststart fallito per %s: %s", path, result.stderr.decode(errors="ignore")
+                "%s fallita per %s: %s",
+                action,
+                path,
+                result.stderr.decode(errors="ignore"),
             )
     except Exception:
         tmp.unlink(missing_ok=True)
-        logger.exception("Errore faststart per %s", path)
+        logger.exception("Errore %s per %s", action, path)
+
+
+# Backward-compatible alias: faststart only, no transcode.
+def finalize_faststart(path: "Path | str") -> None:
+    finalize_recording(path, transcode=False)
 
 
 def scaled_size(frame, max_width: int) -> tuple[int, int]:
@@ -206,8 +295,8 @@ class EventRecorder:
         finally:
             if writer is not None:
                 writer.release()
-                # Rewrite with moov atom at the front so browsers can stream the clip.
-                finalize_faststart(event_dir / RECORDING_FILE_NAME)
+                # Short event clip: transcode to H.264 if needed so browsers can play it.
+                finalize_recording(event_dir / RECORDING_FILE_NAME, transcode=True)
 
     def _open_writer(self, event_dir: Path, fps: float, size):
         event_dir.mkdir(parents=True, exist_ok=True)
@@ -263,7 +352,8 @@ def record_clip(
     finally:
         if writer is not None:
             writer.release()
-            finalize_faststart(path)
+            # On-demand clip (short): transcode to H.264 if needed for playback.
+            finalize_recording(path, transcode=True)
     if writer is None or not path.is_file() or path.stat().st_size == 0:
         return None
     return path
