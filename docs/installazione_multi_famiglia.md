@@ -83,8 +83,9 @@ inline funzionano comunque.
 
 ### 5. Avvio
 - Prova locale: `make run` → http://127.0.0.1:8000/login
-- Produzione headless: `make serve` (gunicorn, **single worker** obbligatorio) avviato
-  come servizio al boot (systemd/launchd). Una volta partito, rilevamento, registrazione,
+- Produzione headless: avviato come **servizio** al boot, con riavvio automatico.
+  Procedura per Linux (systemd), macOS (launchd) e Windows (NSSM + waitress) in
+  **`docs/gestione_servizio.md`**. Una volta partito, rilevamento, registrazione,
   notifiche e comandi Telegram girano **senza bisogno di aprire la dashboard**.
 
 ### 6. Esposizione in rete (opzionale)

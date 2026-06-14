@@ -10,8 +10,11 @@ User=blackframe
 WorkingDirectory=/opt/blackframe
 EnvironmentFile=/opt/blackframe/.env
 # Single worker is mandatory (in-memory + file state). See deploy/gunicorn.conf.py.
-ExecStart=/usr/bin/env poetry run gunicorn -c deploy/gunicorn.conf.py app:app
-Restart=on-failure
+# Use the in-project venv binary directly so the unit does not depend on poetry
+# being on the service user's PATH.
+ExecStart=/opt/blackframe/.venv/bin/gunicorn -c deploy/gunicorn.conf.py app:app
+# Always-on surveillance: restart on crash AND clean exit, after the camera reboots.
+Restart=always
 RestartSec=5
 # Hardening
 NoNewPrivileges=true

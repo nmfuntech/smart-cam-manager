@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  BLACKFRAME launchd daemon for macOS.
+
+  gunicorn works on macOS (Unix), so this reuses deploy/gunicorn.conf.py.
+  Install as a system daemon (starts at boot without login):
+
+    sudo cp deploy/com.blackframe.app.plist /Library/LaunchDaemons/
+    sudo chown root:wheel /Library/LaunchDaemons/com.blackframe.app.plist
+    sudo launchctl load  /Library/LaunchDaemons/com.blackframe.app.plist   # start now + at boot
+    sudo launchctl unload /Library/LaunchDaemons/com.blackframe.app.plist  # stop + disable
+
+  Adjust WorkingDirectory, the gunicorn path and UserName to your install.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.blackframe.app</string>
+
+    <key>WorkingDirectory</key>
+    <string>/opt/blackframe</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/opt/blackframe/.venv/bin/gunicorn</string>
+        <string>-c</string>
+        <string>deploy/gunicorn.conf.py</string>
+        <string>app:app</string>
+    </array>
+
+    <!-- Run as a dedicated non-admin user, not root. -->
+    <key>UserName</key>
+    <string>blackframe</string>
+
+    <!-- Start at boot and keep alive: restart on crash and on clean exit. -->
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>5</integer>
+
+    <key>StandardOutPath</key>
+    <string>/opt/blackframe/blackframe.log</string>
+    <key>StandardErrorPath</key>
+    <string>/opt/blackframe/blackframe.log</string>
+</dict>
+</plist>
