@@ -185,6 +185,11 @@ class CloudBackend:
         if not self.endpoint:
             logger.warning("CLASSIFICATION_CLOUD_ENDPOINT non configurato")
             return None
+        # Defense in depth against SSRF: only ever speak HTTP(S). Rejects file://,
+        # gopher://, ftp:// and similar schemes if the endpoint is ever misconfigured.
+        if not self.endpoint.lower().startswith(("http://", "https://")):
+            logger.warning("CLASSIFICATION_CLOUD_ENDPOINT deve usare http(s)://")
+            return None
         ok, buf = cv2.imencode(".jpg", frame)
         if not ok:
             return None

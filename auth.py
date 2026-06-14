@@ -118,10 +118,22 @@ def ensure_csrf_token() -> str:
     return token
 
 
+def _trust_proxy_headers() -> bool:
+    """Whether to trust client-supplied X-Forwarded-For for the client IP.
+
+    Off by default: when the app is reachable directly, X-Forwarded-For is fully
+    attacker-controlled and would let a client rotate the header to bypass the
+    per-IP rate limits (login brute force). Enable only when a trusted reverse
+    proxy that rewrites the header sits in front of the app.
+    """
+    return os.getenv("APP_TRUST_PROXY", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _client_ip() -> str:
-    forwarded = request.headers.get("X-Forwarded-For", "")
-    if forwarded:
-        return forwarded.split(",", 1)[0].strip() or "unknown"
+    if _trust_proxy_headers():
+        forwarded = request.headers.get("X-Forwarded-For", "")
+        if forwarded:
+            return forwarded.split(",", 1)[0].strip() or "unknown"
     return request.remote_addr or "unknown"
 
 
@@ -257,10 +269,21 @@ def require_csrf(api: bool = False):
 
 
 def configure_auth(app) -> None:
-    app.secret_key = os.getenv("APP_SECRET_KEY") or app.secret_key or secrets.token_hex(32)
-    app.config.setdefault("STATIC_ASSET_VERSION", str(int(time.time())))
     bind_host = os.getenv("APP_BIND_HOST", "127.0.0.1").strip().lower()
-    secure_cookie_default = bind_host not in {"127.0.0.1", "localhost", "::1"}
+    is_loopback = bind_host in {"127.0.0.1", "localhost", "::1"}
+    configured_secret = os.getenv("APP_SECRET_KEY") or app.secret_key
+    if not configured_secret and not is_loopback:
+        # Off-loopback (i.e. reachable from the network) an ephemeral random key
+        # would silently reset every session on restart and weaken sign-in
+        # integrity. Force an explicit, persistent secret instead.
+        raise RuntimeError(
+            "APP_SECRET_KEY obbligatorio quando APP_BIND_HOST non è loopback. "
+            'Generane uno con: make hash-password (o python -c "import secrets;'
+            ' print(secrets.token_hex(32))").'
+        )
+    app.secret_key = configured_secret or secrets.token_hex(32)
+    app.config.setdefault("STATIC_ASSET_VERSION", str(int(time.time())))
+    secure_cookie_default = not is_loopback
     app.config["SESSION_COOKIE_NAME"] = "blackframe_session"
     app.config["SESSION_COOKIE_HTTPONLY"] = True
     app.config["SESSION_COOKIE_SAMESITE"] = "Strict"
