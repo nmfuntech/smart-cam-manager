@@ -2,6 +2,7 @@ import { createLiveController } from "./live-ui.js";
 import { createMotionController } from "./motion-ui.js";
 import { createPtzController } from "./ptz-ui.js";
 import { createCameraConfigController } from "./camera-ui.js";
+import { createTelegramController } from "./telegram-ui.js";
 
 const live = createLiveController({
   overlay: document.getElementById("viewer-overlay"),
@@ -95,9 +96,27 @@ function bindMotionOverlayToggle() {
   });
 }
 
+const telegram = createTelegramController({
+  openButton: document.getElementById("telegram-config-open"),
+  dialog: document.getElementById("telegram-dialog"),
+  closeButton: document.getElementById("telegram-close"),
+  tokenInput: document.getElementById("tg-bot-token"),
+  tokenHint: document.getElementById("tg-token-hint"),
+  chatIdInput: document.getElementById("tg-chat-id"),
+  discoverButton: document.getElementById("tg-discover"),
+  chatList: document.getElementById("tg-chat-list"),
+  preferVideo: document.getElementById("tg-prefer-video"),
+  enabled: document.getElementById("tg-enabled"),
+  testButton: document.getElementById("tg-test"),
+  saveButton: document.getElementById("tg-save"),
+  feedback: document.getElementById("tg-feedback"),
+  sidebarEnabledToggle: document.getElementById("cfg-notify-telegram-enabled"),
+});
+
 motion.bind();
 ptz.bind();
 cameras.bind();
+telegram.bind();
 bindMotionOverlayToggle();
 
 const POLL_MODE = {

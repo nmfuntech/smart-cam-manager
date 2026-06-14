@@ -124,6 +124,17 @@ class RuntimeConfigManager:
             ),
             "NOTIFY_MIN_INTERVAL_SEC": ConfigField("NOTIFY_MIN_INTERVAL_SEC", "float", minimum=0),
             "NOTIFY_PREFER_VIDEO": ConfigField("NOTIFY_PREFER_VIDEO", "bool"),
+            "TELEGRAM_COMMANDS_ENABLED": ConfigField("TELEGRAM_COMMANDS_ENABLED", "bool"),
+            "TELEGRAM_COMMANDS_ALLOWED_CHAT_IDS": ConfigField(
+                "TELEGRAM_COMMANDS_ALLOWED_CHAT_IDS", "str", sensitive=True
+            ),
+            "TELEGRAM_COMMANDS_RATE_LIMIT_PER_MIN": ConfigField(
+                "TELEGRAM_COMMANDS_RATE_LIMIT_PER_MIN", "int", minimum=1
+            ),
+            "TELEGRAM_COMMANDS_POLL_TIMEOUT_SEC": ConfigField(
+                "TELEGRAM_COMMANDS_POLL_TIMEOUT_SEC", "float", minimum=1
+            ),
+            "TELEGRAM_COMMANDS_SET_MENU": ConfigField("TELEGRAM_COMMANDS_SET_MENU", "bool"),
             "CONTINUOUS_RECORD_ENABLED": ConfigField("CONTINUOUS_RECORD_ENABLED", "bool"),
             "CONTINUOUS_RECORD_SEGMENT_MIN": ConfigField(
                 "CONTINUOUS_RECORD_SEGMENT_MIN", "float", minimum=1

@@ -843,6 +843,33 @@ export function createMotionController(elements) {
     if (cfgClassificationSamplePolicy) {
       cfgClassificationSamplePolicy.addEventListener("change", markRuntimeDirty);
     }
+    if (cfgNotifyTelegramEnabled) {
+      cfgNotifyTelegramEnabled.addEventListener("change", async () => {
+        const value = cfgNotifyTelegramEnabled.checked;
+        cfgNotifyTelegramEnabled.disabled = true;
+        setRuntimeFeedback("Aggiornamento notifiche Telegram...");
+        try {
+          const { response, data } = await fetchJson("/api/runtime_config", {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ updates: { NOTIFY_TELEGRAM_ENABLED: value } }),
+          });
+          if (!response.ok) {
+            cfgNotifyTelegramEnabled.checked = !value;
+            setRuntimeFeedback(data.error || "Errore aggiornamento notifiche", true);
+            return;
+          }
+          applyRuntimeConfigToForm(data.config || {});
+          runtimeDirty = false;
+          setRuntimeFeedback(value ? "Notifiche Telegram abilitate" : "Notifiche Telegram disabilitate");
+        } catch {
+          cfgNotifyTelegramEnabled.checked = !value;
+          setRuntimeFeedback("Errore di rete durante aggiornamento notifiche", true);
+        } finally {
+          cfgNotifyTelegramEnabled.disabled = false;
+        }
+      });
+    }
     if (cfgClassificationMinConfidence) {
       cfgClassificationMinConfidence.addEventListener("input", () => {
         markRuntimeDirty();

@@ -5,11 +5,13 @@ updates take effect without a restart. Network I/O runs in a background thread t
 avoid blocking the motion detection loop.
 """
 
+import json
 import logging
 import os
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from pathlib import Path
@@ -17,6 +19,60 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 TELEGRAM_API_BASE = "https://api.telegram.org"
+
+
+def telegram_api_call(token: str, method: str, params: dict | None = None) -> dict:
+    """Call a Telegram Bot API method. Returns the parsed JSON response.
+
+    On network/HTTP failure returns a dict shaped like the Telegram error
+    response: ``{"ok": False, "description": "..."}``.
+    """
+    url = f"{TELEGRAM_API_BASE}/bot{token}/{method}"
+    data = urllib.parse.urlencode(params or {}).encode() if params else None
+    req = urllib.request.Request(url, data=data, method="POST" if data else "GET")
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", "replace")
+        try:
+            return json.loads(body)
+        except json.JSONDecodeError:
+            return {"ok": False, "description": f"HTTP {exc.code}: {body}"}
+    except (urllib.error.URLError, OSError) as exc:
+        return {"ok": False, "description": f"Errore di rete: {exc}"}
+    except json.JSONDecodeError:
+        return {"ok": False, "description": "Risposta Telegram non valida"}
+
+
+def discover_telegram_chats(token: str) -> tuple[bool, list[dict], str | None]:
+    """Find chats that recently messaged the bot via getUpdates.
+
+    Returns ``(ok, chats, error)`` where ``chats`` is a list of
+    ``{"chat_id": int, "label": str}`` dicts.
+    """
+    result = telegram_api_call(token, "getUpdates")
+    if not result.get("ok"):
+        return False, [], result.get("description") or "Token non valido"
+    chats: dict[int, str] = {}
+    for upd in result.get("result", []):
+        msg = upd.get("message") or upd.get("channel_post") or {}
+        chat = msg.get("chat")
+        if chat and "id" in chat:
+            name = chat.get("title") or chat.get("username") or chat.get("first_name") or "?"
+            chats[chat["id"]] = f"{name} ({chat.get('type')})"
+    return True, [{"chat_id": cid, "label": label} for cid, label in chats.items()], None
+
+
+def send_telegram_test(
+    token: str, chat_id: str, text: str | None = None
+) -> tuple[bool, str | None]:
+    """Send a plain-text test message. Returns ``(ok, error)``."""
+    message = text or "✅ BLACKFRAME: notifiche Telegram configurate correttamente."
+    result = telegram_api_call(token, "sendMessage", {"chat_id": chat_id, "text": message})
+    if result.get("ok"):
+        return True, None
+    return False, result.get("description") or "Invio fallito"
 
 
 def _env(name: str, default: str = "") -> str:

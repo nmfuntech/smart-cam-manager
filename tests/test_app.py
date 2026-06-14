@@ -1872,5 +1872,136 @@ class RuntimeConfigManagerTests(unittest.TestCase):
             manager.update({"CLASSIFICATION_BACKEND": "unsupported"})
 
 
+class TelegramConfigEndpointTests(unittest.TestCase):
+    def setUp(self):
+        self.app_module = load_app_module()
+
+    def _build_client(self, recorded_updates, telegram_status=None):
+        class FakeCamera:
+            def get_frame(self):
+                return b"frame"
+
+            def get_status(self):
+                return {"connected": True, "error": ""}
+
+        class FakePtz:
+            def get_status(self):
+                return {"available": True, "host": "127.0.0.1", "port": 2020, "error": ""}
+
+        class FakeMotion:
+            config = {"save_dir": tempfile.gettempdir()}
+
+            def get_status(self):
+                return {"enabled": True}
+
+            def apply_runtime_config(self, updates):
+                return None
+
+        class FakeRuntimeConfig:
+            def get_public_config(self):
+                return {}
+
+            def update(self, updates, allow_sensitive=False, allow_internal=False):
+                recorded_updates.append((dict(updates), allow_sensitive))
+                return {}
+
+        class FakeTelegram:
+            def status(self):
+                return telegram_status or {
+                    "enabled": False,
+                    "configured": False,
+                    "classes": [],
+                    "min_interval_sec": 30,
+                }
+
+        features = build_feature_services(self.app_module)
+        features.telegram = FakeTelegram()
+        app = self.app_module.create_app(
+            self.app_module.AppServices(
+                camera=FakeCamera(),
+                ptz=FakePtz(),
+                motion=FakeMotion(),
+                features=features,
+                runtime_config=FakeRuntimeConfig(),
+            )
+        )
+        client = app.test_client()
+        csrf = authenticate_client(client)
+        return client, csrf
+
+    def test_status_never_returns_token(self):
+        client, _ = self._build_client([])
+        with mock.patch.dict(os.environ, {"NOTIFY_TELEGRAM_BOT_TOKEN": "secret"}, clear=False):
+            response = client.get("/api/telegram_config")
+        data = response.get_json()
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(data["has_token"])
+        self.assertNotIn("bot_token", data)
+        self.assertNotIn("secret", json.dumps(data))
+
+    def test_enable_without_token_is_rejected(self):
+        recorded = []
+        client, csrf = self._build_client(recorded)
+        with mock.patch.dict(os.environ, {"NOTIFY_TELEGRAM_BOT_TOKEN": ""}, clear=False):
+            response = client.post(
+                "/api/telegram_config",
+                json={"enabled": True, "chat_id": "123"},
+                headers=csrf_headers(csrf),
+            )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(recorded, [])
+
+    def test_save_persists_sensitive_fields(self):
+        recorded = []
+        client, csrf = self._build_client(recorded)
+        response = client.post(
+            "/api/telegram_config",
+            json={
+                "bot_token": "111:AAA",
+                "chat_id": "123456",
+                "enabled": True,
+                "prefer_video": False,
+            },
+            headers=csrf_headers(csrf),
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(recorded), 1)
+        updates, allow_sensitive = recorded[0]
+        self.assertTrue(allow_sensitive)
+        self.assertEqual(updates["NOTIFY_TELEGRAM_BOT_TOKEN"], "111:AAA")
+        self.assertEqual(updates["NOTIFY_TELEGRAM_CHAT_ID"], "123456")
+        self.assertIs(updates["NOTIFY_TELEGRAM_ENABLED"], True)
+        self.assertIs(updates["NOTIFY_PREFER_VIDEO"], False)
+
+    def test_discover_uses_body_token(self):
+        client, csrf = self._build_client([])
+        with mock.patch(
+            "routes.motion.discover_telegram_chats",
+            return_value=(True, [{"chat_id": 7, "label": "Me (private)"}], None),
+        ) as discover:
+            response = client.post(
+                "/api/telegram_discover",
+                json={"bot_token": "999:ZZZ"},
+                headers=csrf_headers(csrf),
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["chats"][0]["chat_id"], 7)
+        discover.assert_called_once_with("999:ZZZ")
+
+    def test_test_endpoint_requires_token_and_chat(self):
+        client, csrf = self._build_client([])
+        with mock.patch.dict(
+            os.environ,
+            {"NOTIFY_TELEGRAM_BOT_TOKEN": "", "NOTIFY_TELEGRAM_CHAT_ID": ""},
+            clear=False,
+        ):
+            response = client.post(
+                "/api/telegram_test",
+                json={},
+                headers=csrf_headers(csrf),
+            )
+        self.assertEqual(response.status_code, 400)
+
+
 if __name__ == "__main__":
     unittest.main()

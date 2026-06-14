@@ -28,6 +28,7 @@ from service_layer import (
     RecordingService,
     WifiService,
 )
+from telegram_commands import TelegramCommandBot
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -1310,6 +1311,7 @@ class AppServices:
     runtime_config: RuntimeConfigManager
     monitors: dict = field(default_factory=dict)
     continuous: ContinuousRecorder | None = None
+    telegram_commands: TelegramCommandBot | None = None
 
     def camera_and_motion(self, profile_id: str):
         """Resolve the (camera, motion) pair for a profile: active main pair or a monitor."""
@@ -1384,7 +1386,7 @@ def build_services() -> AppServices:
     except Exception:
         logger.exception("Avvio monitor multi-camera fallito")
 
-    return AppServices(
+    services = AppServices(
         camera=camera,
         ptz=ptz,
         motion=motion,
@@ -1393,6 +1395,9 @@ def build_services() -> AppServices:
         monitors=monitors,
         continuous=continuous,
     )
+    services.telegram_commands = TelegramCommandBot(services)
+    services.telegram_commands.start()
+    return services
 
 
 def create_app(services: AppServices | None = None) -> Flask:

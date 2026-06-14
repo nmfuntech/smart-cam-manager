@@ -1,3 +1,4 @@
+import os
 import re
 import subprocess
 import sys
@@ -6,6 +7,7 @@ from pathlib import Path
 from flask import Blueprint, Response, abort, current_app, jsonify, request, send_file
 
 from auth import rate_limit, require_auth, require_csrf
+from notifications import discover_telegram_chats, send_telegram_test
 
 motion_bp = Blueprint("motion", __name__)
 EVENT_ID_PATTERN = re.compile(r"^motion_event_\d{8}_\d{6}$")
@@ -108,6 +110,114 @@ def update_runtime_config():
     except Exception:
         current_app.logger.exception("Aggiornamento config fallito")
         return jsonify({"ok": False, "error": "Errore interno durante aggiornamento config"}), 500
+
+
+def _resolve_token(payload: dict) -> str:
+    """Token from the request body if provided, else the saved env value."""
+    token = str(payload.get("bot_token") or "").strip()
+    return token or os.getenv("NOTIFY_TELEGRAM_BOT_TOKEN", "").strip()
+
+
+@motion_bp.get("/api/telegram_config")
+@require_auth(api=True)
+def telegram_config():
+    """Public status of the Telegram notifier. Never returns the bot token."""
+    notifier = get_services().features.telegram
+    status = notifier.status() if notifier is not None else {}
+    return jsonify(
+        {
+            "ok": True,
+            "enabled": bool(status.get("enabled")),
+            "configured": bool(status.get("configured")),
+            "has_token": bool(os.getenv("NOTIFY_TELEGRAM_BOT_TOKEN", "").strip()),
+            "chat_id": os.getenv("NOTIFY_TELEGRAM_CHAT_ID", "").strip(),
+            "prefer_video": os.getenv("NOTIFY_PREFER_VIDEO", "true").strip().lower()
+            in {"1", "true", "yes", "on"},
+            "min_interval_sec": status.get("min_interval_sec", 30),
+            "classes": status.get("classes", []),
+        }
+    )
+
+
+@motion_bp.post("/api/telegram_config")
+@require_auth(api=True)
+@require_csrf(api=True)
+@rate_limit("telegram-config", limit=20, window_seconds=60, api=True)
+def update_telegram_config():
+    """Persist Telegram credentials and toggles, including sensitive fields.
+
+    The bot token is only written when a non-empty value is supplied, so the UI
+    can omit it to keep the stored secret unchanged.
+    """
+    payload = request.get_json(silent=True) or {}
+    updates: dict[str, object] = {}
+
+    token = str(payload.get("bot_token") or "").strip()
+    if token:
+        updates["NOTIFY_TELEGRAM_BOT_TOKEN"] = token
+    if "chat_id" in payload:
+        chat_id = str(payload.get("chat_id") or "").strip()
+        if chat_id:
+            updates["NOTIFY_TELEGRAM_CHAT_ID"] = chat_id
+    if "enabled" in payload:
+        updates["NOTIFY_TELEGRAM_ENABLED"] = bool(payload["enabled"])
+    if "prefer_video" in payload:
+        updates["NOTIFY_PREFER_VIDEO"] = bool(payload["prefer_video"])
+    if "min_interval_sec" in payload:
+        updates["NOTIFY_MIN_INTERVAL_SEC"] = payload["min_interval_sec"]
+
+    if not updates:
+        return jsonify({"ok": False, "error": "Nessun campo da aggiornare"}), 400
+
+    if updates.get("NOTIFY_TELEGRAM_ENABLED") and not (
+        token or os.getenv("NOTIFY_TELEGRAM_BOT_TOKEN", "").strip()
+    ):
+        return jsonify({"ok": False, "error": "Imposta il token del bot prima di abilitare"}), 400
+
+    try:
+        get_services().runtime_config.update(updates, allow_sensitive=True)
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    except Exception:
+        current_app.logger.exception("Aggiornamento config Telegram fallito")
+        return jsonify({"ok": False, "error": "Errore interno"}), 500
+    return jsonify({"ok": True})
+
+
+@motion_bp.post("/api/telegram_discover")
+@require_auth(api=True)
+@require_csrf(api=True)
+@rate_limit("telegram-discover", limit=20, window_seconds=60, api=True)
+def telegram_discover():
+    """Find chats that recently messaged the bot (getUpdates)."""
+    payload = request.get_json(silent=True) or {}
+    token = _resolve_token(payload)
+    if not token:
+        return jsonify({"ok": False, "error": "Token del bot mancante"}), 400
+    ok, chats, error = discover_telegram_chats(token)
+    if not ok:
+        return jsonify({"ok": False, "error": error}), 400
+    return jsonify({"ok": True, "chats": chats})
+
+
+@motion_bp.post("/api/telegram_test")
+@require_auth(api=True)
+@require_csrf(api=True)
+@rate_limit("telegram-test", limit=10, window_seconds=60, api=True)
+def telegram_test():
+    """Send a test message to verify token + chat_id."""
+    payload = request.get_json(silent=True) or {}
+    token = _resolve_token(payload)
+    chat_id = (
+        str(payload.get("chat_id") or "").strip()
+        or os.getenv("NOTIFY_TELEGRAM_CHAT_ID", "").strip()
+    )
+    if not token or not chat_id:
+        return jsonify({"ok": False, "error": "Token o chat_id mancante"}), 400
+    ok, error = send_telegram_test(token, chat_id)
+    if not ok:
+        return jsonify({"ok": False, "error": error}), 400
+    return jsonify({"ok": True})
 
 
 @motion_bp.route("/latest_motion.jpg")
