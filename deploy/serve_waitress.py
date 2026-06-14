@@ -1,0 +1,30 @@
+"""Production WSGI entrypoint for Windows.
+
+gunicorn is Unix-only, so on Windows the app is served with waitress (a pure-
+Python, cross-platform WSGI server). Importing ``app`` runs ``load_dotenv()`` and
+``create_app()``, so ``.env`` in the working directory is read automatically and
+no service-level environment injection is needed.
+
+Single worker semantics are preserved: waitress runs one process with a thread
+pool, which matches the app's in-memory + file state model.
+
+Setup (once):
+    poetry run pip install waitress
+
+Run:
+    poetry run python deploy/serve_waitress.py
+
+Register as a Windows service with NSSM (see docs/gestione_servizio.md).
+"""
+
+import os
+
+from waitress import serve
+
+from app import app
+
+if __name__ == "__main__":
+    host = os.getenv("APP_BIND_HOST", "127.0.0.1")
+    port = int(os.getenv("APP_PORT", "8000"))
+    threads = int(os.getenv("APP_WAITRESS_THREADS", "8"))
+    serve(app, host=host, port=port, threads=threads)
