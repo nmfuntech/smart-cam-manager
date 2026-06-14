@@ -529,6 +529,27 @@ class CameraProfileServiceTests(unittest.TestCase):
             key_path=self.key_path,
         )
 
+    def test_save_profile_rejects_host_with_injection_chars(self):
+        service = self._build_service()
+        for bad_host in ["evil.com/@1.2.3.4", "10.0.0.1 -rtsp_transport", "a@b", "1.2.3.4:9999"]:
+            with self.assertRaises(ValueError):
+                service.save_profile(
+                    {"name": "X", "host": bad_host, "username": "u", "password": "p"}
+                )
+
+    def test_save_profile_rejects_stream_path_with_control_chars(self):
+        service = self._build_service()
+        with self.assertRaises(ValueError):
+            service.save_profile(
+                {
+                    "name": "X",
+                    "host": "192.168.1.5",
+                    "stream_path": "stream1 evil",
+                    "username": "u",
+                    "password": "p",
+                }
+            )
+
     def test_profile_passwords_are_encrypted_at_rest(self):
         service = self._build_service()
 
@@ -1600,6 +1621,39 @@ class SecurityHardeningTests(unittest.TestCase):
 
         self.assertEqual(blocked.status_code, 429)
         self.assertGreaterEqual(int(blocked.headers.get("Retry-After", "0")), 1)
+
+    def test_login_rate_limit_not_bypassed_by_forwarded_for(self):
+        # Without APP_TRUST_PROXY the client cannot rotate X-Forwarded-For to dodge
+        # the per-IP throttle: all requests collapse to the same remote_addr.
+        with mock.patch.dict(
+            os.environ,
+            {
+                "APP_ADMIN_PASSWORD": "admin-pass",
+                "APP_SECRET_KEY": "test-secret",
+            },
+            clear=False,
+        ):
+            os.environ.pop("APP_TRUST_PROXY", None)
+            import auth
+
+            auth.rate_limiter._events.clear()
+            app = self._build_app()
+            client = app.test_client()
+            for index in range(5):
+                response = client.post(
+                    "/login",
+                    data={"password": "wrong", "next": "/"},
+                    headers={"X-Forwarded-For": f"10.0.0.{index}"},
+                )
+                self.assertEqual(response.status_code, 401)
+
+            blocked = client.post(
+                "/login",
+                data={"password": "wrong", "next": "/"},
+                headers={"X-Forwarded-For": "10.0.0.99"},
+            )
+
+        self.assertEqual(blocked.status_code, 429)
 
     def test_security_headers_include_csp(self):
         app = self._build_app()

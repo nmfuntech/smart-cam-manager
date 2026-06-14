@@ -263,7 +263,17 @@ def open_captures_folder():
 
     Only works when the server runs on the same machine as the browser (the local
     surveillance use case). Opens the configured save_dir; no user input is used.
+
+    Disabled with APP_ENABLE_OPEN_FOLDER=false so a headless/remote deployment does
+    not let an authenticated request spawn a GUI process on the server host.
     """
+    if os.getenv("APP_ENABLE_OPEN_FOLDER", "true").strip().lower() not in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        return jsonify({"ok": False, "error": "Funzione non disponibile su questo server"}), 403
     folder = _motion_root()
     folder.mkdir(parents=True, exist_ok=True)
     try:

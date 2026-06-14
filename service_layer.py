@@ -19,6 +19,29 @@ PRIVATE_FILE_MODE = 0o600
 CAMERA_PROFILE_SECRET_FIELDS = ("password", "onvif_password")
 ENCRYPTED_VALUE_PREFIX = "enc::"
 
+# The host and stream path are interpolated into the RTSP URL
+# (rtsp://user:pass@{host}:{port}/{stream_path}) used by cv2.VideoCapture and the
+# ONVIF client. Restrict them to a conservative charset so an authenticated user
+# cannot inject URL components (credentials via '@', scheme, alternate target).
+_HOST_PATTERN = re.compile(r"^[A-Za-z0-9.\-]+$")
+_STREAM_PATH_PATTERN = re.compile(r"^[A-Za-z0-9/_.\-]+$")
+
+
+def _validate_host(value: str) -> str:
+    if not _HOST_PATTERN.fullmatch(value):
+        raise ValueError(
+            "Host camera non valido: usa solo lettere, cifre, punto e trattino "
+            "(es. 192.168.1.50 o cam.local)"
+        )
+    return value
+
+
+def _validate_stream_path(value: str) -> str:
+    cleaned = value.lstrip("/")
+    if not _STREAM_PATH_PATTERN.fullmatch(cleaned):
+        raise ValueError("Percorso stream non valido: usa solo lettere, cifre, '/', '_', '.' e '-'")
+    return cleaned
+
 
 def _set_private_permissions(path: Path) -> None:
     try:
@@ -463,13 +486,18 @@ class CameraProfileService:
                 return value
             return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
+        host = read_text("host")
+        if host:
+            host = _validate_host(host)
+        stream_path = _validate_stream_path(read_text("stream_path", "stream1") or "stream1")
+
         return {
             "id": read_text("id"),
             "name": read_text("name"),
             "wifi_ssid": read_text("wifi_ssid"),
-            "host": read_text("host"),
+            "host": host,
             "rtsp_port": read_int("rtsp_port", 554),
-            "stream_path": read_text("stream_path", "stream1") or "stream1",
+            "stream_path": stream_path,
             "username": read_text("username"),
             "password": read_text("password"),
             "onvif_port": read_int("onvif_port", 2020),
