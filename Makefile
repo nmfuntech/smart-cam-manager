@@ -41,4 +41,8 @@ test:
 	$(PYTHON) -m pytest -v
 
 clean:
+	@if [ "$(FORCE)" != "1" ] && { [ -f .env ] || [ -f data/.camera_profiles.key ]; }; then \
+		printf "WARNING: esistono .env / chiave di cifratura. 'make clean' li cancella e i segreti cifrati diventano irrecuperabili.\n         Conferma con: make clean FORCE=1\n"; \
+		exit 1; \
+	fi
 	rm -rf __pycache__ .pytest_cache .env data/.camera_profiles.key data/.test-camera-profiles.key data/camera_profiles.json data/camera_profiles.json.unreadable.*.bak captures/motion/*

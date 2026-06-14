@@ -77,11 +77,7 @@ class SetupConfigTests(unittest.TestCase):
 
     def test_selected_sections_minimal_only_contains_required_fields(self):
         sections = setup_config.selected_sections(minimal=True)
-        keys = {
-            field.key
-            for section in sections
-            for field in section.fields
-        }
+        keys = {field.key for section in sections for field in section.fields}
 
         self.assertEqual(
             keys,
@@ -100,6 +96,48 @@ class SetupConfigTests(unittest.TestCase):
             args = setup_config.parse_args()
 
         self.assertTrue(args.minimal)
+
+    def test_parse_args_accepts_force_flag(self):
+        with mock.patch("sys.argv", ["setup_config.py", "--force"]):
+            args = setup_config.parse_args()
+
+        self.assertTrue(args.force)
+
+    def test_existing_protected_state_lists_only_present_files(self):
+        env_path = Path(self.tmpdir) / ".env"
+        env_path.write_text("APP_ADMIN_USERNAME=admin\n", encoding="utf-8")
+        original_cwd = Path.cwd()
+        os.chdir(self.tmpdir)
+        try:
+            existing = setup_config.existing_protected_state(Path(".env"))
+        finally:
+            os.chdir(original_cwd)
+
+        self.assertEqual(existing, [Path(".env")])
+
+    def test_confirm_destructive_reset_allows_when_no_existing_state(self):
+        self.assertTrue(setup_config.confirm_destructive_reset([]))
+
+    def test_confirm_destructive_reset_allows_with_force(self):
+        self.assertTrue(
+            setup_config.confirm_destructive_reset(
+                [Path(".env")],
+                input_fn=lambda _: "",  # would refuse, but force overrides
+                force=True,
+            )
+        )
+
+    def test_confirm_destructive_reset_requires_confirm_word(self):
+        with mock.patch("sys.stdout", io.StringIO()):
+            refused = setup_config.confirm_destructive_reset(
+                [Path(".env")], input_fn=lambda _: "si"
+            )
+            confirmed = setup_config.confirm_destructive_reset(
+                [Path(".env")], input_fn=lambda _: "  RESET  "
+            )
+
+        self.assertFalse(refused)
+        self.assertTrue(confirmed)
 
     def test_cleanup_setup_state_removes_generated_local_state(self):
         env_path = Path(self.tmpdir) / ".env"
@@ -129,7 +167,9 @@ class SetupConfigTests(unittest.TestCase):
         self.assertFalse((data_dir / ".camera_profiles.key").exists())
         self.assertFalse((data_dir / ".test-camera-profiles.key").exists())
         self.assertFalse((data_dir / "camera_profiles.json").exists())
-        self.assertFalse((data_dir / "camera_profiles.json.unreadable.20260418_101800.bak").exists())
+        self.assertFalse(
+            (data_dir / "camera_profiles.json.unreadable.20260418_101800.bak").exists()
+        )
         self.assertEqual(list((Path(self.tmpdir) / "captures" / "motion").rglob("*")), [])
 
     def test_prompt_secret_prints_used_existing_value_on_enter(self):
