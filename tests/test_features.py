@@ -128,6 +128,20 @@ class TelegramNotifierTests(unittest.TestCase):
         self.assertTrue(notifier.notify_event("motion_event_1", class_label="persona"))
         self.assertFalse(notifier.notify_event("motion_event_2", class_label="persona"))
 
+    def test_mute_blocks_notifications(self):
+        notifier = self._notifier()
+        notifier.mute(60)
+        self.assertFalse(notifier.notify_event("motion_event_1", class_label="persona"))
+        notifier.mute(0)
+        self.assertTrue(notifier.notify_event("motion_event_2", class_label="persona"))
+
+    def test_mute_expires(self):
+        notifier = self._notifier()
+        with mock.patch("notifications.time.monotonic", return_value=1000.0):
+            notifier.mute(60)
+        with mock.patch("notifications.time.monotonic", return_value=1061.0):
+            self.assertTrue(notifier.notify_event("motion_event_1", class_label="persona"))
+
 
 class TelegramCommandBotTests(unittest.TestCase):
     def _bot(self, **env):
@@ -218,28 +232,47 @@ class TelegramCommandBotTests(unittest.TestCase):
             def apply_config(self, config):
                 self.configs.append(dict(config))
 
+        class FakeNotifier:
+            def __init__(self):
+                self.muted = []
+
+            def mute(self, seconds):
+                self.muted.append(seconds)
+                return max(0.0, seconds)
+
+            def muted_remaining(self):
+                return self.muted[-1] if self.muted else 0.0
+
         services = SimpleNamespace(
             camera=FakeCamera(),
             ptz=FakePtz(),
             motion=FakeMotion(),
             runtime_config=FakeRuntimeConfig(),
             continuous=FakeContinuous(),
+            features=SimpleNamespace(telegram=FakeNotifier()),
         )
         bot = TelegramCommandBot(services)
         self.messages = []
         self.photos = []
-        bot._send_message = lambda chat_id, text: self.messages.append((chat_id, text)) or (
-            True,
-            None,
-        )
-        bot._send_photo_bytes = (
-            lambda chat_id, photo, caption: self.photos.append((chat_id, photo, caption))
-            or (True, None)
-        )
+        self.answers = []
+        bot._send_message = lambda chat_id, text, reply_markup=None: self.messages.append(
+            (chat_id, text, reply_markup)
+        ) or (True, None)
+        bot._answer_callback = lambda callback_id, text="": self.answers.append((callback_id, text))
+        bot._send_photo_bytes = lambda chat_id, photo, caption: self.photos.append(
+            (chat_id, photo, caption)
+        ) or (True, None)
+        self.videos = []
+        bot._send_video_bytes = lambda chat_id, video, caption: self.videos.append(
+            (chat_id, video, caption)
+        ) or (True, None)
         return bot, services
 
     def _handle(self, bot, text: str, chat_id: int = 123):
         bot._handle_update({"update_id": 1, "message": {"chat": {"id": chat_id}, "text": text}})
+
+    def _callback(self, bot, data: str, chat_id: int = 123):
+        bot._handle_callback({"id": "cb1", "data": data, "message": {"chat": {"id": chat_id}}})
 
     def test_status_command_accepts_bot_mention(self):
         bot, _ = self._bot()
@@ -276,6 +309,139 @@ class TelegramCommandBotTests(unittest.TestCase):
             [{"CONTINUOUS_RECORD_ENABLED": True}],
         )
         self.assertEqual(services.continuous.configs[-1]["continuous_record_enabled"], True)
+
+    def test_notifications_command_toggles_runtime(self):
+        bot, services = self._bot()
+
+        self._handle(bot, "/notifications_off")
+
+        self.assertEqual(
+            services.runtime_config.updates,
+            [{"NOTIFY_TELEGRAM_ENABLED": False}],
+        )
+        self.assertIn("disattivate", self.messages[0][1])
+
+    def test_classification_command_toggles_runtime(self):
+        bot, services = self._bot()
+
+        self._handle(bot, "/classification_on")
+
+        self.assertEqual(
+            services.runtime_config.updates,
+            [{"CLASSIFICATION_ENABLED": True}],
+        )
+
+    def test_sensitivity_preset_sets_threshold(self):
+        bot, services = self._bot()
+
+        self._handle(bot, "/sensitivity media")
+
+        self.assertEqual(services.runtime_config.updates, [{"MOTION_THRESHOLD": 30}])
+        self.assertEqual(services.motion.updates, [{"MOTION_THRESHOLD": 30}])
+
+    def test_sensitivity_unknown_preset_does_not_update(self):
+        bot, services = self._bot()
+
+        self._handle(bot, "/sensitivity turbo")
+
+        self.assertEqual(services.runtime_config.updates, [])
+        self.assertIn("sconosciuto", self.messages[0][1])
+
+    def test_mute_command_calls_notifier(self):
+        bot, services = self._bot()
+
+        self._handle(bot, "/mute 2")
+
+        self.assertEqual(services.features.telegram.muted, [120.0])
+        self.assertIn("silenziate", self.messages[0][1])
+
+    def test_resume_command_clears_mute(self):
+        bot, services = self._bot()
+
+        self._handle(bot, "/resume")
+
+        self.assertEqual(services.features.telegram.muted, [0])
+
+    def test_config_command_reports_states(self):
+        bot, _ = self._bot(MOTION_ENABLED="true", NOTIFY_TELEGRAM_ENABLED="false")
+
+        self._handle(bot, "/config")
+
+        self.assertIn("Impostazioni BLACKFRAME", self.messages[0][1])
+        self.assertIn("Notifiche: spente", self.messages[0][1])
+
+    def test_clip_rejects_too_long_duration(self):
+        bot, _ = self._bot()
+
+        self._handle(bot, "/clip 99")
+
+        self.assertIn("massima", self.messages[0][1])
+        self.assertEqual(self.videos, [])
+
+    def test_clip_invalid_duration_shows_usage(self):
+        bot, _ = self._bot()
+
+        self._handle(bot, "/clip abc")
+
+        self.assertIn("Uso", self.messages[0][1])
+
+    def test_record_and_send_clip_sends_video(self):
+        bot, services = self._bot()
+
+        def fake_record(camera, path, seconds, fps=10.0, max_width=0):
+            Path(path).write_bytes(b"video-bytes")
+            return Path(path)
+
+        with mock.patch("telegram_commands.record_clip", fake_record):
+            bot._record_and_send_clip("123", 10)
+
+        self.assertEqual(len(self.videos), 1)
+        self.assertEqual(self.videos[0][1], b"video-bytes")
+
+    def test_record_and_send_clip_reports_failure(self):
+        bot, _ = self._bot()
+
+        with mock.patch("telegram_commands.record_clip", lambda *a, **k: None):
+            bot._record_and_send_clip("123", 10)
+
+        self.assertEqual(self.videos, [])
+        self.assertIn("fallita", self.messages[-1][1])
+
+    def test_reply_button_label_maps_to_command(self):
+        bot, _ = self._bot()
+
+        self._handle(bot, "📊 Stato")
+
+        self.assertIn("Stato BLACKFRAME", self.messages[0][1])
+
+    def test_menu_command_sends_inline_keyboard(self):
+        bot, _ = self._bot()
+
+        self._handle(bot, "/menu")
+
+        self.assertIn("inline_keyboard", self.messages[0][2])
+
+    def test_help_command_sends_reply_keyboard(self):
+        bot, _ = self._bot()
+
+        self._handle(bot, "/help")
+
+        self.assertIn("keyboard", self.messages[0][2])
+
+    def test_callback_dispatches_command(self):
+        bot, services = self._bot()
+
+        self._callback(bot, "/motion_off")
+
+        self.assertEqual(services.runtime_config.updates, [{"MOTION_ENABLED": False}])
+        self.assertEqual(self.answers, [("cb1", "")])
+
+    def test_callback_from_unauthorized_chat_ignored(self):
+        bot, services = self._bot()
+
+        self._callback(bot, "/motion_off", chat_id=999)
+
+        self.assertEqual(services.runtime_config.updates, [])
 
     def test_snapshot_command_sends_current_frame(self):
         bot, _ = self._bot()

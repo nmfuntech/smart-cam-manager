@@ -119,10 +119,36 @@ class TelegramNotifier:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._last_sent_at: float | None = None
+        self._muted_until: float | None = None
 
     @property
     def enabled(self) -> bool:
         return _env_bool("NOTIFY_TELEGRAM_ENABLED", False)
+
+    def mute(self, seconds: float) -> float:
+        """Silenzia temporaneamente le notifiche. seconds<=0 annulla la pausa.
+
+        Ritorna i secondi residui di pausa (0 se non in pausa).
+        """
+        with self._lock:
+            if seconds > 0:
+                self._muted_until = time.monotonic() + seconds
+            else:
+                self._muted_until = None
+        return self.muted_remaining()
+
+    def muted_remaining(self) -> float:
+        with self._lock:
+            if self._muted_until is None:
+                return 0.0
+            remaining = self._muted_until - time.monotonic()
+            if remaining <= 0:
+                self._muted_until = None
+                return 0.0
+            return remaining
+
+    def _is_muted(self) -> bool:
+        return self.muted_remaining() > 0
 
     def _bot_token(self) -> str:
         return _env("NOTIFY_TELEGRAM_BOT_TOKEN")
@@ -147,7 +173,7 @@ class TelegramNotifier:
         image_path: str | None = None,
     ) -> bool:
         """Queue a Telegram notification for an event. Returns True if accepted for sending."""
-        if not self.enabled:
+        if not self.enabled or self._is_muted():
             return False
         token = self._bot_token()
         chat_id = self._chat_id()
@@ -216,7 +242,7 @@ class TelegramNotifier:
         video_path: str | None = None,
     ) -> bool:
         """Queue a Telegram sendVideo notification. Returns True if accepted for sending."""
-        if not self.enabled:
+        if not self.enabled or self._is_muted():
             return False
         token = self._bot_token()
         chat_id = self._chat_id()
