@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import tempfile
 import threading
 import time
 import urllib.error
@@ -20,27 +21,109 @@ from pathlib import Path
 from typing import Any
 
 from notifications import TELEGRAM_API_BASE, telegram_api_call
+from recording import record_clip
+
+# Clip on-demand: durata di default e limite massimo (secondi).
+CLIP_DEFAULT_SEC = 10
+CLIP_MAX_SEC = 30
 
 logger = logging.getLogger(__name__)
 
-COMMANDS = [
-    ("status", "Stato camera e movimento"),
-    ("snapshot", "Invia foto live"),
-    ("latest", "Invia ultimo evento"),
-    ("events", "Elenca ultimi eventi"),
-    ("motion_on", "Attiva rilevamento"),
-    ("motion_off", "Disattiva rilevamento"),
-    ("record_on", "Attiva clip evento"),
-    ("record_off", "Disattiva clip evento"),
-    ("continuous_on", "Attiva registrazione continua"),
-    ("continuous_off", "Disattiva registrazione continua"),
-    ("ptz_left", "Muovi a sinistra"),
-    ("ptz_right", "Muovi a destra"),
-    ("ptz_up", "Muovi in alto"),
-    ("ptz_down", "Muovi in basso"),
-    ("ptz_stop", "Ferma PTZ"),
-    ("ptz_home", "PTZ home"),
-    ("help", "Mostra comandi"),
+# Comandi raggruppati per categoria. Unica fonte: il menu Telegram (COMMANDS) e
+# /help (_help_text) sono entrambi derivati da qui.
+HELP_SECTIONS = [
+    (
+        "ℹ️ Stato",
+        [
+            ("status", "Stato camera e movimento"),
+            ("config", "Riepilogo impostazioni"),
+            ("snapshot", "Invia foto live"),
+            ("clip", "Registra e invia clip (default 10s)"),
+            ("latest", "Invia ultimo evento"),
+            ("events", "Elenca ultimi eventi"),
+        ],
+    ),
+    (
+        "👁 Rilevamento",
+        [
+            ("motion_on", "Attiva rilevamento"),
+            ("motion_off", "Disattiva rilevamento"),
+            ("sensitivity", "Sensibilita: bassa|media|alta"),
+            ("classification_on", "Attiva riconoscimento"),
+            ("classification_off", "Disattiva riconoscimento"),
+        ],
+    ),
+    (
+        "🔔 Notifiche",
+        [
+            ("notifications_on", "Attiva notifiche"),
+            ("notifications_off", "Disattiva notifiche"),
+            ("mute", "Silenzia per N minuti"),
+            ("resume", "Riprendi notifiche"),
+        ],
+    ),
+    (
+        "⏺ Registrazione",
+        [
+            ("record_on", "Attiva clip evento"),
+            ("record_off", "Disattiva clip evento"),
+            ("continuous_on", "Attiva registrazione continua"),
+            ("continuous_off", "Disattiva registrazione continua"),
+        ],
+    ),
+    (
+        "🕹 PTZ",
+        [
+            ("ptz_left", "Muovi a sinistra"),
+            ("ptz_right", "Muovi a destra"),
+            ("ptz_up", "Muovi in alto"),
+            ("ptz_down", "Muovi in basso"),
+            ("ptz_stop", "Ferma PTZ"),
+            ("ptz_home", "PTZ home"),
+        ],
+    ),
+]
+
+# Menu Telegram (setMyCommands): tutti i comandi delle sezioni + /help.
+COMMANDS = [pair for _, commands in HELP_SECTIONS for pair in commands]
+COMMANDS.append(("menu", "Bottoni rapidi"))
+COMMANDS.append(("help", "Mostra comandi"))
+
+# Reply keyboard persistente: comandi principali sempre sotto la barra di input.
+# Le etichette non sono /comandi, quindi vengono mappate al comando reale.
+MAIN_KEYBOARD_ROWS = [
+    ["📊 Stato", "📸 Snapshot"],
+    ["🎬 Clip", "📋 Menu"],
+]
+REPLY_BUTTON_COMMANDS = {
+    "📊 Stato": "/status",
+    "📸 Snapshot": "/snapshot",
+    "🎬 Clip": "/clip",
+    "📋 Menu": "/menu",
+}
+
+# Inline keyboard del /menu: tutto il resto. callback_data = comando (+ args).
+INLINE_MENU_ROWS = [
+    [("👁 Movimento ON", "/motion_on"), ("👁 Movimento OFF", "/motion_off")],
+    [
+        ("🎚 Sens. bassa", "/sensitivity bassa"),
+        ("🎚 Media", "/sensitivity media"),
+        ("🎚 Alta", "/sensitivity alta"),
+    ],
+    [("🧠 Riconosc. ON", "/classification_on"), ("🧠 OFF", "/classification_off")],
+    [("🔔 Notifiche ON", "/notifications_on"), ("🔕 OFF", "/notifications_off")],
+    [("⏸ Pausa 15m", "/mute 15"), ("▶️ Riprendi", "/resume")],
+    [("⏺ Clip evento ON", "/record_on"), ("⏺ OFF", "/record_off")],
+    [("🔁 Continua ON", "/continuous_on"), ("🔁 OFF", "/continuous_off")],
+    [("🎬 Clip 5s", "/clip 5"), ("🎬 10s", "/clip 10"), ("🎬 30s", "/clip 30")],
+    [
+        ("⬅️", "/ptz_left"),
+        ("⬆️", "/ptz_up"),
+        ("⬇️", "/ptz_down"),
+        ("➡️", "/ptz_right"),
+    ],
+    [("⏹ Stop PTZ", "/ptz_stop"), ("🏠 Home", "/ptz_home")],
+    [("🗂 Eventi", "/events"), ("🖼 Ultimo", "/latest")],
 ]
 
 PTZ_COMMANDS = {
@@ -48,6 +131,16 @@ PTZ_COMMANDS = {
     "/ptz_right": "right",
     "/ptz_up": "up",
     "/ptz_down": "down",
+}
+
+# Soglia movimento: valore piu basso = piu sensibile. Accetta preset IT ed EN.
+SENSITIVITY_PRESETS = {
+    "alta": 15,
+    "media": 30,
+    "bassa": 50,
+    "high": 15,
+    "medium": 30,
+    "low": 50,
 }
 
 
@@ -76,6 +169,27 @@ def _env_int(name: str, default: int, minimum: int = 1) -> int:
     except ValueError:
         value = default
     return max(minimum, value)
+
+
+def _reply_keyboard_markup() -> str:
+    return json.dumps(
+        {
+            "keyboard": [[{"text": text} for text in row] for row in MAIN_KEYBOARD_ROWS],
+            "resize_keyboard": True,
+            "is_persistent": True,
+        }
+    )
+
+
+def _inline_menu_markup() -> str:
+    return json.dumps(
+        {
+            "inline_keyboard": [
+                [{"text": label, "callback_data": command} for label, command in row]
+                for row in INLINE_MENU_ROWS
+            ]
+        }
+    )
 
 
 def _build_multipart_bytes(
@@ -186,7 +300,7 @@ class TelegramCommandBot:
             poll_timeout = _env_float("TELEGRAM_COMMANDS_POLL_TIMEOUT_SEC", 25, 1)
             params = {
                 "timeout": str(int(poll_timeout)),
-                "allowed_updates": json.dumps(["message"]),
+                "allowed_updates": json.dumps(["message", "callback_query"]),
             }
             if self._last_update_id is not None:
                 params["offset"] = str(self._last_update_id + 1)
@@ -205,7 +319,10 @@ class TelegramCommandBot:
                 if isinstance(update_id, int):
                     self._last_update_id = update_id
                 try:
-                    self._handle_update(update)
+                    if "callback_query" in update:
+                        self._handle_callback(update["callback_query"])
+                    else:
+                        self._handle_update(update)
                 except Exception:
                     logger.exception("Gestione comando Telegram fallita")
 
@@ -220,7 +337,7 @@ class TelegramCommandBot:
                 "offset": "-1",
                 "limit": "1",
                 "timeout": "0",
-                "allowed_updates": json.dumps(["message"]),
+                "allowed_updates": json.dumps(["message", "callback_query"]),
             },
             timeout=5,
         )
@@ -262,12 +379,44 @@ class TelegramCommandBot:
             return
 
         text = str(message.get("text") or "").strip()
+        # I bottoni della reply keyboard inviano l'etichetta come testo: traducila.
+        text = REPLY_BUTTON_COMMANDS.get(text, text)
         command = self._parse_command(text)
         if not command:
             return
-        response = self._dispatch(command, chat_id)
+        args = text.split()[1:]
+        response = self._dispatch(command, args, chat_id)
         if response:
             self._send_message(chat_id, response)
+
+    def _handle_callback(self, callback: dict) -> None:
+        chat = (callback.get("message") or {}).get("chat") or {}
+        chat_id = str(chat.get("id", "")).strip()
+        callback_id = str(callback.get("id", ""))
+        if chat_id not in self._allowed_chat_ids():
+            self._answer_callback(callback_id)
+            return
+        if not self._allow_command(chat_id):
+            self._answer_callback(callback_id, "Troppi comandi. Riprova tra poco.")
+            return
+
+        text = str(callback.get("data") or "").strip()
+        command = self._parse_command(text)
+        self._answer_callback(callback_id)
+        if not command:
+            return
+        args = text.split()[1:]
+        response = self._dispatch(command, args, chat_id)
+        if response:
+            self._send_message(chat_id, response)
+
+    def _answer_callback(self, callback_id: str, text: str = "") -> None:
+        if not callback_id:
+            return
+        params = {"callback_query_id": callback_id}
+        if text:
+            params["text"] = text
+        _bot_api_call(self._token(), "answerCallbackQuery", params, timeout=10)
 
     def _allow_command(self, chat_id: str) -> bool:
         limit = _env_int("TELEGRAM_COMMANDS_RATE_LIMIT_PER_MIN", 20, 1)
@@ -289,13 +438,21 @@ class TelegramCommandBot:
             command = command.split("@", 1)[0]
         return command
 
-    def _dispatch(self, command: str, chat_id: str) -> str | None:
+    def _dispatch(self, command: str, args: list[str], chat_id: str) -> str | None:
         if command in {"/start", "/help"}:
-            return self._help_text()
+            self._send_message(chat_id, self._help_text(), reply_markup=_reply_keyboard_markup())
+            return None
+        if command == "/menu":
+            self._send_message(chat_id, "Menu comandi:", reply_markup=_inline_menu_markup())
+            return None
         if command == "/status":
             return self._status_text()
+        if command == "/config":
+            return self._config_text()
         if command == "/snapshot":
             return self._send_snapshot(chat_id)
+        if command == "/clip":
+            return self._send_clip(args, chat_id)
         if command == "/latest":
             return self._send_latest_event(chat_id)
         if command == "/events":
@@ -304,6 +461,20 @@ class TelegramCommandBot:
             return self._update_bool("MOTION_ENABLED", True, "Rilevamento movimento attivato.")
         if command == "/motion_off":
             return self._update_bool("MOTION_ENABLED", False, "Rilevamento movimento disattivato.")
+        if command == "/sensitivity":
+            return self._set_sensitivity(args)
+        if command == "/notifications_on":
+            return self._update_bool("NOTIFY_TELEGRAM_ENABLED", True, "Notifiche attivate.")
+        if command == "/notifications_off":
+            return self._update_bool("NOTIFY_TELEGRAM_ENABLED", False, "Notifiche disattivate.")
+        if command == "/mute":
+            return self._mute(args)
+        if command == "/resume":
+            return self._resume()
+        if command == "/classification_on":
+            return self._update_bool("CLASSIFICATION_ENABLED", True, "Riconoscimento attivato.")
+        if command == "/classification_off":
+            return self._update_bool("CLASSIFICATION_ENABLED", False, "Riconoscimento disattivato.")
         if command == "/record_on":
             return self._update_bool("RECORD_ENABLED", True, "Clip video evento attivate.")
         if command == "/record_off":
@@ -329,9 +500,12 @@ class TelegramCommandBot:
         return "Comando non riconosciuto. Usa /help."
 
     def _help_text(self) -> str:
-        lines = ["Comandi BLACKFRAME:"]
-        for command, description in COMMANDS:
-            lines.append(f"/{command} - {description}")
+        lines = ["🎥 Comandi BLACKFRAME"]
+        for title, commands in HELP_SECTIONS:
+            lines.append("")
+            lines.append(title)
+            for command, description in commands:
+                lines.append(f"/{command} - {description}")
         return "\n".join(lines)
 
     def _status_text(self) -> str:
@@ -349,9 +523,7 @@ class TelegramCommandBot:
         motion_state = "attivo" if motion.get("enabled") else "spento"
         moving = "si" if motion.get("motion_detected") else "no"
         ptz_state = (
-            "ok"
-            if ptz.get("available")
-            else f"no ({ptz.get('error') or 'non disponibile'})"
+            "ok" if ptz.get("available") else f"no ({ptz.get('error') or 'non disponibile'})"
         )
         cont_state = "attiva" if continuous.get("active") else "spenta"
         return "\n".join(
@@ -359,11 +531,79 @@ class TelegramCommandBot:
                 "Stato BLACKFRAME",
                 f"Stream: {stream_state}",
                 f"Motion: {motion_state}, movimento: {moving}",
+                f"Notifiche: {self._notifications_state()}",
                 f"Ultimo evento: {motion.get('last_motion_at') or '-'}",
                 f"PTZ: {ptz_state}",
                 f"Registrazione continua: {cont_state}",
             ]
         )
+
+    def _notifier(self) -> Any | None:
+        features = getattr(self.services, "features", None)
+        return getattr(features, "telegram", None) if features is not None else None
+
+    def _notifications_state(self) -> str:
+        if not _env_bool("NOTIFY_TELEGRAM_ENABLED", False):
+            return "spente"
+        notifier = self._notifier()
+        remaining = notifier.muted_remaining() if notifier is not None else 0
+        if remaining > 0:
+            return f"in pausa ({int(remaining // 60) + 1} min)"
+        return "attive"
+
+    def _config_text(self) -> str:
+        def flag(name: str, on: str, off: str, default: bool = False) -> str:
+            return on if _env_bool(name, default) else off
+
+        return "\n".join(
+            [
+                "Impostazioni BLACKFRAME",
+                f"Movimento: {flag('MOTION_ENABLED', 'attivo', 'spento', True)}",
+                f"Soglia movimento: {_env_int('MOTION_THRESHOLD', 30, 0)}",
+                f"Notifiche: {self._notifications_state()}",
+                f"Riconoscimento: {flag('CLASSIFICATION_ENABLED', 'attivo', 'spento')}",
+                f"Clip evento: {flag('RECORD_ENABLED', 'attive', 'spente')}",
+                f"Reg. continua: {flag('CONTINUOUS_RECORD_ENABLED', 'attiva', 'spenta')}",
+            ]
+        )
+
+    def _set_sensitivity(self, args: list[str]) -> str:
+        if not args:
+            return "Uso: /sensitivity bassa|media|alta"
+        preset = args[0].lower()
+        threshold = SENSITIVITY_PRESETS.get(preset)
+        if threshold is None:
+            return "Preset sconosciuto. Usa: bassa, media o alta."
+        try:
+            self._apply_runtime_updates({"MOTION_THRESHOLD": threshold})
+        except ValueError as exc:
+            return f"Config non valida: {exc}"
+        except Exception:
+            logger.exception("Aggiornamento sensibilita da Telegram fallito")
+            return "Aggiornamento fallito."
+        return f"Sensibilita impostata su {preset} (soglia {threshold})."
+
+    def _mute(self, args: list[str]) -> str:
+        notifier = self._notifier()
+        if notifier is None:
+            return "Notifiche non disponibili."
+        minutes = 15.0
+        if args:
+            try:
+                minutes = float(args[0])
+            except ValueError:
+                return "Uso: /mute <minuti>"
+        if minutes <= 0:
+            return "Indica un numero di minuti positivo."
+        notifier.mute(minutes * 60)
+        return f"Notifiche silenziate per {int(minutes)} min."
+
+    def _resume(self) -> str:
+        notifier = self._notifier()
+        if notifier is None:
+            return "Notifiche non disponibili."
+        notifier.mute(0)
+        return "Notifiche riprese."
 
     def _events_text(self) -> str:
         events = self.services.motion.list_events(limit=5)
@@ -387,6 +627,50 @@ class TelegramCommandBot:
         if not ok:
             return f"Invio snapshot fallito: {error}"
         return None
+
+    def _send_clip(self, args: list[str], chat_id: str) -> str | None:
+        seconds = CLIP_DEFAULT_SEC
+        if args:
+            try:
+                seconds = int(float(args[0]))
+            except ValueError:
+                return f"Uso: /clip <secondi> (max {CLIP_MAX_SEC})"
+        if seconds < 1:
+            return "Indica una durata positiva."
+        if seconds > CLIP_MAX_SEC:
+            return f"Durata massima {CLIP_MAX_SEC} secondi."
+        if self.services.camera.get_raw_frame() is None:
+            return "Nessun frame disponibile."
+        threading.Thread(
+            target=self._record_and_send_clip,
+            args=(chat_id, seconds),
+            daemon=True,
+        ).start()
+        return f"Registro clip di {seconds}s, attendi..."
+
+    def _record_and_send_clip(self, chat_id: str, seconds: int) -> None:
+        fps = _env_float("RECORD_FPS", 10, 1)
+        max_width = _env_int("RECORD_MAX_WIDTH", 1280, 0)
+        tmp_dir = tempfile.mkdtemp(prefix="blackframe_clip_")
+        path = Path(tmp_dir) / "clip.mp4"
+        try:
+            result = record_clip(self.services.camera, path, seconds, fps=fps, max_width=max_width)
+            if result is None:
+                self._send_message(chat_id, "Registrazione clip fallita.")
+                return
+            video = result.read_bytes()
+            ok, error = self._send_video_bytes(chat_id, video, f"Clip live {seconds}s")
+            if not ok:
+                self._send_message(chat_id, f"Invio clip fallito: {error}")
+        except Exception:
+            logger.exception("Clip on-demand fallita")
+            self._send_message(chat_id, "Errore durante la clip.")
+        finally:
+            try:
+                path.unlink(missing_ok=True)
+                Path(tmp_dir).rmdir()
+            except OSError:
+                pass
 
     def _send_latest_event(self, chat_id: str) -> str | None:
         events = self.services.motion.list_events(limit=1)
@@ -436,8 +720,13 @@ class TelegramCommandBot:
         success, error = self.services.ptz.home()
         return "PTZ riportato home." if success else f"PTZ home fallito: {error}"
 
-    def _send_message(self, chat_id: str, text: str) -> tuple[bool, str | None]:
-        result = telegram_api_call(self._token(), "sendMessage", {"chat_id": chat_id, "text": text})
+    def _send_message(
+        self, chat_id: str, text: str, reply_markup: str | None = None
+    ) -> tuple[bool, str | None]:
+        params = {"chat_id": chat_id, "text": text}
+        if reply_markup is not None:
+            params["reply_markup"] = reply_markup
+        result = telegram_api_call(self._token(), "sendMessage", params)
         if result.get("ok"):
             return True, None
         return False, result.get("description") or "Invio fallito"
@@ -448,18 +737,43 @@ class TelegramCommandBot:
         photo: bytes,
         caption: str,
     ) -> tuple[bool, str | None]:
-        url = f"{TELEGRAM_API_BASE}/bot{self._token()}/sendPhoto"
+        return self._send_media_bytes(
+            "sendPhoto", "photo", "blackframe.jpg", "image/jpeg", chat_id, photo, caption
+        )
+
+    def _send_video_bytes(
+        self,
+        chat_id: str,
+        video: bytes,
+        caption: str,
+    ) -> tuple[bool, str | None]:
+        return self._send_media_bytes(
+            "sendVideo", "video", "clip.mp4", "video/mp4", chat_id, video, caption, timeout=60
+        )
+
+    def _send_media_bytes(
+        self,
+        method: str,
+        field: str,
+        filename: str,
+        media_content_type: str,
+        chat_id: str,
+        data: bytes,
+        caption: str,
+        timeout: float = 20,
+    ) -> tuple[bool, str | None]:
+        url = f"{TELEGRAM_API_BASE}/bot{self._token()}/{method}"
         content_type, body = _build_multipart_bytes(
             {"chat_id": chat_id, "caption": caption},
-            "photo",
-            "blackframe.jpg",
-            photo,
-            "image/jpeg",
+            field,
+            filename,
+            data,
+            media_content_type,
         )
         req = urllib.request.Request(url, data=body, method="POST")
         req.add_header("Content-Type", content_type)
         try:
-            with urllib.request.urlopen(req, timeout=20) as resp:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
                 payload = json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             body_text = exc.read().decode("utf-8", "replace")

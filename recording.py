@@ -76,6 +76,24 @@ def scaled_size(frame, max_width: int) -> tuple[int, int]:
     return (width, max(2, height))
 
 
+def decode_jpeg(jpeg: bytes):
+    """Decode JPEG bytes into a BGR frame, or None on failure."""
+    try:
+        arr = np.frombuffer(jpeg, dtype=np.uint8)
+        return cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    except Exception:
+        return None
+
+
+def fit_frame(frame, size):
+    """Resize frame to size if needed."""
+    if frame is None:
+        return frame
+    if (frame.shape[1], frame.shape[0]) != size:
+        return cv2.resize(frame, size, interpolation=cv2.INTER_AREA)
+    return frame
+
+
 def open_mp4_writer(path: "Path | str", fps: float, size) -> "cv2.VideoWriter | None":
     """Open a VideoWriter preferring browser-playable H.264, falling back to mp4v."""
     path = str(path)
@@ -156,7 +174,7 @@ class EventRecorder:
         writer = None
         size = None
         try:
-            preroll = [self._decode(jpeg) for jpeg in self.camera.get_preroll_jpegs(preroll_sec)]
+            preroll = [decode_jpeg(jpeg) for jpeg in self.camera.get_preroll_jpegs(preroll_sec)]
             preroll = [frame for frame in preroll if frame is not None]
 
             started_at = time.time()
@@ -174,9 +192,9 @@ class EventRecorder:
                     if writer is None:
                         return
                     for pre in preroll:
-                        writer.write(self._fit(pre, size))
+                        writer.write(fit_frame(pre, size))
                     preroll = []
-                writer.write(self._fit(frame, size))
+                writer.write(fit_frame(frame, size))
                 next_frame_at += interval
                 sleep_for = next_frame_at - time.time()
                 if sleep_for > 0:
@@ -199,18 +217,53 @@ class EventRecorder:
             return None
         return writer
 
-    @staticmethod
-    def _decode(jpeg: bytes):
-        try:
-            arr = np.frombuffer(jpeg, dtype=np.uint8)
-            return cv2.imdecode(arr, cv2.IMREAD_COLOR)
-        except Exception:
-            return None
 
-    @staticmethod
-    def _fit(frame, size):
-        if frame is None:
-            return frame
-        if (frame.shape[1], frame.shape[0]) != size:
-            return cv2.resize(frame, size, interpolation=cv2.INTER_AREA)
-        return frame
+def record_clip(
+    camera_stream,
+    path: "Path | str",
+    seconds: float,
+    fps: float = 10.0,
+    max_width: int = 0,
+) -> "Path | None":
+    """Record an on-demand MP4 clip of ``seconds`` to ``path``.
+
+    Pulls raw frames at ``fps`` directly from the stream (no pre-roll, no event
+    directory). Returns the written Path on success, or None if no frame could
+    be captured or the writer failed.
+    """
+    fps = max(1.0, float(fps))
+    interval = 1.0 / fps
+    path = Path(path)
+    writer = None
+    size = None
+    try:
+        started_at = time.time()
+        next_frame_at = started_at
+        while time.time() - started_at < seconds:
+            frame = camera_stream.get_raw_frame()
+            if frame is None:
+                time.sleep(interval)
+                continue
+            if writer is None:
+                size = scaled_size(frame, int(max_width or 0))
+                path.parent.mkdir(parents=True, exist_ok=True)
+                writer = open_mp4_writer(path, fps, size)
+                if writer is None:
+                    return None
+            writer.write(fit_frame(frame, size))
+            next_frame_at += interval
+            sleep_for = next_frame_at - time.time()
+            if sleep_for > 0:
+                time.sleep(min(sleep_for, interval))
+            else:
+                next_frame_at = time.time()
+    except Exception:
+        logger.exception("Errore registrazione clip on-demand")
+        return None
+    finally:
+        if writer is not None:
+            writer.release()
+            finalize_faststart(path)
+    if writer is None or not path.is_file() or path.stat().st_size == 0:
+        return None
+    return path
