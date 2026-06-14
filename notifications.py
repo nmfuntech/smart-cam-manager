@@ -5,11 +5,13 @@ updates take effect without a restart. Network I/O runs in a background thread t
 avoid blocking the motion detection loop.
 """
 
+import json
 import logging
 import os
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from pathlib import Path
@@ -17,6 +19,60 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 TELEGRAM_API_BASE = "https://api.telegram.org"
+
+
+def telegram_api_call(token: str, method: str, params: dict | None = None) -> dict:
+    """Call a Telegram Bot API method. Returns the parsed JSON response.
+
+    On network/HTTP failure returns a dict shaped like the Telegram error
+    response: ``{"ok": False, "description": "..."}``.
+    """
+    url = f"{TELEGRAM_API_BASE}/bot{token}/{method}"
+    data = urllib.parse.urlencode(params or {}).encode() if params else None
+    req = urllib.request.Request(url, data=data, method="POST" if data else "GET")
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", "replace")
+        try:
+            return json.loads(body)
+        except json.JSONDecodeError:
+            return {"ok": False, "description": f"HTTP {exc.code}: {body}"}
+    except (urllib.error.URLError, OSError) as exc:
+        return {"ok": False, "description": f"Errore di rete: {exc}"}
+    except json.JSONDecodeError:
+        return {"ok": False, "description": "Risposta Telegram non valida"}
+
+
+def discover_telegram_chats(token: str) -> tuple[bool, list[dict], str | None]:
+    """Find chats that recently messaged the bot via getUpdates.
+
+    Returns ``(ok, chats, error)`` where ``chats`` is a list of
+    ``{"chat_id": int, "label": str}`` dicts.
+    """
+    result = telegram_api_call(token, "getUpdates")
+    if not result.get("ok"):
+        return False, [], result.get("description") or "Token non valido"
+    chats: dict[int, str] = {}
+    for upd in result.get("result", []):
+        msg = upd.get("message") or upd.get("channel_post") or {}
+        chat = msg.get("chat")
+        if chat and "id" in chat:
+            name = chat.get("title") or chat.get("username") or chat.get("first_name") or "?"
+            chats[chat["id"]] = f"{name} ({chat.get('type')})"
+    return True, [{"chat_id": cid, "label": label} for cid, label in chats.items()], None
+
+
+def send_telegram_test(
+    token: str, chat_id: str, text: str | None = None
+) -> tuple[bool, str | None]:
+    """Send a plain-text test message. Returns ``(ok, error)``."""
+    message = text or "✅ BLACKFRAME: notifiche Telegram configurate correttamente."
+    result = telegram_api_call(token, "sendMessage", {"chat_id": chat_id, "text": message})
+    if result.get("ok"):
+        return True, None
+    return False, result.get("description") or "Invio fallito"
 
 
 def _env(name: str, default: str = "") -> str:
@@ -30,7 +86,12 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _build_multipart(fields: dict[str, str], file_field: str | None, file_path: str | None):
+def _build_multipart(
+    fields: dict[str, str],
+    file_field: str | None,
+    file_path: str | None,
+    file_content_type: str = "image/jpeg",
+):
     """Encode a multipart/form-data body. Returns (content_type, body_bytes)."""
     boundary = f"----blackframe{uuid.uuid4().hex}"
     crlf = b"\r\n"
@@ -47,7 +108,7 @@ def _build_multipart(fields: dict[str, str], file_field: str | None, file_path: 
         body += (
             f'Content-Disposition: form-data; name="{file_field}"; filename="{filename}"'
         ).encode() + crlf
-        body += b"Content-Type: image/jpeg" + crlf + crlf
+        body += f"Content-Type: {file_content_type}".encode() + crlf + crlf
         body += file_bytes + crlf
     body += b"--" + boundary.encode() + b"--" + crlf
     content_type = f"multipart/form-data; boundary={boundary}"
@@ -147,6 +208,70 @@ class TelegramNotifier:
             logger.warning("Invio Telegram fallito: %s", exc)
         except Exception:
             logger.exception("Errore inatteso invio Telegram")
+
+    def notify_event_video(
+        self,
+        event_id: str,
+        class_label: str | None = None,
+        video_path: str | None = None,
+    ) -> bool:
+        """Queue a Telegram sendVideo notification. Returns True if accepted for sending."""
+        if not self.enabled:
+            return False
+        token = self._bot_token()
+        chat_id = self._chat_id()
+        if not token or not chat_id:
+            logger.warning("Telegram non configurato: token o chat_id mancanti")
+            return False
+
+        allowed = self._allowed_classes()
+        if allowed and (class_label is None or class_label not in allowed):
+            return False
+
+        with self._lock:
+            now = time.monotonic()
+            if self._last_sent_at is not None and now - self._last_sent_at < self._min_interval():
+                return False
+            self._last_sent_at = now
+
+        threading.Thread(
+            target=self._send_video,
+            args=(token, chat_id, event_id, class_label, video_path),
+            daemon=True,
+        ).start()
+        return True
+
+    def _send_video(
+        self,
+        token: str,
+        chat_id: str,
+        event_id: str,
+        class_label: str | None,
+        video_path: str | None,
+    ) -> None:
+        caption = self._caption(event_id, class_label)
+        try:
+            if video_path and Path(video_path).is_file():
+                url = f"{TELEGRAM_API_BASE}/bot{token}/sendVideo"
+                content_type, body = _build_multipart(
+                    {"chat_id": chat_id, "caption": caption, "supports_streaming": "true"},
+                    "video",
+                    video_path,
+                    file_content_type="video/mp4",
+                )
+            else:
+                url = f"{TELEGRAM_API_BASE}/bot{token}/sendMessage"
+                content_type, body = _build_multipart(
+                    {"chat_id": chat_id, "text": caption}, None, None
+                )
+            req = urllib.request.Request(url, data=body, method="POST")
+            req.add_header("Content-Type", content_type)
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                resp.read()
+        except (urllib.error.URLError, OSError) as exc:
+            logger.warning("Invio video Telegram fallito: %s", exc)
+        except Exception:
+            logger.exception("Errore inatteso invio video Telegram")
 
     def status(self) -> dict:
         return {

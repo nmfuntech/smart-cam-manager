@@ -8,6 +8,10 @@ __pycache__/
 captures/
 data/camera_profiles.json
 data/.camera_profiles.key
+data/.test-camera-profiles.key
+
+# Local tooling
+.claude/
 
 # IDE/OS
 .DS_Store

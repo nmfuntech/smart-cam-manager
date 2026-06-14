@@ -17,6 +17,7 @@ export function createMotionController(elements) {
     captureSummary,
     captureToggle,
     captureClear,
+    captureOpenFolder,
     runtimeSave,
     runtimeFeedback,
     cfgMotionEnabled,
@@ -391,6 +392,9 @@ export function createMotionController(elements) {
     motionCaptureVideo.removeAttribute("src");
     motionCaptureVideo.load?.();
     motionCaptureVideo.hidden = true;
+    // CSS sets `.motion-capture-frame video { display: none }`; an inline style is
+    // required to actually hide/show it (the `hidden` attribute alone is overridden).
+    motionCaptureVideo.style.display = "none";
   }
 
   function showEmptyPreview(message = "Seleziona un evento") {
@@ -508,6 +512,7 @@ export function createMotionController(elements) {
       motionCaptureImage.style.display = "none";
       motionCaptureImage.removeAttribute("src");
       motionCaptureVideo.hidden = false;
+      motionCaptureVideo.style.display = "block";
       // Avoid reloading the same clip on every live poll (it would restart playback).
       if (!motionCaptureVideo.currentSrc.endsWith(capture.video_url)) {
         motionCaptureVideo.src = capture.video_url;
@@ -702,6 +707,27 @@ export function createMotionController(elements) {
     }
   }
 
+  async function openCapturesFolder() {
+    if (!captureOpenFolder) {
+      return;
+    }
+    captureOpenFolder.disabled = true;
+    try {
+      const { response, data } = await fetchJson("/api/open_captures_folder", {
+        method: "POST",
+      });
+      if (!response.ok) {
+        setRuntimeFeedback(data.error || "Impossibile aprire la cartella", true);
+        return;
+      }
+      setRuntimeFeedback("Cartella clip aperta nel file manager");
+    } catch {
+      setRuntimeFeedback("Errore di rete durante apertura cartella", true);
+    } finally {
+      captureOpenFolder.disabled = false;
+    }
+  }
+
   async function refreshMotionStatus() {
     try {
       const { data } = await fetchJson(`/motion_status?ts=${Date.now()}`);
@@ -777,6 +803,11 @@ export function createMotionController(elements) {
         await clearAllCaptures();
       });
     }
+    if (captureOpenFolder) {
+      captureOpenFolder.addEventListener("click", async () => {
+        await openCapturesFolder();
+      });
+    }
     if (runtimeSave) {
       runtimeSave.addEventListener("click", async () => {
         await saveRuntimeConfig();
@@ -811,6 +842,33 @@ export function createMotionController(elements) {
     }
     if (cfgClassificationSamplePolicy) {
       cfgClassificationSamplePolicy.addEventListener("change", markRuntimeDirty);
+    }
+    if (cfgNotifyTelegramEnabled) {
+      cfgNotifyTelegramEnabled.addEventListener("change", async () => {
+        const value = cfgNotifyTelegramEnabled.checked;
+        cfgNotifyTelegramEnabled.disabled = true;
+        setRuntimeFeedback("Aggiornamento notifiche Telegram...");
+        try {
+          const { response, data } = await fetchJson("/api/runtime_config", {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ updates: { NOTIFY_TELEGRAM_ENABLED: value } }),
+          });
+          if (!response.ok) {
+            cfgNotifyTelegramEnabled.checked = !value;
+            setRuntimeFeedback(data.error || "Errore aggiornamento notifiche", true);
+            return;
+          }
+          applyRuntimeConfigToForm(data.config || {});
+          runtimeDirty = false;
+          setRuntimeFeedback(value ? "Notifiche Telegram abilitate" : "Notifiche Telegram disabilitate");
+        } catch {
+          cfgNotifyTelegramEnabled.checked = !value;
+          setRuntimeFeedback("Errore di rete durante aggiornamento notifiche", true);
+        } finally {
+          cfgNotifyTelegramEnabled.disabled = false;
+        }
+      });
     }
     if (cfgClassificationMinConfidence) {
       cfgClassificationMinConfidence.addEventListener("input", () => {

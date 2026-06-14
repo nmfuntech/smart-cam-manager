@@ -100,6 +100,14 @@
                 <input id="cfg-notify-telegram-enabled" type="checkbox" />
               </label>
             </div>
+            <button
+              class="ghost-button compact-button"
+              id="telegram-config-open"
+              type="button"
+              style="width:100%;margin-top:2px"
+            >
+              Configura Telegram
+            </button>
             <button class="ghost-button compact-button save-runtime" id="runtime-save" type="button">
               Salva impostazioni
             </button>
@@ -205,6 +213,9 @@
                 <div class="capture-panel-head">
                   <strong id="capture-summary">Ultimi 5 eventi</strong>
                   <div class="capture-actions">
+                    <button class="ghost-button compact-button" id="capture-open-folder" type="button">
+                      Apri cartella
+                    </button>
                     <button class="ghost-button compact-button danger-button" id="capture-clear" type="button">
                       Cancella tutto
                     </button>
@@ -221,6 +232,57 @@
         </div>
       </section>
     </main>
+
+    <dialog class="tg-dialog" id="telegram-dialog">
+      <form method="dialog" class="tg-dialog-form">
+        <div class="tg-dialog-head">
+          <strong>Configurazione notifiche Telegram</strong>
+          <button class="tg-dialog-close" id="telegram-close" type="button" aria-label="Chiudi">×</button>
+        </div>
+
+        <ol class="tg-steps">
+          <li>Apri Telegram, cerca <strong>@BotFather</strong>, invia <code>/newbot</code> e copia il token.</li>
+          <li>Cerca il tuo nuovo bot e mandagli un messaggio qualsiasi (es. <code>/start</code>).</li>
+          <li>Incolla il token qui sotto, premi <strong>Trova chat</strong>, scegli la chat e salva.</li>
+        </ol>
+
+        <label class="runtime-field">
+          <span>Token del bot</span>
+          <input id="tg-bot-token" type="password" autocomplete="off" placeholder="123456789:AA..." />
+          <p class="tg-hint" id="tg-token-hint"></p>
+        </label>
+
+        <div class="tg-row">
+          <label class="runtime-field tg-grow">
+            <span>Chat ID</span>
+            <input id="tg-chat-id" type="text" inputmode="numeric" placeholder="es. 123456789" />
+          </label>
+          <button class="ghost-button compact-button" id="tg-discover" type="button">
+            Trova chat
+          </button>
+        </div>
+        <div class="tg-chat-list" id="tg-chat-list" hidden></div>
+
+        <label class="runtime-field toggle-field">
+          <span>Invia clip video (se registrazione attiva)</span>
+          <input id="tg-prefer-video" type="checkbox" />
+        </label>
+        <label class="runtime-field toggle-field">
+          <span>Notifiche abilitate</span>
+          <input id="tg-enabled" type="checkbox" />
+        </label>
+
+        <div class="tg-actions">
+          <button class="ghost-button compact-button" id="tg-test" type="button">
+            Invia messaggio di prova
+          </button>
+          <button class="ghost-button compact-button tg-save" id="tg-save" type="button">
+            Salva
+          </button>
+        </div>
+        <p class="runtime-feedback" id="tg-feedback">-</p>
+      </form>
+    </dialog>
 
     <script
       type="module"

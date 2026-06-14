@@ -259,6 +259,85 @@ class MotionDetectorEventTests(unittest.TestCase):
         self.assertFalse(detector._is_usable_motion_area(500000, 1000000))
         self.assertTrue(detector._is_usable_motion_area(120000, 1000000))
 
+    def _make_detect_detector(self, **overrides):
+        detector = self.app_module.MotionDetector.__new__(self.app_module.MotionDetector)
+        detector.config = {
+            "scale_width": 0,
+            "blur_size": 5,
+            "mog2_history": 50,
+            "mog2_var_threshold": 35,
+            "morph_kernel": 3,
+            "morph_dilate_iter": 2,
+            "global_change_ratio": 0.5,
+            "min_area": 600,
+            "max_area_ratio": 0.95,
+            "learning_rate": -1,
+            "learning_rate_active": 0.0005,
+        }
+        detector.config.update(overrides)
+        detector.motion_detected = False
+        detector._build_subtractor()
+        return detector
+
+    def _warmup(self, detector, base, frames=40):
+        import numpy as np
+
+        rng = np.random.default_rng(0)
+        for _ in range(frames):
+            noisy = np.clip(
+                base.astype("int16") + rng.normal(0, 4, base.shape).astype("int16"), 0, 255
+            ).astype("uint8")
+            detector._detect_motion(noisy)
+
+    def test_detect_motion_ignores_gaussian_noise(self):
+        import numpy as np
+
+        base = np.full((240, 320, 3), 120, dtype="uint8")
+        detector = self._make_detect_detector()
+        self._warmup(detector, base)
+
+        rng = np.random.default_rng(99)
+        noisy = np.clip(
+            base.astype("int16") + rng.normal(0, 4, base.shape).astype("int16"), 0, 255
+        ).astype("uint8")
+        motion_now, area, _ = detector._detect_motion(noisy)
+
+        self.assertFalse(motion_now)
+        self.assertEqual(area, 0.0)
+
+    def test_detect_motion_triggers_on_moved_blob(self):
+        import numpy as np
+
+        base = np.full((240, 320, 3), 120, dtype="uint8")
+        detector = self._make_detect_detector()
+        self._warmup(detector, base)
+
+        triggered = False
+        last_area = 0.0
+        for _ in range(5):
+            frame = base.copy()
+            import cv2
+
+            cv2.rectangle(frame, (130, 90), (200, 160), (255, 255, 255), -1)
+            motion_now, last_area, _ = detector._detect_motion(frame)
+            triggered = triggered or motion_now
+
+        self.assertTrue(triggered)
+        self.assertGreater(last_area, detector.config["min_area"])
+
+    def test_detect_motion_ignores_global_lighting_shift(self):
+        import numpy as np
+
+        base = np.full((240, 320, 3), 120, dtype="uint8")
+        detector = self._make_detect_detector()
+        self._warmup(detector, base)
+
+        shifted = np.clip(base.astype("int16") + 60, 0, 255).astype("uint8")
+        motion_now, area, _ = detector._detect_motion(shifted)
+
+        self.assertFalse(motion_now)
+        self.assertEqual(area, 0.0)
+
     def test_saved_event_exposes_classification_metadata(self):
         event_dir = Path(self.tmpdir) / "motion_event_20260417_120001"
         event_dir.mkdir(parents=True, exist_ok=True)
@@ -409,7 +488,8 @@ class ConfigTests(unittest.TestCase):
             os.environ.pop("MOTION_MIN_AREA", None)
             config = self.app_module.get_motion_config()
 
-        self.assertEqual(config["min_area"], 1400)
+        # Min area is now relative to the downscaled detection frame (MOTION_SCALE_WIDTH).
+        self.assertEqual(config["min_area"], 600)
 
     def test_default_capture_interval_keeps_active_event_multiframe(self):
         with mock.patch.dict(os.environ, {"MOTION_CAPTURE_INTERVAL": ""}, clear=False):
@@ -1790,6 +1870,137 @@ class RuntimeConfigManagerTests(unittest.TestCase):
         manager = RuntimeConfigManager(self.env_path)
         with self.assertRaises(ValueError):
             manager.update({"CLASSIFICATION_BACKEND": "unsupported"})
+
+
+class TelegramConfigEndpointTests(unittest.TestCase):
+    def setUp(self):
+        self.app_module = load_app_module()
+
+    def _build_client(self, recorded_updates, telegram_status=None):
+        class FakeCamera:
+            def get_frame(self):
+                return b"frame"
+
+            def get_status(self):
+                return {"connected": True, "error": ""}
+
+        class FakePtz:
+            def get_status(self):
+                return {"available": True, "host": "127.0.0.1", "port": 2020, "error": ""}
+
+        class FakeMotion:
+            config = {"save_dir": tempfile.gettempdir()}
+
+            def get_status(self):
+                return {"enabled": True}
+
+            def apply_runtime_config(self, updates):
+                return None
+
+        class FakeRuntimeConfig:
+            def get_public_config(self):
+                return {}
+
+            def update(self, updates, allow_sensitive=False, allow_internal=False):
+                recorded_updates.append((dict(updates), allow_sensitive))
+                return {}
+
+        class FakeTelegram:
+            def status(self):
+                return telegram_status or {
+                    "enabled": False,
+                    "configured": False,
+                    "classes": [],
+                    "min_interval_sec": 30,
+                }
+
+        features = build_feature_services(self.app_module)
+        features.telegram = FakeTelegram()
+        app = self.app_module.create_app(
+            self.app_module.AppServices(
+                camera=FakeCamera(),
+                ptz=FakePtz(),
+                motion=FakeMotion(),
+                features=features,
+                runtime_config=FakeRuntimeConfig(),
+            )
+        )
+        client = app.test_client()
+        csrf = authenticate_client(client)
+        return client, csrf
+
+    def test_status_never_returns_token(self):
+        client, _ = self._build_client([])
+        with mock.patch.dict(os.environ, {"NOTIFY_TELEGRAM_BOT_TOKEN": "secret"}, clear=False):
+            response = client.get("/api/telegram_config")
+        data = response.get_json()
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(data["has_token"])
+        self.assertNotIn("bot_token", data)
+        self.assertNotIn("secret", json.dumps(data))
+
+    def test_enable_without_token_is_rejected(self):
+        recorded = []
+        client, csrf = self._build_client(recorded)
+        with mock.patch.dict(os.environ, {"NOTIFY_TELEGRAM_BOT_TOKEN": ""}, clear=False):
+            response = client.post(
+                "/api/telegram_config",
+                json={"enabled": True, "chat_id": "123"},
+                headers=csrf_headers(csrf),
+            )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(recorded, [])
+
+    def test_save_persists_sensitive_fields(self):
+        recorded = []
+        client, csrf = self._build_client(recorded)
+        response = client.post(
+            "/api/telegram_config",
+            json={
+                "bot_token": "111:AAA",
+                "chat_id": "123456",
+                "enabled": True,
+                "prefer_video": False,
+            },
+            headers=csrf_headers(csrf),
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(recorded), 1)
+        updates, allow_sensitive = recorded[0]
+        self.assertTrue(allow_sensitive)
+        self.assertEqual(updates["NOTIFY_TELEGRAM_BOT_TOKEN"], "111:AAA")
+        self.assertEqual(updates["NOTIFY_TELEGRAM_CHAT_ID"], "123456")
+        self.assertIs(updates["NOTIFY_TELEGRAM_ENABLED"], True)
+        self.assertIs(updates["NOTIFY_PREFER_VIDEO"], False)
+
+    def test_discover_uses_body_token(self):
+        client, csrf = self._build_client([])
+        with mock.patch(
+            "routes.motion.discover_telegram_chats",
+            return_value=(True, [{"chat_id": 7, "label": "Me (private)"}], None),
+        ) as discover:
+            response = client.post(
+                "/api/telegram_discover",
+                json={"bot_token": "999:ZZZ"},
+                headers=csrf_headers(csrf),
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["chats"][0]["chat_id"], 7)
+        discover.assert_called_once_with("999:ZZZ")
+
+    def test_test_endpoint_requires_token_and_chat(self):
+        client, csrf = self._build_client([])
+        with mock.patch.dict(
+            os.environ,
+            {"NOTIFY_TELEGRAM_BOT_TOKEN": "", "NOTIFY_TELEGRAM_CHAT_ID": ""},
+            clear=False,
+        ):
+            response = client.post(
+                "/api/telegram_test",
+                json={},
+                headers=csrf_headers(csrf),
+            )
+        self.assertEqual(response.status_code, 400)
 
 
 if __name__ == "__main__":
