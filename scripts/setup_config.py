@@ -12,12 +12,17 @@ from getpass import getpass
 from pathlib import Path
 from typing import Callable
 
-
 DEFAULT_ENV_PATH = Path(".env")
 EXAMPLE_ENV_PATH = Path(".env.example")
 DEFAULT_CAPTURES_PATH = Path("captures/motion")
 GENERATE_COMMANDS = {"g", "gen", "generate", "/g", "/generate"}
 LOCAL_BIND_HOSTS = {"127.0.0.1", "localhost", "::1"}
+# Re-running setup wipes these. Losing the camera encryption key or the profiles
+# store is irreversible: the camera passwords encrypted with that key can no
+# longer be decrypted. Guard against running setup on a live installation.
+PROFILE_KEY_PATH = Path("data/.camera_profiles.key")
+PROFILE_STORE_PATH = Path("data/camera_profiles.json")
+RESET_CONFIRM_WORD = "reset"
 
 
 Parser = Callable[[str], str]
@@ -217,9 +222,15 @@ SECTIONS: tuple[EnvSection, ...] = (
             EnvField("MOTION_THRESHOLD", "Soglia motion", parse_int, default="24"),
             EnvField("MOTION_BLUR_SIZE", "Blur size motion", parse_int, default="21"),
             EnvField("MOTION_COOLDOWN", "Cooldown motion", parse_float, default="3"),
-            EnvField("MOTION_FRAME_INTERVAL", "Intervallo frame motion", parse_float, default="0.25"),
-            EnvField("MOTION_CAPTURE_INTERVAL", "Intervallo capture motion", parse_float, default="0.18"),
-            EnvField("MOTION_MAX_AREA_RATIO", "Rapporto area massima motion", parse_float, default="0.45"),
+            EnvField(
+                "MOTION_FRAME_INTERVAL", "Intervallo frame motion", parse_float, default="0.25"
+            ),
+            EnvField(
+                "MOTION_CAPTURE_INTERVAL", "Intervallo capture motion", parse_float, default="0.18"
+            ),
+            EnvField(
+                "MOTION_MAX_AREA_RATIO", "Rapporto area massima motion", parse_float, default="0.45"
+            ),
             EnvField("MOTION_WARMUP_FRAMES", "Warmup frames motion", parse_int, default="12"),
             EnvField("MOTION_TRIGGER_FRAMES", "Trigger frames motion", parse_int, default="2"),
             EnvField("MOTION_CLEAR_FRAMES", "Clear frames motion", parse_int, default="8"),
@@ -230,7 +241,12 @@ SECTIONS: tuple[EnvSection, ...] = (
                 default="0.03",
             ),
             EnvField("MOTION_SAVE_FRAMES", "Salva frame motion", parse_bool, default="true"),
-            EnvField("MOTION_SAVE_DIR", "Directory salvataggio motion", parse_text, default="captures/motion"),
+            EnvField(
+                "MOTION_SAVE_DIR",
+                "Directory salvataggio motion",
+                parse_text,
+                default="captures/motion",
+            ),
             EnvField("MOTION_EVENT_GAP", "Gap tra eventi motion", parse_float, default="4.0"),
         ),
     ),
@@ -238,7 +254,9 @@ SECTIONS: tuple[EnvSection, ...] = (
         title="Stream tuning avanzato",
         description="Timeout, buffering e JPEG live. Premi invio per default consigliati.",
         fields=(
-            EnvField("RTSP_OPEN_TIMEOUT_SEC", "Timeout apertura RTSP (s)", parse_float, default="8.0"),
+            EnvField(
+                "RTSP_OPEN_TIMEOUT_SEC", "Timeout apertura RTSP (s)", parse_float, default="8.0"
+            ),
             EnvField(
                 "RTSP_RECONNECT_BACKOFF_MAX_SEC",
                 "Backoff max reconnessione RTSP (s)",
@@ -257,9 +275,16 @@ SECTIONS: tuple[EnvSection, ...] = (
                 parse_int,
                 default="2500",
             ),
-            EnvField("RTSP_BACKLOG_SKIP_FRAMES", "Frame backlog da saltare", parse_int, default="1"),
+            EnvField(
+                "RTSP_BACKLOG_SKIP_FRAMES", "Frame backlog da saltare", parse_int, default="1"
+            ),
             EnvField("STREAM_JPEG_QUALITY", "Qualita JPEG live", parse_int, default="85"),
-            EnvField("STREAM_MAX_WIDTH", "Larghezza massima stream (0 = nessun limite)", parse_int, default="0"),
+            EnvField(
+                "STREAM_MAX_WIDTH",
+                "Larghezza massima stream (0 = nessun limite)",
+                parse_int,
+                default="0",
+            ),
         ),
     ),
 )
@@ -295,9 +320,7 @@ def selected_sections(minimal: bool) -> tuple[EnvSection, ...]:
 
     filtered_sections: list[EnvSection] = []
     for section in SECTIONS:
-        minimal_fields = tuple(
-            field for field in section.fields if field.include_in_minimal
-        )
+        minimal_fields = tuple(field for field in section.fields if field.include_in_minimal)
         if minimal_fields:
             filtered_sections.append(
                 EnvSection(
@@ -494,6 +517,40 @@ def collect_values(
     return values, generated
 
 
+def existing_protected_state(env_path: Path) -> list[Path]:
+    """Protected files that re-running setup would irreversibly destroy, if present."""
+    candidates = [env_path, PROFILE_KEY_PATH, PROFILE_STORE_PATH]
+    return [path for path in candidates if path.exists()]
+
+
+def confirm_destructive_reset(
+    existing: list[Path],
+    input_fn: Callable[[str], str] = input,
+    force: bool = False,
+) -> bool:
+    """Return True only if it is safe to wipe existing state.
+
+    No existing state or --force returns True immediately. Otherwise the user must
+    type the confirmation word; anything else aborts so a live installation's
+    encryption key and camera profiles are not destroyed by accident.
+    """
+    if force or not existing:
+        return True
+    print("")
+    print("⚠️  Configurazione esistente rilevata:")
+    for path in existing:
+        print(f"   - {path}")
+    print(
+        "Proseguendo verranno CANCELLATI .env, chiave di cifratura e profili camera.\n"
+        "Le password camera cifrate diventeranno IRRECUPERABILI.\n"
+        "Se è un'installazione già attiva, interrompi ora (Ctrl+C)."
+    )
+    answer = (
+        input_fn(f"Scrivi '{RESET_CONFIRM_WORD}' per confermare la cancellazione: ").strip().lower()
+    )
+    return answer == RESET_CONFIRM_WORD
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Setup interattivo configurazione BLACKFRAME")
     parser.add_argument(
@@ -506,12 +563,21 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Chiede solo i parametri strettamente necessari e lascia il resto ai default",
     )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Salta la conferma anche con configurazione esistente (uso non interattivo)",
+    )
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
     env_path = Path(args.env_file)
+    if not confirm_destructive_reset(existing_protected_state(env_path), force=args.force):
+        print("")
+        print("Setup annullato. Nessun file modificato.")
+        return 1
     removed_paths = cleanup_setup_state(env_path)
     example_values = load_env_values(EXAMPLE_ENV_PATH)
     existing_values = dict(example_values)
