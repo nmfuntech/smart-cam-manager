@@ -5,7 +5,7 @@ ifeq ($(MINIMAL),1)
 SETUP_FLAGS += --minimal
 endif
 
-.PHONY: setup install lock run serve hash-password test clean help
+.PHONY: setup install lock run serve hash-password fetch-model test lint lint-fix clean help
 
 help:
 	@echo "Targets:"
@@ -16,7 +16,10 @@ help:
 	@echo "  make run           - start the dev server on :8000 (Flask)"
 	@echo "  make serve         - start the production server (gunicorn, single worker)"
 	@echo "  make hash-password - generate an APP_ADMIN_PASSWORD_HASH (prompts for password)"
+	@echo "  make fetch-model   - download the MobileNet-SSD detection model into models/"
 	@echo "  make test          - run unit tests"
+	@echo "  make lint          - run ruff (E/F/I, line-length 100)"
+	@echo "  make lint-fix      - run ruff with autofix (import sorting + safe fixes)"
 	@echo "  make clean         - remove local caches and generated local state"
 
 setup:
@@ -37,8 +40,17 @@ serve:
 hash-password:
 	@$(PYTHON) -c "from getpass import getpass; from werkzeug.security import generate_password_hash; pw=getpass('Password admin: '); print('\nAggiungi al .env:\nAPP_ADMIN_PASSWORD_HASH='+generate_password_hash(pw))"
 
+fetch-model:
+	$(PYTHON) scripts/fetch_model.py
+
 test:
 	$(PYTHON) -m pytest -v
+
+lint:
+	poetry run ruff check .
+
+lint-fix:
+	poetry run ruff check --fix .
 
 clean:
 	@if [ "$(FORCE)" != "1" ] && { [ -f .env ] || [ -f data/.camera_profiles.key ]; }; then \

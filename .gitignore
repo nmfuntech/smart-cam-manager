@@ -6,6 +6,8 @@ __pycache__/
 
 # Runtime artifacts
 captures/
+# Modelli scaricati con `make fetch-model` (non versionati, vedi scripts/fetch_model.py)
+models/
 data/camera_profiles.json
 data/.camera_profiles.key
 data/.test-camera-profiles.key
