@@ -256,6 +256,7 @@ class TelegramCommandBot:
         self._menu_configured = False
         self._guests_lock = threading.Lock()
         self._bot_username: str | None = None
+        self._bot_username_token: str = ""
 
     @property
     def enabled(self) -> bool:
@@ -314,25 +315,28 @@ class TelegramCommandBot:
 
     def status(self) -> dict:
         running = self._thread is not None and self._thread.is_alive()
+        allowed = self._allowed_chat_ids()
         return {
             "enabled": self.enabled,
-            "configured": self.configured(),
+            "configured": bool(self.enabled and self._token() and allowed),
             "running": running,
-            "allowed_chat_count": len(self._allowed_chat_ids()),
+            "allowed_chat_count": len(allowed),
         }
 
     def _run(self) -> None:
         self._forget_pending_updates()
         self._set_commands_menu()
-        if self._bot_username is None:
-            result = _bot_api_call(self._token(), "getMe", timeout=10)
-            if result.get("ok"):
-                self._bot_username = (result.get("result") or {}).get("username")
         while not self._stop.is_set():
             token = self._token()
             if not self.enabled or not token or not self._allowed_chat_ids():
                 time.sleep(5)
                 continue
+
+            if self._bot_username is None or self._bot_username_token != token:
+                result = _bot_api_call(token, "getMe", timeout=10)
+                if result.get("ok"):
+                    self._bot_username = (result.get("result") or {}).get("username")
+                    self._bot_username_token = token
 
             poll_timeout = _env_float("TELEGRAM_COMMANDS_POLL_TIMEOUT_SEC", 25, 1)
             params = {
@@ -412,8 +416,9 @@ class TelegramCommandBot:
         raw_text = str(message.get("text") or "").strip()
 
         if chat_id not in self._allowed_chat_ids():
-            if raw_text.startswith("/start") and _env("TELEGRAM_INVITE_CODE"):
-                self._handle_invite(chat_id, message, raw_text)
+            invite_code = _env("TELEGRAM_INVITE_CODE")
+            if raw_text.startswith("/start") and invite_code:
+                self._handle_invite(chat_id, message, raw_text, invite_code)
             return
         if not self._allow_command(chat_id):
             self._send_message(chat_id, "Troppi comandi. Riprova tra poco.")
@@ -450,8 +455,7 @@ class TelegramCommandBot:
         if response:
             self._send_message(chat_id, response)
 
-    def _handle_invite(self, chat_id: str, message: dict, text: str) -> None:
-        invite_code = _env("TELEGRAM_INVITE_CODE")
+    def _handle_invite(self, chat_id: str, message: dict, text: str, invite_code: str) -> None:
         parts = text.split(maxsplit=1)
         provided = parts[1].strip() if len(parts) > 1 else ""
         if provided != invite_code:
@@ -506,7 +510,9 @@ class TelegramCommandBot:
 
     def _dispatch(self, command: str, args: list[str], chat_id: str) -> str | None:
         if command in {"/start", "/help"}:
-            self._send_message(chat_id, self._help_text(), reply_markup=_reply_keyboard_markup())
+            self._send_message(
+                chat_id, self._help_text(chat_id), reply_markup=_reply_keyboard_markup()
+            )
             return None
         if command == "/menu":
             self._send_message(chat_id, "Menu comandi:", reply_markup=_inline_menu_markup())
@@ -587,13 +593,19 @@ class TelegramCommandBot:
             return self._revoke_guest(args, chat_id)
         return "Comando non riconosciuto. Usa /help."
 
-    def _help_text(self) -> str:
+    def _help_text(self, chat_id: str | None = None) -> str:
         lines = ["🎥 Comandi BLACKFRAME"]
         for title, commands in HELP_SECTIONS:
             lines.append("")
             lines.append(title)
             for command, description in commands:
                 lines.append(f"/{command} - {description}")
+        if chat_id and self._is_admin(chat_id):
+            lines.append("")
+            lines.append("🔑 Admin")
+            lines.append("/invite - Link di invito familiare")
+            lines.append("/guests - Lista ospiti autorizzati")
+            lines.append("/revoke <chat_id> - Rimuovi ospite")
         return "\n".join(lines)
 
     def _status_text(self) -> str:

@@ -1004,6 +1004,22 @@ class MotionDetector:
     def _classification_allows_notify(self, status: str | None) -> bool:
         return status not in self._NON_NOTIFY_CLASSIFICATION_STATUSES
 
+    def _should_notify_for(self, classification: dict | None) -> bool:
+        """Whether an event may raise an alert, re-checked at notification time.
+
+        Beyond the frozen status, it also re-applies the per-category filter against
+        the *current* classifier targets: toggling a category off mid-event then
+        suppresses an event that was classified while that category was still on.
+        """
+        classification = classification or {}
+        if not self._classification_allows_notify(classification.get("classification_status")):
+            return False
+        detected = classification.get("detected_label")
+        classifier = getattr(self, "classifier", None)
+        if detected and classifier is not None and detected not in classifier.targets:
+            return False
+        return True
+
     def _read_event_classification(self, event_id: str | None) -> dict:
         if not event_id:
             return {}
@@ -1061,7 +1077,7 @@ class MotionDetector:
         self._classified_events.add(event_id)
         # Only alert when the recognized subject is an enabled category (or when the
         # model is unavailable and we fall back to motion-based notification).
-        if not self._classification_allows_notify(result.get("classification_status")):
+        if not self._should_notify_for(result):
             return
         # When a clip is preferred, don't send the snapshot now: defer to the video
         # notification fired on event close (it carries the same class label). Sending
@@ -1192,10 +1208,9 @@ class MotionDetector:
                                 and self.classifier.enabled
                             )
                             if wire_video and classification_on:
-                                # Respect the per-category filter for video alerts too.
-                                wire_video = self._classification_allows_notify(
-                                    closed_classification.get("classification_status")
-                                )
+                                # Re-check the per-category filter at close time so an
+                                # event classified before a toggle still respects it.
+                                wire_video = self._should_notify_for(closed_classification)
                             if self.recorder is not None and self.recorder.enabled:
                                 # Rename happens inside the callback, after the clip is finalized.
                                 self.recorder.stop_event(
@@ -1519,6 +1534,20 @@ class AppServices:
         runtime = self.monitors.pop(profile_id, None)
         if runtime is not None:
             runtime.stop()
+
+    def apply_runtime_config_all(self, updates: dict) -> None:
+        """Apply a runtime config change to the active camera AND every monitor.
+
+        Each monitored camera runs its own MotionDetector/classifier, so a setting
+        like the person/pet filter must reach them too or they keep using the old
+        config (e.g. still notifying for a category disabled from Telegram/UI)."""
+        self.camera.apply_runtime_config(updates)
+        self.ptz.apply_runtime_config(updates)
+        self.motion.apply_runtime_config(updates)
+        for runtime in self.monitors.values():
+            runtime.camera.apply_runtime_config(updates)
+            runtime.motion.apply_runtime_config(updates)
+            # monitored cameras have no PTZ controller
 
 
 def build_services() -> AppServices:
