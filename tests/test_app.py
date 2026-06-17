@@ -67,6 +67,181 @@ def csrf_headers(csrf_token: str) -> dict[str, str]:
     return {"X-CSRF-Token": csrf_token}
 
 
+class MotionCropTests(unittest.TestCase):
+    def setUp(self):
+        self.app_module = load_app_module()
+
+    def _detector(self, rect, crop=True, padding=0.0):
+        detector = self.app_module.MotionDetector.__new__(self.app_module.MotionDetector)
+        detector.config = {
+            "classification_crop_to_motion": crop,
+            "classification_crop_padding": padding,
+        }
+        detector._last_motion_rect_norm = rect
+        return detector
+
+    def _frame(self):
+        import numpy as np
+
+        # 100x200 frame (h x w); fill with row/col gradient to check the cropped region.
+        return np.zeros((100, 200, 3), dtype=np.uint8)
+
+    def test_crops_to_normalized_rect_without_padding(self):
+        detector = self._detector((0.25, 0.5, 0.25, 0.25), padding=0.0)
+        crop = detector._crop_to_motion(self._frame())
+        # x: 0.25*200=50 -> 0.5*200=100 (w=50); y: 0.5*100=50 -> 0.75*100=75 (h=25)
+        self.assertEqual(crop.shape[:2], (25, 50))
+
+    def test_padding_expands_and_clamps_to_borders(self):
+        detector = self._detector((0.0, 0.0, 0.5, 0.5), padding=0.5)
+        crop = detector._crop_to_motion(self._frame())
+        # Padding cannot go below 0; right/bottom extend by 0.5*0.5=0.25 -> 0.75.
+        self.assertEqual(crop.shape[:2], (75, 150))
+
+    def test_returns_full_frame_when_disabled(self):
+        detector = self._detector((0.25, 0.25, 0.25, 0.25), crop=False)
+        frame = self._frame()
+        self.assertIs(detector._crop_to_motion(frame), frame)
+
+    def test_returns_full_frame_when_no_motion_rect(self):
+        detector = self._detector(None)
+        frame = self._frame()
+        self.assertIs(detector._crop_to_motion(frame), frame)
+
+
+class ClassificationNotifyGateTests(unittest.TestCase):
+    def setUp(self):
+        self.app_module = load_app_module()
+
+    def _detector(self, status, *, prefer_video=False):
+        class FakeStore:
+            current_event_dir = None
+
+            def event_has_classification(self, event_id):
+                return False
+
+            def save_event_meta(self, event_id, data):
+                pass
+
+        class FakeClassifier:
+            enabled = True
+            sample_policy = "event_cover"
+
+            def classify(self, frame):
+                return {"class_label": "persona", "classification_status": status}
+
+        class FakeRecorder:
+            enabled = True
+
+        detector = self.app_module.MotionDetector.__new__(self.app_module.MotionDetector)
+        detector.config = {"notify_prefer_video": prefer_video}
+        detector.recorder = FakeRecorder() if prefer_video else None
+        detector._last_motion_rect_norm = None
+        detector.event_store = FakeStore()
+        detector.classifier = FakeClassifier()
+        detector._classified_events = set()
+        detector.notified = []
+        detector._notify_event = lambda event_id, result: detector.notified.append(event_id)
+        return detector
+
+    def test_ok_status_notifies_with_photo_when_no_video(self):
+        detector = self._detector("ok")
+        detector._classify_event_frame("ev1", object())
+        self.assertEqual(detector.notified, ["ev1"])
+
+    def test_unavailable_status_notifies_as_fallback(self):
+        detector = self._detector("unavailable")
+        detector._classify_event_frame("ev1", object())
+        self.assertEqual(detector.notified, ["ev1"])
+
+    def test_ok_status_defers_photo_when_video_preferred(self):
+        # With a clip preferred, the snapshot must NOT fire here; the video
+        # notification on event close delivers the alert (with the same label).
+        detector = self._detector("ok", prefer_video=True)
+        detector._classify_event_frame("ev1", object())
+        self.assertEqual(detector.notified, [])
+
+    def test_ignored_status_does_not_notify(self):
+        detector = self._detector("ignored")
+        detector._classify_event_frame("ev1", object())
+        self.assertEqual(detector.notified, [])
+
+    def test_no_detection_status_does_not_notify(self):
+        detector = self._detector("no_detection")
+        detector._classify_event_frame("ev1", object())
+        self.assertEqual(detector.notified, [])
+
+
+class EventLabelTests(unittest.TestCase):
+    def setUp(self):
+        self.app_module = load_app_module()
+        self.tmpdir = tempfile.mkdtemp(prefix="motion-label-")
+        self.store = self.app_module.MotionEventStore({"save_dir": self.tmpdir})
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir)
+
+    def _make_event(self, name, meta=None):
+        event_dir = Path(self.tmpdir) / name
+        event_dir.mkdir(parents=True, exist_ok=True)
+        (event_dir / "cover.jpg").write_bytes(b"jpg")
+        (event_dir / self.app_module.MotionEventStore.CLOSED_MARKER_NAME).touch()
+        if meta is not None:
+            (event_dir / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
+        return event_dir
+
+    def test_rename_appends_category_suffix(self):
+        self._make_event("motion_event_20260617_120000")
+        new_id = self.store.rename_event_with_label("motion_event_20260617_120000", "persona")
+        self.assertEqual(new_id, "motion_event_20260617_120000__persona")
+        self.assertTrue((Path(self.tmpdir) / new_id).is_dir())
+
+    def test_rename_is_idempotent_and_rejects_unknown_label(self):
+        self._make_event("motion_event_20260617_120000__persona")
+        # already labelled -> unchanged
+        same = self.store.rename_event_with_label(
+            "motion_event_20260617_120000__persona", "persona"
+        )
+        self.assertEqual(same, "motion_event_20260617_120000__persona")
+        # unknown label -> no-op
+        self._make_event("motion_event_20260617_130000")
+        unchanged = self.store.rename_event_with_label("motion_event_20260617_130000", "gatto")
+        self.assertEqual(unchanged, "motion_event_20260617_130000")
+
+    def test_build_event_category_from_meta_detected_label(self):
+        # An "ignored" person event still carries detected_label persona for filtering.
+        self._make_event(
+            "motion_event_20260617_120000",
+            meta={"classification": {"class_label": "unknown", "detected_label": "persona"}},
+        )
+        events = self.store.list_events(limit=5)
+        self.assertEqual(events[0]["category"], "persona")
+
+    def test_build_event_category_defaults_to_motion(self):
+        self._make_event("motion_event_20260617_120000")
+        events = self.store.list_events(limit=5)
+        self.assertEqual(events[0]["category"], "movimento")
+
+    def test_build_event_category_falls_back_to_class_label(self):
+        # Events classified before detected_label existed still resolve by class_label.
+        self._make_event(
+            "motion_event_20260617_120000",
+            meta={"classification": {"class_label": "animale_domestico"}},
+        )
+        events = self.store.list_events(limit=5)
+        self.assertEqual(events[0]["category"], "animale_domestico")
+
+    def test_resolve_event_label(self):
+        detector = self.app_module.MotionDetector.__new__(self.app_module.MotionDetector)
+        self.assertEqual(detector._resolve_event_label({"detected_label": "persona"}), "persona")
+        self.assertEqual(
+            detector._resolve_event_label({"detected_label": "animale_domestico"}),
+            "animale_domestico",
+        )
+        self.assertEqual(detector._resolve_event_label({"detected_label": None}), "movimento")
+        self.assertEqual(detector._resolve_event_label({}), "movimento")
+
+
 class MotionDetectorEventTests(unittest.TestCase):
     def setUp(self):
         self.app_module = load_app_module()
@@ -393,6 +568,8 @@ class MotionDetectorEventTests(unittest.TestCase):
                 }
 
         detector = self.app_module.MotionDetector.__new__(self.app_module.MotionDetector)
+        detector.config = {}
+        detector._last_motion_rect_norm = None
         detector.event_store = FakeStore()
         detector.classifier = FakeClassifier()
         detector._classified_events = set()
@@ -406,6 +583,41 @@ class MotionDetectorEventTests(unittest.TestCase):
         detector._save_motion_frame(object(), "20260417_120002")
 
         self.assertEqual(detector.event_store.meta_writes, 1)
+
+    def test_classification_does_not_run_when_motion_disabled(self):
+        class FakeStore:
+            current_event_dir = None
+
+            def save_frame(self, frame, timestamp):
+                return "/tmp/frame.jpg", "motion_event_20260417_120001"
+
+            def save_event_meta(self, event_id, data):
+                raise AssertionError("classification must not run when motion is disabled")
+
+            def event_has_classification(self, event_id):
+                return False
+
+        class FakeClassifier:
+            enabled = True
+            sample_policy = "event_cover"
+
+            def classify(self, frame):
+                raise AssertionError("classifier must not be invoked when motion is disabled")
+
+        detector = self.app_module.MotionDetector.__new__(self.app_module.MotionDetector)
+        detector.config = {"enabled": False}
+        detector._last_motion_rect_norm = None
+        detector.event_store = FakeStore()
+        detector.classifier = FakeClassifier()
+        detector._classified_events = set()
+        detector._notified_events = set()
+        detector.recorder = None
+        detector.notifier = None
+        detector.last_event_id = None
+        detector.last_capture_saved_at = None
+
+        # Must not raise: classification_on is gated by motion being enabled.
+        detector._save_motion_frame(object(), "20260417_120001")
 
 
 class MultiCameraRegistryTests(unittest.TestCase):

@@ -129,6 +129,23 @@ def get_motion_config() -> dict:
     classification_local_labels_path = os.getenv(
         "CLASSIFICATION_LOCAL_LABELS_PATH", "models/person_pet_labels.txt"
     ).strip()
+    classification_detection_model_path = os.getenv(
+        "CLASSIFICATION_DETECTION_MODEL_PATH", "models/ssd_mobilenet_v2_coco.pb"
+    ).strip()
+    classification_detection_config_path = os.getenv(
+        "CLASSIFICATION_DETECTION_CONFIG_PATH", "models/ssd_mobilenet_v2_coco.pbtxt"
+    ).strip()
+    classification_detection_input_size = int(
+        os.getenv("CLASSIFICATION_DETECTION_INPUT_SIZE", "300")
+    )
+    classification_crop_to_motion = (
+        os.getenv("CLASSIFICATION_CROP_TO_MOTION", "true").lower() == "true"
+    )
+    classification_crop_padding = float(os.getenv("CLASSIFICATION_CROP_PADDING", "0.2"))
+    classification_detect_person = (
+        os.getenv("CLASSIFICATION_DETECT_PERSON", "true").lower() == "true"
+    )
+    classification_detect_pet = os.getenv("CLASSIFICATION_DETECT_PET", "true").lower() == "true"
 
     if blur_size % 2 == 0:
         blur_size += 1
@@ -179,6 +196,13 @@ def get_motion_config() -> dict:
         "classification_sample_policy": classification_sample_policy,
         "classification_local_model_path": classification_local_model_path,
         "classification_local_labels_path": classification_local_labels_path,
+        "classification_detection_model_path": classification_detection_model_path,
+        "classification_detection_config_path": classification_detection_config_path,
+        "classification_detection_input_size": classification_detection_input_size,
+        "classification_crop_to_motion": classification_crop_to_motion,
+        "classification_crop_padding": classification_crop_padding,
+        "classification_detect_person": classification_detect_person,
+        "classification_detect_pet": classification_detect_pet,
     }
 
 
@@ -765,14 +789,31 @@ class MotionDetector:
         self.last_event_id = None
         self.last_error = ""
         self.last_capture_saved_at = None
+        # Normalized (x, y, w, h) of the latest motion bbox, used to crop the
+        # classified frame down to the moving subject. None until first motion.
+        self._last_motion_rect_norm = None
         self._bg_subtractor = None
         self._kernel_open = None
         self._kernel_dilate = None
         self._needs_subtractor_rebuild = False
         self._build_subtractor()
         self._restore_last_capture()
+        self._warn_if_classification_unready()
         self.thread = threading.Thread(target=self._run, daemon=True)
         self.thread.start()
+
+    def _warn_if_classification_unready(self) -> None:
+        """Log a clear warning when classification is on but no usable model is present."""
+        classifier = getattr(self, "classifier", None)
+        if classifier is not None and classifier.enabled and not classifier.ready:
+            logger.warning(
+                "Classificazione abilitata (backend %s) ma il modello non è disponibile: "
+                "gli eventi resteranno '%s'. Fornisci il modello (vedi "
+                "CLASSIFICATION_*_MODEL_PATH, cartella models/) oppure imposta "
+                "CLASSIFICATION_ENABLED=false.",
+                classifier.backend_name,
+                PersonPetClassifier.LABEL_UNKNOWN,
+            )
 
     def _build_subtractor(self) -> None:
         """(Re)build the MOG2 subtractor and morphology kernels. Runs only on the _run thread."""
@@ -832,13 +873,21 @@ class MotionDetector:
 
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         largest_usable_area = 0.0
+        largest_contour = None
         motion_now = False
         for contour in contours:
             area = cv2.contourArea(contour)
             if self._is_usable_motion_area(area, frame_area):
                 if area > largest_usable_area:
                     largest_usable_area = area
+                    largest_contour = contour
                 motion_now = True
+        if largest_contour is not None:
+            # Store the bbox normalized to the processed frame so it maps onto a
+            # full-res frame of any resolution (aspect ratio is preserved).
+            ph, pw = processed.shape[:2]
+            x, y, w, h = cv2.boundingRect(largest_contour)
+            self._last_motion_rect_norm = (x / pw, y / ph, w / pw, h / ph)
         return motion_now, largest_usable_area, frame_area
 
     def _get_event_store(self) -> MotionEventStore:
@@ -853,8 +902,14 @@ class MotionDetector:
         self.last_capture_saved_at = time.time()
         if event_id and self.recorder is not None:
             self.recorder.start_event(store.current_event_dir)
+        # Classification is subordinate to motion: it only ever runs as part of a motion
+        # event. The _run loop already short-circuits when motion is disabled; this guard
+        # makes the dependency explicit so classification can never run on its own.
         classification_on = (
-            hasattr(self, "classifier") and self.classifier is not None and self.classifier.enabled
+            bool(self.config.get("enabled", True))
+            and hasattr(self, "classifier")
+            and self.classifier is not None
+            and self.classifier.enabled
         )
         if event_id and classification_on:
             self._classify_event_frame(event_id, frame)
@@ -880,23 +935,40 @@ class MotionDetector:
         self._notified_events.add(event_id)
         self._get_event_store().mark_event_notified(event_id)
 
-    def _make_video_notify_callback(self, event_id: str, class_label: str | None):
+    def _resolve_event_label(self, classification: dict | None) -> str:
+        """Category used for the folder name / archive: the confidently recognized
+        class (person/pet, even if 'ignored'), otherwise a generic 'movimento' tag."""
+        detected = (classification or {}).get("detected_label")
+        if detected in (PersonPetClassifier.LABEL_PERSONA, PersonPetClassifier.LABEL_PET):
+            return detected
+        return "movimento"
+
+    def _make_event_complete_callback(
+        self, event_id: str, label: str, class_label: str | None, notify_video: bool
+    ):
+        """Runs after the recorder finalizes the clip: it's now safe to rename the
+        event directory with its category, then (optionally) send the video alert."""
+
         def _callback(video_path: Path):
-            if self.notifier is None or not event_id:
+            store = self._get_event_store()
+            new_id = store.rename_event_with_label(event_id, label) if event_id else event_id
+            if not notify_video or self.notifier is None or not new_id:
                 return
-            if self._already_notified(event_id):
+            if self._already_notified(new_id):
                 return
+            # The clip moved with the renamed directory; point the notifier at the new path.
+            clip = Path(self.config["save_dir"]) / new_id / Path(video_path).name
             try:
                 sent = self.notifier.notify_event_video(
-                    event_id=event_id,
+                    event_id=new_id,
                     class_label=class_label,
-                    video_path=str(video_path),
+                    video_path=str(clip if clip.exists() else video_path),
                 )
             except Exception:
                 logger.exception("Invio video Telegram fallito")
                 return
             if sent:
-                self._mark_notified(event_id)
+                self._mark_notified(new_id)
 
         return _callback
 
@@ -920,19 +992,57 @@ class MotionDetector:
         if sent:
             self._mark_notified(event_id)
 
-    def _get_last_class_label(self, event_id: str | None) -> str | None:
+    # Classification outcomes that should NOT raise an alert: the model ran but the
+    # frame held no recognizable subject ("no_detection"/"unknown"), the detection
+    # was too weak ("low_confidence"), or it was a person/pet of a category the user
+    # disabled ("ignored"). "unavailable" is intentionally absent: when the model
+    # can't run we fall back to notifying on motion so events are not lost.
+    _NON_NOTIFY_CLASSIFICATION_STATUSES = frozenset(
+        {"no_detection", "unknown", "low_confidence", "ignored"}
+    )
+
+    def _classification_allows_notify(self, status: str | None) -> bool:
+        return status not in self._NON_NOTIFY_CLASSIFICATION_STATUSES
+
+    def _read_event_classification(self, event_id: str | None) -> dict:
         if not event_id:
-            return None
+            return {}
         try:
             import json
 
             meta_path = Path(self.config["save_dir"]) / event_id / "meta.json"
             if not meta_path.exists():
-                return None
+                return {}
             data = json.loads(meta_path.read_text(encoding="utf-8"))
-            return (data.get("classification") or {}).get("class_label")
+            return data.get("classification") or {}
         except Exception:
-            return None
+            return {}
+
+    def _get_last_class_label(self, event_id: str | None) -> str | None:
+        return self._read_event_classification(event_id).get("class_label")
+
+    def _crop_to_motion(self, frame):
+        """Crop the full-res frame to the latest motion bbox (with padding).
+
+        Focusing the detector on the moving subject improves accuracy when the
+        subject is small in the scene and trims work. Returns the original frame
+        when cropping is disabled or no motion bbox is known yet.
+        """
+        if not self.config.get("classification_crop_to_motion", True):
+            return frame
+        rect = self._last_motion_rect_norm
+        if rect is None:
+            return frame
+        h, w = frame.shape[:2]
+        pad = float(self.config.get("classification_crop_padding", 0.2))
+        nx, ny, nw, nh = rect
+        x1 = int(max(0.0, nx - nw * pad) * w)
+        y1 = int(max(0.0, ny - nh * pad) * h)
+        x2 = int(min(1.0, nx + nw * (1.0 + pad)) * w)
+        y2 = int(min(1.0, ny + nh * (1.0 + pad)) * h)
+        if x2 <= x1 or y2 <= y1:
+            return frame
+        return frame[y1:y2, x1:x2]
 
     def _classify_event_frame(self, event_id: str, frame) -> None:
         if event_id in self._classified_events:
@@ -944,12 +1054,20 @@ class MotionDetector:
         if store.event_has_classification(event_id):
             self._classified_events.add(event_id)
             return
-        result = self.classifier.classify(frame)
+        result = self.classifier.classify(self._crop_to_motion(frame))
         if result is None:
             return
         store.save_event_meta(event_id, {"classification": result})
         self._classified_events.add(event_id)
-        self._notify_event(event_id, result)
+        # Only alert when the recognized subject is an enabled category (or when the
+        # model is unavailable and we fall back to motion-based notification).
+        if not self._classification_allows_notify(result.get("classification_status")):
+            return
+        # When a clip is preferred, don't send the snapshot now: defer to the video
+        # notification fired on event close (it carries the same class label). Sending
+        # the photo here would mark the event notified and suppress the clip.
+        if not self._prefer_video_notify():
+            self._notify_event(event_id, result)
 
     def _should_save_active_event_frame(self, now: float) -> bool:
         if not self.motion_detected:
@@ -1050,16 +1168,50 @@ class MotionDetector:
                         if enough_quiet and out_of_cooldown:
                             self.motion_detected = False
                             closed_event_id = self.last_event_id
-                            closed_class_label = self._get_last_class_label(closed_event_id)
-                            self._get_event_store().close_current_event()
-                            if self.recorder is not None:
-                                self.recorder.stop_event(
-                                    on_complete=self._make_video_notify_callback(
-                                        closed_event_id, closed_class_label
-                                    )
-                                    if self._prefer_video_notify()
-                                    else None
+                            closed_classification = self._read_event_classification(closed_event_id)
+                            store = self._get_event_store()
+                            store.close_current_event()
+                            # Every event must carry a label. With classification off there
+                            # is no meta yet: stamp a generic 'motion only' tag.
+                            if closed_event_id and not closed_classification:
+                                store.save_event_meta(
+                                    closed_event_id,
+                                    {
+                                        "classification": {
+                                            "class_label": "movimento",
+                                            "detected_label": None,
+                                            "classification_status": "motion_only",
+                                        }
+                                    },
                                 )
+                            label = self._resolve_event_label(closed_classification)
+                            wire_video = self._prefer_video_notify()
+                            classification_on = (
+                                bool(self.config.get("enabled", True))
+                                and self.classifier is not None
+                                and self.classifier.enabled
+                            )
+                            if wire_video and classification_on:
+                                # Respect the per-category filter for video alerts too.
+                                wire_video = self._classification_allows_notify(
+                                    closed_classification.get("classification_status")
+                                )
+                            if self.recorder is not None and self.recorder.enabled:
+                                # Rename happens inside the callback, after the clip is finalized.
+                                self.recorder.stop_event(
+                                    on_complete=self._make_event_complete_callback(
+                                        closed_event_id,
+                                        label,
+                                        closed_classification.get("class_label"),
+                                        wire_video,
+                                    )
+                                )
+                            else:
+                                # No active recording: nothing is writing the dir, rename now.
+                                if closed_event_id:
+                                    store.rename_event_with_label(closed_event_id, label)
+                                if self.recorder is not None:
+                                    self.recorder.stop_event()
             except Exception:
                 logger.exception("Errore motion detection")
                 with self.lock:
@@ -1184,6 +1336,20 @@ class MotionDetector:
                     self.config["classification_local_model_path"] = str(value).strip()
                 elif key == "CLASSIFICATION_LOCAL_LABELS_PATH":
                     self.config["classification_local_labels_path"] = str(value).strip()
+                elif key == "CLASSIFICATION_DETECTION_MODEL_PATH":
+                    self.config["classification_detection_model_path"] = str(value).strip()
+                elif key == "CLASSIFICATION_DETECTION_CONFIG_PATH":
+                    self.config["classification_detection_config_path"] = str(value).strip()
+                elif key == "CLASSIFICATION_DETECTION_INPUT_SIZE":
+                    self.config["classification_detection_input_size"] = int(value)
+                elif key == "CLASSIFICATION_CROP_TO_MOTION":
+                    self.config["classification_crop_to_motion"] = bool(value)
+                elif key == "CLASSIFICATION_CROP_PADDING":
+                    self.config["classification_crop_padding"] = float(value)
+                elif key == "CLASSIFICATION_DETECT_PERSON":
+                    self.config["classification_detect_person"] = bool(value)
+                elif key == "CLASSIFICATION_DETECT_PET":
+                    self.config["classification_detect_pet"] = bool(value)
 
             classifier_changed = any(
                 key
@@ -1194,12 +1360,18 @@ class MotionDetector:
                     "CLASSIFICATION_SAMPLE_POLICY",
                     "CLASSIFICATION_LOCAL_MODEL_PATH",
                     "CLASSIFICATION_LOCAL_LABELS_PATH",
+                    "CLASSIFICATION_DETECTION_MODEL_PATH",
+                    "CLASSIFICATION_DETECTION_CONFIG_PATH",
+                    "CLASSIFICATION_DETECTION_INPUT_SIZE",
+                    "CLASSIFICATION_DETECT_PERSON",
+                    "CLASSIFICATION_DETECT_PET",
                 }
                 for key in updates
             )
             if classifier_changed:
                 self.classifier = PersonPetClassifier.from_config(self.config)
                 self._classified_events.clear()
+                self._warn_if_classification_unready()
 
             reset_background = any(
                 key
