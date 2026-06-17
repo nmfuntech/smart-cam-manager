@@ -51,6 +51,10 @@ HELP_SECTIONS = [
             ("sensitivity", "Sensibilita: bassa|media|alta"),
             ("classification_on", "Attiva riconoscimento"),
             ("classification_off", "Disattiva riconoscimento"),
+            ("detect_person_on", "Notifica persone"),
+            ("detect_person_off", "Ignora persone"),
+            ("detect_pet_on", "Notifica animali"),
+            ("detect_pet_off", "Ignora animali"),
         ],
     ),
     (
@@ -111,6 +115,8 @@ INLINE_MENU_ROWS = [
         ("🎚 Alta", "/sensitivity alta"),
     ],
     [("🧠 Riconosc. ON", "/classification_on"), ("🧠 OFF", "/classification_off")],
+    [("🧍 Persone ON", "/detect_person_on"), ("🧍 OFF", "/detect_person_off")],
+    [("🐾 Animali ON", "/detect_pet_on"), ("🐾 OFF", "/detect_pet_off")],
     [("🔔 Notifiche ON", "/notifications_on"), ("🔕 OFF", "/notifications_off")],
     [("⏸ Pausa 15m", "/mute 15"), ("▶️ Riprendi", "/resume")],
     [("⏺ Clip evento ON", "/record_on"), ("⏺ OFF", "/record_off")],
@@ -475,6 +481,22 @@ class TelegramCommandBot:
             return self._update_bool("CLASSIFICATION_ENABLED", True, "Riconoscimento attivato.")
         if command == "/classification_off":
             return self._update_bool("CLASSIFICATION_ENABLED", False, "Riconoscimento disattivato.")
+        if command == "/detect_person_on":
+            return self._update_bool(
+                "CLASSIFICATION_DETECT_PERSON", True, "Notifica persone attivata."
+            )
+        if command == "/detect_person_off":
+            return self._update_bool(
+                "CLASSIFICATION_DETECT_PERSON", False, "Notifica persone disattivata."
+            )
+        if command == "/detect_pet_on":
+            return self._update_bool(
+                "CLASSIFICATION_DETECT_PET", True, "Notifica animali attivata."
+            )
+        if command == "/detect_pet_off":
+            return self._update_bool(
+                "CLASSIFICATION_DETECT_PET", False, "Notifica animali disattivata."
+            )
         if command == "/record_on":
             return self._update_bool("RECORD_ENABLED", True, "Clip video evento attivate.")
         if command == "/record_off":
@@ -562,6 +584,8 @@ class TelegramCommandBot:
                 f"Soglia movimento: {_env_int('MOTION_THRESHOLD', 30, 0)}",
                 f"Notifiche: {self._notifications_state()}",
                 f"Riconoscimento: {flag('CLASSIFICATION_ENABLED', 'attivo', 'spento')}",
+                f"Persone: {flag('CLASSIFICATION_DETECT_PERSON', 'si', 'no', True)}"
+                f" | Animali: {flag('CLASSIFICATION_DETECT_PET', 'si', 'no', True)}",
                 f"Clip evento: {flag('RECORD_ENABLED', 'attive', 'spente')}",
                 f"Reg. continua: {flag('CONTINUOUS_RECORD_ENABLED', 'attiva', 'spenta')}",
             ]
