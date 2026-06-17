@@ -98,6 +98,22 @@
                 <p class="slider-hint" id="cfg-motion-min-area-hint">A destra accetta soggetti più piccoli, a sinistra solo più grandi</p>
                 <p class="slider-value" id="cfg-motion-min-area-value">-</p>
               </label>
+              <div class="classification-group">
+                <label class="runtime-field toggle-field classification-master">
+                  <span>Classificazione</span>
+                  <input id="cfg-classification-enabled" type="checkbox" />
+                </label>
+                <div class="classification-children">
+                  <label class="runtime-field toggle-field classification-suboption">
+                    <span>🧍 Notifica persone</span>
+                    <input id="cfg-classification-detect-person" type="checkbox" checked />
+                  </label>
+                  <label class="runtime-field toggle-field classification-suboption">
+                    <span>🐕 Notifica animali</span>
+                    <input id="cfg-classification-detect-pet" type="checkbox" checked />
+                  </label>
+                </div>
+              </div>
               <label class="runtime-field toggle-field">
                 <span>Registrazione video</span>
                 <input id="cfg-record-enabled" type="checkbox" />
@@ -137,17 +153,14 @@
           <!-- 4. AVANZATE — collassabile, nascosto di default -->
           <details class="sidebar-block sidebar-advanced">
             <summary class="sidebar-advanced-summary">
-              <span class="sidebar-section-label" style="margin:0">Avanzate</span>
+              <span class="sidebar-section-label" style="margin:0">Classificazione avanzate</span>
               <span class="sidebar-advanced-chevron">▾</span>
             </summary>
             <div class="runtime-grid sidebar-advanced-body">
-              <label class="runtime-field toggle-field">
-                <span>Classificazione</span>
-                <input id="cfg-classification-enabled" type="checkbox" />
-              </label>
               <label class="runtime-field">
                 <span>Backend</span>
                 <select id="cfg-classification-backend">
+                  <option value="detection">Detection (MobileNet-SSD)</option>
                   <option value="local">Local (ONNX)</option>
                   <option value="teachable_machine">Teachable Machine</option>
                   <option value="cloud">Cloud HTTP</option>
@@ -171,6 +184,14 @@
                 </select>
               </label>
             </div>
+            <button
+              class="ghost-button compact-button save-runtime"
+              id="runtime-save-classification"
+              type="button"
+            >
+              Salva impostazioni
+            </button>
+            <p class="runtime-feedback" id="runtime-feedback-classification">-</p>
           </details>
           {% endif %}
 
@@ -222,6 +243,12 @@
                 <div class="capture-panel-head">
                   <strong id="capture-summary">Ultimi 5 eventi</strong>
                   <div class="capture-actions">
+                    <select id="capture-filter" class="ghost-button compact-button" aria-label="Filtra eventi per categoria">
+                      <option value="all">Tutti</option>
+                      <option value="persona">🧍 Persone</option>
+                      <option value="animale_domestico">🐕 Animali</option>
+                      <option value="movimento">Solo movimento</option>
+                    </select>
                     <button class="ghost-button compact-button" id="capture-open-folder" type="button">
                       Apri cartella
                     </button>

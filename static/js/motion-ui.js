@@ -15,11 +15,14 @@ export function createMotionController(elements) {
     motionCaptureEmpty,
     captureList,
     captureSummary,
+    captureFilter,
     captureToggle,
     captureClear,
     captureOpenFolder,
     runtimeSave,
+    runtimeSaveClassification,
     runtimeFeedback,
+    runtimeFeedbackClassification,
     cfgMotionEnabled,
     cfgMotionThreshold,
     cfgMotionThresholdHint,
@@ -28,6 +31,8 @@ export function createMotionController(elements) {
     cfgMotionMinAreaHint,
     cfgMotionMinAreaValue,
     cfgClassificationEnabled,
+    cfgClassificationDetectPerson,
+    cfgClassificationDetectPet,
     cfgClassificationBackend,
     cfgClassificationMinConfidence,
     cfgClassificationMinConfidenceValue,
@@ -57,6 +62,7 @@ export function createMotionController(elements) {
   let monitoringEnabled = null;
   let runtimeDirty = false;
   let clearingCaptures = false;
+  let captureCategoryFilter = "all";
   let lastMotionListRefreshKey = "";
   let refreshCaptureListInFlight = null;
   let latestPreviewRequestKey = "";
@@ -79,6 +85,8 @@ export function createMotionController(elements) {
     MOTION_THRESHOLD: { element: cfgMotionThreshold, type: "int" },
     MOTION_MIN_AREA: { element: cfgMotionMinArea, type: "int" },
     CLASSIFICATION_ENABLED: { element: cfgClassificationEnabled, type: "bool" },
+    CLASSIFICATION_DETECT_PERSON: { element: cfgClassificationDetectPerson, type: "bool" },
+    CLASSIFICATION_DETECT_PET: { element: cfgClassificationDetectPet, type: "bool" },
     CLASSIFICATION_BACKEND: { element: cfgClassificationBackend, type: "str" },
     CLASSIFICATION_MIN_CONFIDENCE: { element: cfgClassificationMinConfidence, type: "float" },
     CLASSIFICATION_SAMPLE_POLICY: { element: cfgClassificationSamplePolicy, type: "str" },
@@ -132,8 +140,13 @@ export function createMotionController(elements) {
   }
 
   function setRuntimeFeedback(text, isError = false) {
-    runtimeFeedback.textContent = text;
-    runtimeFeedback.style.color = isError ? "#ff89ad" : "";
+    const color = isError ? "#ff89ad" : "";
+    for (const el of [runtimeFeedback, runtimeFeedbackClassification]) {
+      if (el) {
+        el.textContent = text;
+        el.style.color = color;
+      }
+    }
   }
 
   function applyRuntimeConfigToForm(config) {
@@ -175,6 +188,7 @@ export function createMotionController(elements) {
       }
     }
     updateSliderHints();
+    updateClassificationControls();
   }
 
   function markRuntimeDirty() {
@@ -189,20 +203,35 @@ export function createMotionController(elements) {
     if (cfgMotionMinArea) {
       cfgMotionMinArea.disabled = !active;
     }
+    // Classification master toggle depends on motion being active.
     if (cfgClassificationEnabled) {
       cfgClassificationEnabled.disabled = !active;
     }
-    if (cfgClassificationBackend) {
-      cfgClassificationBackend.disabled = !active;
-    }
-    if (cfgClassificationMinConfidence) {
-      cfgClassificationMinConfidence.disabled = !active;
-    }
-    if (cfgClassificationSamplePolicy) {
-      cfgClassificationSamplePolicy.disabled = !active;
-    }
     if (runtimeSave) {
       runtimeSave.disabled = !active;
+    }
+    if (runtimeSaveClassification) {
+      runtimeSaveClassification.disabled = !active;
+    }
+    // Classification sub-options cascade off both motion AND the classification toggle.
+    updateClassificationControls(active);
+  }
+
+  function updateClassificationControls(motionActive = Boolean(monitoringEnabled)) {
+    // Hierarchy: motion ON -> classification ON -> choose person/pet. A sub-option is
+    // editable only when both motion and classification are active.
+    const classOn =
+      Boolean(motionActive) && Boolean(cfgClassificationEnabled && cfgClassificationEnabled.checked);
+    for (const el of [
+      cfgClassificationDetectPerson,
+      cfgClassificationDetectPet,
+      cfgClassificationBackend,
+      cfgClassificationMinConfidence,
+      cfgClassificationSamplePolicy,
+    ]) {
+      if (el) {
+        el.disabled = !classOn;
+      }
     }
   }
 
@@ -320,6 +349,9 @@ export function createMotionController(elements) {
       return;
     }
     runtimeSave.disabled = true;
+    if (runtimeSaveClassification) {
+      runtimeSaveClassification.disabled = true;
+    }
     setRuntimeFeedback("Salvataggio in corso...");
     try {
       const { response, data } = await fetchJson("/api/runtime_config", {
@@ -339,6 +371,9 @@ export function createMotionController(elements) {
       setRuntimeFeedback("Errore di rete durante salvataggio", true);
     } finally {
       runtimeSave.disabled = false;
+      if (runtimeSaveClassification) {
+        runtimeSaveClassification.disabled = false;
+      }
     }
   }
 
@@ -608,6 +643,20 @@ export function createMotionController(elements) {
     return button;
   }
 
+  function captureEventCategory(capture) {
+    // Prefer the explicit category from the API; fall back to motion.
+    return capture?.category || capture?.classification?.detected_label || "movimento";
+  }
+
+  function captureFilterLabel() {
+    const labels = {
+      persona: "Persone",
+      animale_domestico: "Animali",
+      movimento: "Solo movimento",
+    };
+    return labels[captureCategoryFilter] || "Tutti";
+  }
+
   async function refreshCaptureList() {
     if (refreshCaptureListInFlight) {
       return refreshCaptureListInFlight;
@@ -618,15 +667,21 @@ export function createMotionController(elements) {
 
     try {
       const { data } = await fetchJson(`/motion_captures?limit=${limit}&ts=${Date.now()}`);
-      const captures = data.captures || [];
-      const total = data.total || captures.length;
-      const signature = `${archiveExpanded ? "full" : "compact"}::${captures
+      const allCaptures = data.captures || [];
+      const total = data.total || allCaptures.length;
+      const captures =
+        captureCategoryFilter === "all"
+          ? allCaptures
+          : allCaptures.filter((capture) => captureEventCategory(capture) === captureCategoryFilter);
+      const signature = `${archiveExpanded ? "full" : "compact"}::${captureCategoryFilter}::${captures
         .map((capture) => capture.id)
         .join("|")}::${total}`;
 
+      const filterSuffix =
+        captureCategoryFilter === "all" ? "" : ` · filtro: ${captureFilterLabel()}`;
       captureSummary.textContent = archiveExpanded
-        ? `Archivio completo · ${total} eventi · scorri elenco`
-        : `Ultimi ${Math.min(collapsedCaptureLimit, total)} eventi`;
+        ? `Archivio completo · ${total} eventi · scorri elenco${filterSuffix}`
+        : `Ultimi ${Math.min(collapsedCaptureLimit, total)} eventi${filterSuffix}`;
       captureToggle.style.display = total > collapsedCaptureLimit ? "inline-flex" : "none";
       captureToggle.textContent = archiveExpanded ? "Mostra meno" : "Mostra altri";
       captureList.style.maxHeight = `${capturePanelHeight}px`;
@@ -645,7 +700,10 @@ export function createMotionController(elements) {
       if (captures.length === 0) {
         latestCaptureId = null;
         showEmptyPreview("Nessun evento");
-        captureList.innerHTML = '<p class="capture-list-empty">Nessun evento salvato ancora</p>';
+        captureList.innerHTML =
+          captureCategoryFilter === "all"
+            ? '<p class="capture-list-empty">Nessun evento salvato ancora</p>'
+            : `<p class="capture-list-empty">Nessun evento per il filtro "${captureFilterLabel()}"</p>`;
         return;
       }
 
@@ -804,6 +862,14 @@ export function createMotionController(elements) {
       captureList.scrollTop = 0;
       await refreshCaptureList();
     });
+    if (captureFilter) {
+      captureFilter.addEventListener("change", async () => {
+        captureCategoryFilter = captureFilter.value || "all";
+        lastCaptureSignature = "";
+        captureList.scrollTop = 0;
+        await refreshCaptureList();
+      });
+    }
     if (captureClear) {
       captureClear.addEventListener("click", async () => {
         await clearAllCaptures();
@@ -816,6 +882,11 @@ export function createMotionController(elements) {
     }
     if (runtimeSave) {
       runtimeSave.addEventListener("click", async () => {
+        await saveRuntimeConfig();
+      });
+    }
+    if (runtimeSaveClassification) {
+      runtimeSaveClassification.addEventListener("click", async () => {
         await saveRuntimeConfig();
       });
     }
@@ -841,7 +912,16 @@ export function createMotionController(elements) {
       cfgMotionMinArea.addEventListener("change", updateSliderHints);
     }
     if (cfgClassificationEnabled) {
-      cfgClassificationEnabled.addEventListener("change", markRuntimeDirty);
+      cfgClassificationEnabled.addEventListener("change", () => {
+        markRuntimeDirty();
+        updateClassificationControls();
+      });
+    }
+    if (cfgClassificationDetectPerson) {
+      cfgClassificationDetectPerson.addEventListener("change", markRuntimeDirty);
+    }
+    if (cfgClassificationDetectPet) {
+      cfgClassificationDetectPet.addEventListener("change", markRuntimeDirty);
     }
     if (cfgClassificationBackend) {
       cfgClassificationBackend.addEventListener("change", markRuntimeDirty);

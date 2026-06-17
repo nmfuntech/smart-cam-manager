@@ -438,6 +438,54 @@ select {
   flex-shrink: 0;
 }
 
+/* Gruppo classificazione: un unico box racchiude l'interruttore principale e le
+   sue sotto-opzioni (persona/animale), esprimendo la gerarchia
+   Movimento > Classificazione > categoria. */
+.classification-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.02);
+}
+/* L'interruttore principale fa da intestazione: niente card propria, è il box a fare da cornice. */
+.classification-group .classification-master {
+  border: none;
+  background: transparent;
+  padding: 4px 6px;
+}
+.classification-group .classification-master > span {
+  color: var(--text, #e8f1f5);
+  font-weight: 600;
+}
+/* Le sotto-opzioni: rientrate, con linea di connessione e aspetto più leggero. */
+.classification-children {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-left: 12px;
+  padding-left: 10px;
+  border-left: 2px solid rgba(120, 200, 220, 0.35);
+}
+.runtime-field.classification-suboption {
+  border: none;
+  background: rgba(255, 255, 255, 0.03);
+  padding: 8px 10px;
+}
+.runtime-field.classification-suboption > span {
+  font-size: 0.74rem;
+  opacity: 0.9;
+}
+/* Stato disabilitato: l'intero gruppo si attenua quando classificazione/motion sono off. */
+.classification-children:has(input:disabled) {
+  opacity: 0.45;
+}
+.runtime-field.toggle-field input:disabled {
+  opacity: 0.4;
+}
+
 .motion-preview-panel,
 .capture-panel {
   display: grid;
