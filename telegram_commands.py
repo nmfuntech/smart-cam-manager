@@ -254,6 +254,8 @@ class TelegramCommandBot:
         self._last_update_id: int | None = None
         self._rate_events: dict[str, deque[float]] = defaultdict(deque)
         self._menu_configured = False
+        self._guests_lock = threading.Lock()
+        self._bot_username: str | None = None
 
     @property
     def enabled(self) -> bool:
@@ -262,9 +264,34 @@ class TelegramCommandBot:
     def _token(self) -> str:
         return _env("NOTIFY_TELEGRAM_BOT_TOKEN")
 
-    def _allowed_chat_ids(self) -> set[str]:
+    def _admin_chat_ids(self) -> set[str]:
         raw = _env("TELEGRAM_COMMANDS_ALLOWED_CHAT_IDS") or _env("NOTIFY_TELEGRAM_CHAT_ID")
         return {item.strip() for item in raw.split(",") if item.strip()}
+
+    def _guests_file(self) -> Path:
+        path = _env("TELEGRAM_GUESTS_FILE")
+        return Path(path) if path else Path("data/telegram_guests.json")
+
+    def _load_guests(self) -> dict[str, dict]:
+        try:
+            data = json.loads(self._guests_file().read_text(encoding="utf-8"))
+            return {str(k): v for k, v in data.items() if isinstance(v, dict)}
+        except (OSError, json.JSONDecodeError):
+            return {}
+
+    def _save_guests(self, guests: dict[str, dict]) -> None:
+        f = self._guests_file()
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(json.dumps(guests, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    def _allowed_chat_ids(self) -> set[str]:
+        ids = self._admin_chat_ids()
+        with self._guests_lock:
+            ids |= set(self._load_guests().keys())
+        return ids
+
+    def _is_admin(self, chat_id: str) -> bool:
+        return chat_id in self._admin_chat_ids()
 
     def configured(self) -> bool:
         return bool(self.enabled and self._token() and self._allowed_chat_ids())
@@ -297,6 +324,10 @@ class TelegramCommandBot:
     def _run(self) -> None:
         self._forget_pending_updates()
         self._set_commands_menu()
+        if self._bot_username is None:
+            result = _bot_api_call(self._token(), "getMe", timeout=10)
+            if result.get("ok"):
+                self._bot_username = (result.get("result") or {}).get("username")
         while not self._stop.is_set():
             token = self._token()
             if not self.enabled or not token or not self._allowed_chat_ids():
@@ -378,15 +409,18 @@ class TelegramCommandBot:
         message = update.get("message") or {}
         chat = message.get("chat") or {}
         chat_id = str(chat.get("id", "")).strip()
+        raw_text = str(message.get("text") or "").strip()
+
         if chat_id not in self._allowed_chat_ids():
+            if raw_text.startswith("/start") and _env("TELEGRAM_INVITE_CODE"):
+                self._handle_invite(chat_id, message, raw_text)
             return
         if not self._allow_command(chat_id):
             self._send_message(chat_id, "Troppi comandi. Riprova tra poco.")
             return
 
-        text = str(message.get("text") or "").strip()
         # I bottoni della reply keyboard inviano l'etichetta come testo: traducila.
-        text = REPLY_BUTTON_COMMANDS.get(text, text)
+        text = REPLY_BUTTON_COMMANDS.get(raw_text, raw_text)
         command = self._parse_command(text)
         if not command:
             return
@@ -415,6 +449,32 @@ class TelegramCommandBot:
         response = self._dispatch(command, args, chat_id)
         if response:
             self._send_message(chat_id, response)
+
+    def _handle_invite(self, chat_id: str, message: dict, text: str) -> None:
+        invite_code = _env("TELEGRAM_INVITE_CODE")
+        parts = text.split(maxsplit=1)
+        provided = parts[1].strip() if len(parts) > 1 else ""
+        if provided != invite_code:
+            self._send_message(
+                chat_id, "Codice non valido. Chiedi il link di invito a un amministratore."
+            )
+            return
+        sender = message.get("from") or {}
+        name = (
+            " ".join(filter(None, [sender.get("first_name"), sender.get("last_name")]))
+            or sender.get("username")
+            or chat_id
+        )
+        with self._guests_lock:
+            guests = self._load_guests()
+            guests[chat_id] = {"name": name, "joined_at": time.strftime("%Y-%m-%dT%H:%M:%S")}
+            self._save_guests(guests)
+        logger.info("Nuovo ospite Telegram autorizzato: %s (%s)", name, chat_id)
+        self._send_message(
+            chat_id,
+            f"Benvenuto, {name}! Sei autorizzato. Usa /help per i comandi.",
+            reply_markup=_reply_keyboard_markup(),
+        )
 
     def _answer_callback(self, callback_id: str, text: str = "") -> None:
         if not callback_id:
@@ -519,6 +579,12 @@ class TelegramCommandBot:
             return self._ptz_stop()
         if command in {"/ptz_home", "/home"}:
             return self._ptz_home()
+        if command == "/invite":
+            return self._invite_info(chat_id)
+        if command == "/guests":
+            return self._guests_text(chat_id)
+        if command == "/revoke":
+            return self._revoke_guest(args, chat_id)
         return "Comando non riconosciuto. Usa /help."
 
     def _help_text(self) -> str:
@@ -531,34 +597,59 @@ class TelegramCommandBot:
         return "\n".join(lines)
 
     def _status_text(self) -> str:
+        motion_svc = self.services.motion
+        config = getattr(motion_svc, "config", {}) or {}
+        classifier = getattr(motion_svc, "classifier", None)
+
         stream = self.services.camera.get_status()
-        motion = self.services.motion.get_status()
+        motion = motion_svc.get_status()
         ptz = self.services.ptz.get_status()
         continuous = (
             self.services.continuous.status()
             if getattr(self.services, "continuous", None) is not None
-            else {"enabled": False, "active": False}
+            else {"active": False}
         )
+
         stream_state = stream.get("connection_state") or (
             "online" if stream.get("connected") else "offline"
         )
-        motion_state = "attivo" if motion.get("enabled") else "spento"
-        moving = "si" if motion.get("motion_detected") else "no"
-        ptz_state = (
-            "ok" if ptz.get("available") else f"no ({ptz.get('error') or 'non disponibile'})"
-        )
-        cont_state = "attiva" if continuous.get("active") else "spenta"
-        return "\n".join(
+        motion_on = bool(motion.get("enabled"))
+        moving = "sì" if motion.get("motion_detected") else "no"
+        ptz_state = "ok" if ptz.get("available") else (ptz.get("error") or "non disponibile")
+
+        lines = [
+            "🎥 BLACKFRAME — Stato",
+            "",
+            f"📹 Stream: {stream_state}",
+            f"👁 Movimento: {'attivo' if motion_on else 'spento'} (in corso: {moving})",
+        ]
+
+        # Classification reflects the live config + classifier so it matches reality.
+        if config.get("classification_enabled"):
+            backend = config.get("classification_backend", "?")
+            line = f"🧠 Classificazione: attiva · {backend}"
+            if classifier is not None and not classifier.ready:
+                line += " ⚠️ modello assente"
+            lines.append(line)
+            if classifier is not None:
+                targets = getattr(classifier, "targets", set())
+                persona = "sì" if classifier.LABEL_PERSONA in targets else "no"
+                animali = "sì" if classifier.LABEL_PET in targets else "no"
+                lines.append(f"      🧍 Persone: {persona}   🐕 Animali: {animali}")
+        else:
+            lines.append("🧠 Classificazione: spenta")
+
+        rec = "sì" if config.get("record_enabled") else "no"
+        cont = "sì" if continuous.get("active") else "no"
+        lines.extend(
             [
-                "Stato BLACKFRAME",
-                f"Stream: {stream_state}",
-                f"Motion: {motion_state}, movimento: {moving}",
-                f"Notifiche: {self._notifications_state()}",
-                f"Ultimo evento: {motion.get('last_motion_at') or '-'}",
-                f"PTZ: {ptz_state}",
-                f"Registrazione continua: {cont_state}",
+                f"🔔 Notifiche: {self._notifications_state()}",
+                f"⏺ Registrazione: clip evento {rec} · continua {cont}",
+                f"🕹 PTZ: {ptz_state}",
+                f"🕓 Ultimo evento: {motion.get('last_motion_at') or '-'}",
             ]
         )
+        return "\n".join(lines)
 
     def _notifier(self) -> Any | None:
         features = getattr(self.services, "features", None)
@@ -726,11 +817,50 @@ class TelegramCommandBot:
 
     def _apply_runtime_updates(self, updates: dict[str, object]) -> None:
         self.services.runtime_config.update(updates)
-        self.services.camera.apply_runtime_config(updates)
-        self.services.ptz.apply_runtime_config(updates)
-        self.services.motion.apply_runtime_config(updates)
+        # Propagate to the active camera and every monitored camera runtime.
+        self.services.apply_runtime_config_all(updates)
         if "CONTINUOUS_RECORD_ENABLED" in updates and getattr(self.services, "continuous", None):
             self.services.continuous.apply_config(self.services.motion.config)
+
+    def _invite_info(self, chat_id: str) -> str:
+        if not self._is_admin(chat_id):
+            return "Comando riservato agli amministratori."
+        code = _env("TELEGRAM_INVITE_CODE")
+        if not code:
+            return "Inviti disabilitati (TELEGRAM_INVITE_CODE non impostato)."
+        lines = [f"Codice di invito: {code}"]
+        if self._bot_username:
+            lines.append(f"Link: https://t.me/{self._bot_username}?start={code}")
+        return "\n".join(lines)
+
+    def _guests_text(self, chat_id: str) -> str:
+        if not self._is_admin(chat_id):
+            return "Comando riservato agli amministratori."
+        with self._guests_lock:
+            guests = self._load_guests()
+        if not guests:
+            return "Nessun ospite autorizzato."
+        lines = ["Ospiti autorizzati:"]
+        for gid, info in guests.items():
+            name = info.get("name") or gid
+            joined = info.get("joined_at") or "?"
+            lines.append(f"- {name} ({gid}) — {joined}")
+        return "\n".join(lines)
+
+    def _revoke_guest(self, args: list[str], chat_id: str) -> str:
+        if not self._is_admin(chat_id):
+            return "Comando riservato agli amministratori."
+        if not args:
+            return "Uso: /revoke <chat_id>"
+        target_id = args[0].strip()
+        with self._guests_lock:
+            guests = self._load_guests()
+            if target_id not in guests:
+                return f"Ospite {target_id} non trovato."
+            name = guests.pop(target_id).get("name") or target_id
+            self._save_guests(guests)
+        logger.info("Ospite Telegram rimosso: %s (%s)", name, target_id)
+        return f"Ospite {name} ({target_id}) rimosso."
 
     def _ptz_move(self, direction: str) -> str:
         success, error = self.services.ptz.move(direction)

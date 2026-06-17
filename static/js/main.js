@@ -116,6 +116,11 @@ const telegram = createTelegramController({
   saveButton: document.getElementById("tg-save"),
   feedback: document.getElementById("tg-feedback"),
   sidebarEnabledToggle: document.getElementById("cfg-notify-telegram-enabled"),
+  inviteCodeInput: document.getElementById("tg-invite-code"),
+  inviteHint: document.getElementById("tg-invite-hint"),
+  inviteLinkBox: document.getElementById("tg-invite-link-box"),
+  inviteLinkText: document.getElementById("tg-invite-link-text"),
+  inviteCopyButton: document.getElementById("tg-invite-copy"),
 });
 
 // A monitored secondary camera renders a live-only viewer: no PTZ, settings,

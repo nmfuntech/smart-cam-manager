@@ -156,6 +156,7 @@ class RuntimeConfigManager:
                 "TELEGRAM_COMMANDS_POLL_TIMEOUT_SEC", "float", minimum=1
             ),
             "TELEGRAM_COMMANDS_SET_MENU": ConfigField("TELEGRAM_COMMANDS_SET_MENU", "bool"),
+            "TELEGRAM_INVITE_CODE": ConfigField("TELEGRAM_INVITE_CODE", "str", sensitive=True),
             "CONTINUOUS_RECORD_ENABLED": ConfigField("CONTINUOUS_RECORD_ENABLED", "bool"),
             "CONTINUOUS_RECORD_SEGMENT_MIN": ConfigField(
                 "CONTINUOUS_RECORD_SEGMENT_MIN", "float", minimum=1

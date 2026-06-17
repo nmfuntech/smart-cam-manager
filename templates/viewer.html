@@ -310,6 +310,25 @@
           <input id="tg-enabled" type="checkbox" />
         </label>
 
+        <hr class="tg-separator" />
+        <p class="tg-section-label">Accesso familiare</p>
+        <p class="tg-invite-desc">
+          Scegli un codice segreto e salvalo. Poi copia il link e mandalo
+          ai familiari: basterà toccarlo da Telegram per essere autorizzati.
+        </p>
+        <label class="runtime-field">
+          <span>Codice segreto</span>
+          <input id="tg-invite-code" type="text" autocomplete="off" placeholder="es. famiglia2024" />
+        </label>
+        <div class="tg-invite-link-box" id="tg-invite-link-box" hidden>
+          <span class="tg-invite-link-label">Link da condividere</span>
+          <div class="tg-invite-link-row">
+            <code id="tg-invite-link-text" class="tg-invite-link-url"></code>
+            <button type="button" id="tg-invite-copy" class="ghost-button compact-button">Copia</button>
+          </div>
+        </div>
+        <p class="tg-hint" id="tg-invite-hint"></p>
+
         <div class="tg-actions">
           <button class="ghost-button compact-button" id="tg-test" type="button">
             Invia messaggio di prova
