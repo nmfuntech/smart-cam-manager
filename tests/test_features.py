@@ -142,6 +142,23 @@ class TelegramNotifierTests(unittest.TestCase):
         with mock.patch("notifications.time.monotonic", return_value=1061.0):
             self.assertTrue(notifier.notify_event("motion_event_1", class_label="persona"))
 
+    def test_caption_includes_person_emoji(self):
+        notifier = self._notifier()
+        caption = notifier._caption("motion_event_20260617_120000", "persona")
+        self.assertIn("🧍", caption)
+        self.assertIn("persona", caption)
+
+    def test_caption_includes_dog_emoji(self):
+        notifier = self._notifier()
+        caption = notifier._caption("motion_event_20260617_120000", "animale_domestico")
+        self.assertIn("🐕", caption)
+
+    def test_caption_without_class_has_no_emoji(self):
+        notifier = self._notifier()
+        caption = notifier._caption("motion_event_20260617_120000", None)
+        self.assertNotIn("🧍", caption)
+        self.assertNotIn("🐕", caption)
+
 
 class TelegramCommandBotTests(unittest.TestCase):
     def _bot(self, **env):

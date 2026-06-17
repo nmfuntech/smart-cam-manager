@@ -198,10 +198,15 @@ class TelegramNotifier:
         ).start()
         return True
 
+    # Emoji per categoria classificata, mostrata accanto all'etichetta.
+    _CLASS_EMOJI = {"persona": "🧍", "animale_domestico": "🐕"}
+
     def _caption(self, event_id: str, class_label: str | None) -> str:
         label = event_id.replace("motion_event_", "")
         if class_label:
-            return f"🚨 Movimento rilevato ({class_label}) — {label}"
+            emoji = self._CLASS_EMOJI.get(class_label)
+            prefix = f"{emoji} " if emoji else ""
+            return f"🚨 Movimento rilevato — {prefix}{class_label} ({label})"
         return f"🚨 Movimento rilevato — {label}"
 
     def _send(
