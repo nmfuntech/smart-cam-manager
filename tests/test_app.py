@@ -113,7 +113,7 @@ class ClassificationNotifyGateTests(unittest.TestCase):
     def setUp(self):
         self.app_module = load_app_module()
 
-    def _detector(self, status, *, prefer_video=False):
+    def _detector(self, status, *, prefer_video=False, detected_label=None, targets=None):
         class FakeStore:
             current_event_dir = None
 
@@ -126,9 +126,18 @@ class ClassificationNotifyGateTests(unittest.TestCase):
         class FakeClassifier:
             enabled = True
             sample_policy = "event_cover"
+            LABEL_PERSONA = "persona"
+            LABEL_PET = "animale_domestico"
+
+            def __init__(self):
+                self.targets = targets if targets is not None else {"persona", "animale_domestico"}
 
             def classify(self, frame):
-                return {"class_label": "persona", "classification_status": status}
+                return {
+                    "class_label": "persona",
+                    "classification_status": status,
+                    "detected_label": detected_label,
+                }
 
         class FakeRecorder:
             enabled = True
@@ -160,6 +169,27 @@ class ClassificationNotifyGateTests(unittest.TestCase):
         detector = self._detector("ok", prefer_video=True)
         detector._classify_event_frame("ev1", object())
         self.assertEqual(detector.notified, [])
+
+    def test_category_disabled_after_classification_suppresses_notify(self):
+        # Event classified as person (ok) but person was toggled off afterwards:
+        # the current targets no longer include persona, so do not notify.
+        detector = self._detector("ok", detected_label="persona", targets={"animale_domestico"})
+        detector._classify_event_frame("ev1", object())
+        self.assertEqual(detector.notified, [])
+
+    def test_should_notify_for_rechecks_current_targets(self):
+        detector = self._detector("ok", targets={"animale_domestico"})
+        self.assertTrue(detector._should_notify_for({"classification_status": "ok"}))
+        self.assertFalse(
+            detector._should_notify_for(
+                {"classification_status": "ok", "detected_label": "persona"}
+            )
+        )
+        self.assertTrue(
+            detector._should_notify_for(
+                {"classification_status": "ok", "detected_label": "animale_domestico"}
+            )
+        )
 
     def test_ignored_status_does_not_notify(self):
         detector = self._detector("ignored")
