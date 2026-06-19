@@ -438,6 +438,54 @@ select {
   flex-shrink: 0;
 }
 
+/* Gruppo classificazione: un unico box racchiude l'interruttore principale e le
+   sue sotto-opzioni (persona/animale), esprimendo la gerarchia
+   Movimento > Classificazione > categoria. */
+.classification-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.02);
+}
+/* L'interruttore principale fa da intestazione: niente card propria, è il box a fare da cornice. */
+.classification-group .classification-master {
+  border: none;
+  background: transparent;
+  padding: 4px 6px;
+}
+.classification-group .classification-master > span {
+  color: var(--text, #e8f1f5);
+  font-weight: 600;
+}
+/* Le sotto-opzioni: rientrate, con linea di connessione e aspetto più leggero. */
+.classification-children {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-left: 12px;
+  padding-left: 10px;
+  border-left: 2px solid rgba(120, 200, 220, 0.35);
+}
+.runtime-field.classification-suboption {
+  border: none;
+  background: rgba(255, 255, 255, 0.03);
+  padding: 8px 10px;
+}
+.runtime-field.classification-suboption > span {
+  font-size: 0.74rem;
+  opacity: 0.9;
+}
+/* Stato disabilitato: l'intero gruppo si attenua quando classificazione/motion sono off. */
+.classification-children:has(input:disabled) {
+  opacity: 0.45;
+}
+.runtime-field.toggle-field input:disabled {
+  opacity: 0.4;
+}
+
 .motion-preview-panel,
 .capture-panel {
   display: grid;
@@ -1313,6 +1361,8 @@ details[open].sidebar-advanced .sidebar-advanced-chevron {
   color: inherit;
   padding: 0;
   width: min(440px, 92vw);
+  max-height: min(700px, 90vh);
+  overflow-y: auto;
   box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55);
 }
 
@@ -1422,5 +1472,54 @@ details[open].sidebar-advanced .sidebar-advanced-chevron {
 
 .tg-save {
   border-color: var(--accent);
+  color: var(--accent);
+}
+
+.tg-separator {
+  border: none;
+  border-top: 1px solid var(--border, rgba(82, 242, 199, 0.15));
+  margin: 4px 0 0;
+}
+
+.tg-section-label {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  opacity: 0.55;
+  margin: 0;
+}
+
+.tg-invite-desc {
+  font-size: 0.83rem;
+  opacity: 0.75;
+  margin: 0;
+  line-height: 1.4;
+}
+
+.tg-invite-link-box {
+  background: var(--panel-soft, rgba(255,255,255,0.05));
+  border: 1px solid var(--border, rgba(82, 242, 199, 0.2));
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.tg-invite-link-label {
+  font-size: 0.75rem;
+  opacity: 0.6;
+}
+
+.tg-invite-link-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.tg-invite-link-url {
+  font-size: 0.78rem;
+  word-break: break-all;
+  flex: 1;
   color: var(--accent);
 }

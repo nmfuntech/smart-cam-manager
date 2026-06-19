@@ -1,3 +1,4 @@
+import json
 import os
 import shutil
 import tempfile
@@ -142,6 +143,23 @@ class TelegramNotifierTests(unittest.TestCase):
         with mock.patch("notifications.time.monotonic", return_value=1061.0):
             self.assertTrue(notifier.notify_event("motion_event_1", class_label="persona"))
 
+    def test_caption_includes_person_emoji(self):
+        notifier = self._notifier()
+        caption = notifier._caption("motion_event_20260617_120000", "persona")
+        self.assertIn("🧍", caption)
+        self.assertIn("persona", caption)
+
+    def test_caption_includes_dog_emoji(self):
+        notifier = self._notifier()
+        caption = notifier._caption("motion_event_20260617_120000", "animale_domestico")
+        self.assertIn("🐕", caption)
+
+    def test_caption_without_class_has_no_emoji(self):
+        notifier = self._notifier()
+        caption = notifier._caption("motion_event_20260617_120000", None)
+        self.assertNotIn("🧍", caption)
+        self.assertNotIn("🐕", caption)
+
 
 class TelegramCommandBotTests(unittest.TestCase):
     def _bot(self, **env):
@@ -251,6 +269,13 @@ class TelegramCommandBotTests(unittest.TestCase):
             continuous=FakeContinuous(),
             features=SimpleNamespace(telegram=FakeNotifier()),
         )
+
+        def _apply_all(updates):
+            services.camera.apply_runtime_config(updates)
+            services.ptz.apply_runtime_config(updates)
+            services.motion.apply_runtime_config(updates)
+
+        services.apply_runtime_config_all = _apply_all
         bot = TelegramCommandBot(services)
         self.messages = []
         self.photos = []
@@ -412,7 +437,7 @@ class TelegramCommandBotTests(unittest.TestCase):
 
         self._handle(bot, "📊 Stato")
 
-        self.assertIn("Stato BLACKFRAME", self.messages[0][1])
+        self.assertIn("BLACKFRAME — Stato", self.messages[0][1])
 
     def test_menu_command_sends_inline_keyboard(self):
         bot, _ = self._bot()
@@ -450,6 +475,113 @@ class TelegramCommandBotTests(unittest.TestCase):
 
         self.assertEqual(self.photos, [("123", b"jpeg", "Snapshot live BLACKFRAME")])
         self.assertEqual(self.messages, [])
+
+    def test_invite_wrong_code_sends_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            guests_file = os.path.join(tmp, "guests.json")
+            bot, _ = self._bot(TELEGRAM_INVITE_CODE="secret", TELEGRAM_GUESTS_FILE=guests_file)
+
+            self._handle(bot, "/start wrong", chat_id=999)
+
+            self.assertIn("non valido", self.messages[0][1])
+            self.assertFalse(os.path.exists(guests_file))
+
+    def test_invite_no_code_in_env_silently_ignores_start(self):
+        bot, _ = self._bot()
+
+        self._handle(bot, "/start secret", chat_id=999)
+
+        self.assertEqual(self.messages, [])
+
+    def test_invite_correct_code_adds_guest_and_welcomes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            guests_file = os.path.join(tmp, "guests.json")
+            bot, _ = self._bot(TELEGRAM_INVITE_CODE="secret", TELEGRAM_GUESTS_FILE=guests_file)
+            update = {
+                "update_id": 1,
+                "message": {
+                    "chat": {"id": 999},
+                    "text": "/start secret",
+                    "from": {"first_name": "Mario", "last_name": "Rossi"},
+                },
+            }
+
+            bot._handle_update(update)
+
+            self.assertIn("Benvenuto", self.messages[0][1])
+            data = json.loads(Path(guests_file).read_text())
+            self.assertIn("999", data)
+            self.assertEqual(data["999"]["name"], "Mario Rossi")
+
+    def test_invited_guest_can_send_commands(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            guests_file = os.path.join(tmp, "guests.json")
+            Path(guests_file).write_text(
+                json.dumps({"456": {"name": "Paola", "joined_at": "2026-01-01T00:00:00"}})
+            )
+            bot, services = self._bot(TELEGRAM_GUESTS_FILE=guests_file)
+
+            self._handle(bot, "/motion_off", chat_id=456)
+
+            self.assertEqual(services.runtime_config.updates, [{"MOTION_ENABLED": False}])
+
+    def test_admin_invite_shows_code(self):
+        bot, _ = self._bot(TELEGRAM_INVITE_CODE="mysecret")
+        bot._bot_username = "BlackframeBot"
+
+        self._handle(bot, "/invite")
+
+        self.assertIn("mysecret", self.messages[0][1])
+        self.assertIn("t.me/BlackframeBot", self.messages[0][1])
+
+    def test_non_admin_invite_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            guests_file = os.path.join(tmp, "guests.json")
+            Path(guests_file).write_text(
+                json.dumps({"456": {"name": "Paola", "joined_at": "2026-01-01T00:00:00"}})
+            )
+            bot, _ = self._bot(TELEGRAM_INVITE_CODE="mysecret", TELEGRAM_GUESTS_FILE=guests_file)
+
+            self._handle(bot, "/invite", chat_id=456)
+
+            self.assertIn("amministratori", self.messages[0][1])
+
+    def test_guests_command_lists_guests(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            guests_file = os.path.join(tmp, "guests.json")
+            Path(guests_file).write_text(
+                json.dumps({"456": {"name": "Paola", "joined_at": "2026-06-01T10:00:00"}})
+            )
+            bot, _ = self._bot(TELEGRAM_GUESTS_FILE=guests_file)
+
+            self._handle(bot, "/guests")
+
+            self.assertIn("Paola", self.messages[0][1])
+            self.assertIn("456", self.messages[0][1])
+
+    def test_revoke_removes_guest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            guests_file = os.path.join(tmp, "guests.json")
+            Path(guests_file).write_text(
+                json.dumps({"456": {"name": "Paola", "joined_at": "2026-01-01T00:00:00"}})
+            )
+            bot, _ = self._bot(TELEGRAM_GUESTS_FILE=guests_file)
+
+            self._handle(bot, "/revoke 456")
+
+            data = json.loads(Path(guests_file).read_text())
+            self.assertNotIn("456", data)
+            self.assertIn("rimosso", self.messages[0][1])
+
+    def test_revoke_unknown_guest_reports_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            guests_file = os.path.join(tmp, "guests.json")
+            Path(guests_file).write_text(json.dumps({}))
+            bot, _ = self._bot(TELEGRAM_GUESTS_FILE=guests_file)
+
+            self._handle(bot, "/revoke 999")
+
+            self.assertIn("non trovato", self.messages[0][1])
 
 
 class RecordingConfigTests(unittest.TestCase):

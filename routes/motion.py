@@ -25,6 +25,8 @@ PUBLIC_RUNTIME_UPDATE_KEYS = {
     "CLASSIFICATION_BACKEND",
     "CLASSIFICATION_MIN_CONFIDENCE",
     "CLASSIFICATION_SAMPLE_POLICY",
+    "CLASSIFICATION_DETECT_PERSON",
+    "CLASSIFICATION_DETECT_PET",
     "MOTION_RETENTION_DAYS",
     "MOTION_RETENTION_MAX_MB",
     "RECORD_ENABLED",
@@ -102,9 +104,8 @@ def update_runtime_config():
 
     try:
         config = get_services().runtime_config.update(updates)
-        get_services().camera.apply_runtime_config(updates)
-        get_services().ptz.apply_runtime_config(updates)
-        get_services().motion.apply_runtime_config(updates)
+        # Propagate to the active camera and every monitored camera runtime.
+        get_services().apply_runtime_config_all(updates)
         return jsonify({"ok": True, "config": config})
     except ValueError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
@@ -125,6 +126,9 @@ def telegram_config():
     """Public status of the Telegram notifier. Never returns the bot token."""
     notifier = get_services().features.telegram
     status = notifier.status() if notifier is not None else {}
+    bot = get_services().telegram_commands
+    bot_username = getattr(bot, "_bot_username", None) if bot is not None else None
+    invite_code = os.getenv("TELEGRAM_INVITE_CODE", "").strip()
     return jsonify(
         {
             "ok": True,
@@ -136,6 +140,8 @@ def telegram_config():
             in {"1", "true", "yes", "on"},
             "min_interval_sec": status.get("min_interval_sec", 30),
             "classes": status.get("classes", []),
+            "invite_code": invite_code,
+            "bot_username": bot_username or "",
         }
     )
 
@@ -166,6 +172,8 @@ def update_telegram_config():
         updates["NOTIFY_PREFER_VIDEO"] = bool(payload["prefer_video"])
     if "min_interval_sec" in payload:
         updates["NOTIFY_MIN_INTERVAL_SEC"] = payload["min_interval_sec"]
+    if "invite_code" in payload:
+        updates["TELEGRAM_INVITE_CODE"] = str(payload.get("invite_code") or "").strip()
 
     if not updates:
         return jsonify({"ok": False, "error": "Nessun campo da aggiornare"}), 400

@@ -21,7 +21,7 @@ poetry run pytest tests/test_app.py::ClassName::test_method -v
 poetry run pytest -k "test_name" -v
 ```
 
-Lint (no make target): `poetry run ruff check .` — ruff, line-length 100, rules E/F/I.
+Lint: `make lint` (ruff, line-length 100, rules E/F/I); `make lint-fix` to autofix.
 
 ## Architecture
 
@@ -31,7 +31,7 @@ Three daemon threads run alongside Flask (all use `threading.Lock`, no `RLock`):
 - **MotionDetector** — MOG2 background subtraction (`cv2.createBackgroundSubtractorMOG2`). Interdependent state: `trigger_streak`, `clear_streak`, `motion_detected`, `processed_frames` (+ `warmup_frames` from config). Threshold changes set `_needs_subtractor_rebuild`; the subtractor is rebuilt on the detection thread (MOG2 is stateful), not inside `apply_runtime_config`.
 - **PTZController** — lazy-initialized on first move request via ONVIF. Errors are not surfaced until a button is pressed.
 
-**Motion events** are saved as directories: `captures/motion/motion_event_YYYYMMDD_HHMMSS/`. An event is hidden from the API until a `.closed` marker file exists. Stale events are auto-closed based on file `mtime`.
+**Motion events** are saved as directories: `captures/motion/motion_event_YYYYMMDD_HHMMSS/`. On close the directory is renamed with a `__<category>` suffix (`persona`/`animale_domestico`/`movimento`) once the clip is finalized — the `motion_event_` prefix is preserved so globbing/retention keep working. An event is hidden from the API until a `.closed` marker file exists. Stale events are auto-closed based on file `mtime`. The API exposes a resolved `category` field (from `classification.detected_label`, then `class_label`, then the dir suffix) used by the UI event filter.
 
 **Multi-camera**: the active profile uses the main camera/motion pair; profiles flagged `monitored` run background `CameraRuntime` workers. `/camera/<id>` renders a live-only view for a monitor via `/cam/<id>/...` endpoints; non-active, non-monitored profiles redirect to the active camera.
 

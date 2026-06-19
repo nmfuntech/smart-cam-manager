@@ -18,9 +18,29 @@ export function createTelegramController(elements) {
     saveButton,
     feedback,
     sidebarEnabledToggle,
+    inviteCodeInput,
+    inviteHint,
+    inviteLinkBox,
+    inviteLinkText,
+    inviteCopyButton,
   } = elements;
 
   let hasSavedToken = false;
+
+  function _updateInviteLink(code, botUsername) {
+    if (code && botUsername) {
+      const url = `https://t.me/${botUsername}?start=${code}`;
+      if (inviteLinkText) inviteLinkText.textContent = url;
+      if (inviteLinkBox) inviteLinkBox.hidden = false;
+      if (inviteHint) inviteHint.textContent = "";
+    } else if (code) {
+      if (inviteLinkBox) inviteLinkBox.hidden = true;
+      if (inviteHint) inviteHint.textContent = "Codice attivo. Il link sarà disponibile all'avvio del bot.";
+    } else {
+      if (inviteLinkBox) inviteLinkBox.hidden = true;
+      if (inviteHint) inviteHint.textContent = "Senza codice solo tu puoi usare il bot.";
+    }
+  }
 
   function setFeedback(text, isError = false) {
     if (!feedback) {
@@ -63,6 +83,10 @@ export function createTelegramController(elements) {
       if (enabled) {
         enabled.checked = Boolean(data.enabled);
       }
+      if (inviteCodeInput) {
+        inviteCodeInput.value = data.invite_code || "";
+      }
+      _updateInviteLink(data.invite_code || "", data.bot_username || "");
     } catch {
       setFeedback("Impossibile leggere la configurazione", true);
     }
@@ -172,6 +196,7 @@ export function createTelegramController(elements) {
       chat_id: chatId,
       enabled: wantEnabled,
       prefer_video: Boolean(preferVideo?.checked),
+      invite_code: (inviteCodeInput?.value || "").trim(),
     };
     const token = typedToken();
     if (token) {
@@ -229,6 +254,15 @@ export function createTelegramController(elements) {
     discoverButton?.addEventListener("click", discover);
     testButton?.addEventListener("click", sendTest);
     saveButton?.addEventListener("click", save);
+    inviteCopyButton?.addEventListener("click", () => {
+      const url = inviteLinkText?.textContent || "";
+      if (!url) return;
+      navigator.clipboard.writeText(url).then(() => {
+        const orig = inviteCopyButton.textContent;
+        inviteCopyButton.textContent = "Copiato!";
+        setTimeout(() => { inviteCopyButton.textContent = orig; }, 1800);
+      });
+    });
   }
 
   return { bind };

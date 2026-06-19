@@ -24,6 +24,10 @@ class ClassificationResult:
 class ClassifierBackend(Protocol):
     def classify(self, frame: np.ndarray) -> ClassificationResult | None: ...
 
+    def is_ready(self) -> bool:
+        """Whether the backend can actually run (model/labels present or endpoint set)."""
+        ...
+
 
 class OpenCvDnnClassifierBackend:
     """Single-image classifier via OpenCV DNN and ONNX/Caffe style models."""
@@ -109,6 +113,9 @@ class OpenCvDnnClassifierBackend:
         self.net = self._load_network(self.model_path)
         self._loaded = True
 
+    def is_ready(self) -> bool:
+        return Path(self.model_path).exists() and Path(self.labels_path).exists()
+
 
 class UnsupportedBackend:
     def __init__(self, backend_name: str):
@@ -116,6 +123,9 @@ class UnsupportedBackend:
 
     def classify(self, frame: np.ndarray) -> ClassificationResult | None:
         return None
+
+    def is_ready(self) -> bool:
+        return False
 
 
 class TeachableMachineBackend(OpenCvDnnClassifierBackend):
@@ -173,6 +183,93 @@ class TeachableMachineBackend(OpenCvDnnClassifierBackend):
         )
 
 
+class MobileNetSsdDetectorBackend:
+    """Object detection via OpenCV DNN + MobileNet-SSD v2 trained on COCO.
+
+    Runs once per motion event, so accuracy matters more than raw speed. Unlike a
+    whole-frame classifier, it localizes the subject and recognizes the COCO
+    classes we care about (person/cat/dog) without any custom training. We return
+    the raw COCO label and let PersonPetClassifier.LABEL_MAP normalize it.
+
+    COCO 90-class ids (TensorFlow SSD label map): person=1, cat=17, dog=18.
+    Network output is shape [1, 1, N, 7] with rows
+    [_, classId, confidence, x1, y1, x2, y2] in normalized [0, 1] coordinates.
+    """
+
+    # COCO class id -> raw label understood by PersonPetClassifier.LABEL_MAP.
+    COCO_LABELS = {1: "person", 17: "cat", 18: "dog"}
+
+    def __init__(
+        self,
+        model_path: str,
+        config_path: str,
+        input_size: int = 300,
+        min_score: float = 0.5,
+    ):
+        self.model_path = model_path
+        self.config_path = config_path
+        self.input_size = int(input_size)
+        self.min_score = float(min_score)
+        self.model_name = f"mobilenet-ssd:{Path(model_path).name}"
+        self.net = None
+        self._loaded = False
+
+    def is_ready(self) -> bool:
+        return Path(self.model_path).exists() and Path(self.config_path).exists()
+
+    def _ensure_loaded(self) -> None:
+        if self._loaded:
+            return
+        self._loaded = True
+        if not self.is_ready():
+            logger.warning(
+                "Modello detection non trovato: %s / %s", self.model_path, self.config_path
+            )
+            return
+        try:
+            self.net = cv2.dnn.readNetFromTensorflow(self.model_path, self.config_path)
+        except Exception:
+            logger.exception("Impossibile caricare il modello detection: %s", self.model_path)
+            self.net = None
+
+    def classify(self, frame: np.ndarray) -> ClassificationResult | None:
+        self._ensure_loaded()
+        if self.net is None:
+            return None
+        start = time.perf_counter()
+        blob = cv2.dnn.blobFromImage(
+            frame,
+            scalefactor=1.0,
+            size=(self.input_size, self.input_size),
+            mean=(0.0, 0.0, 0.0),
+            swapRB=True,
+            crop=False,
+        )
+        self.net.setInput(blob)
+        output = np.array(self.net.forward()).reshape(-1, 7)
+        inference_ms = (time.perf_counter() - start) * 1000.0
+
+        best_label: str | None = None
+        best_score = self.min_score
+        for row in output:
+            class_id = int(row[1])
+            confidence = float(row[2])
+            label = self.COCO_LABELS.get(class_id)
+            if label is None or confidence < best_score:
+                continue
+            best_score = confidence
+            best_label = label
+
+        if best_label is None:
+            return None
+        return ClassificationResult(
+            label=best_label,
+            confidence=best_score,
+            model_name=self.model_name,
+            inference_ms=round(inference_ms, 2),
+        )
+
+
 class CloudBackend:
     """HTTP REST endpoint backend. POST JPEG → JSON {label, confidence}."""
 
@@ -180,6 +277,9 @@ class CloudBackend:
         self.endpoint = endpoint.strip()
         self.api_key = api_key.strip()
         self.model_name = "cloud"
+
+    def is_ready(self) -> bool:
+        return self.endpoint.lower().startswith(("http://", "https://"))
 
     def classify(self, frame: np.ndarray) -> ClassificationResult | None:
         if not self.endpoint:
@@ -239,12 +339,22 @@ class PersonPetClassifier:
         min_confidence: float,
         sample_policy: str,
         backend: ClassifierBackend,
+        targets: set[str] | None = None,
     ):
         self.enabled = enabled
         self.backend_name = backend_name
         self.min_confidence = min_confidence
         self.sample_policy = sample_policy
         self.backend = backend
+        # Categories the user actually wants to be alerted about. A detected class
+        # outside this set is reported as "ignored" so callers can skip notifying.
+        # Defaults to both for backwards compatibility.
+        self.targets = targets if targets is not None else {self.LABEL_PERSONA, self.LABEL_PET}
+
+    @property
+    def ready(self) -> bool:
+        """True when enabled AND the backend has its model/labels (or cloud endpoint)."""
+        return self.enabled and self.backend.is_ready()
 
     @classmethod
     def from_config(cls, config: dict) -> "PersonPetClassifier":
@@ -254,6 +364,11 @@ class PersonPetClassifier:
         sample_policy = (
             str(config.get("classification_sample_policy", "event_cover")).strip().lower()
         )
+        targets: set[str] = set()
+        if bool(config.get("classification_detect_person", True)):
+            targets.add(cls.LABEL_PERSONA)
+        if bool(config.get("classification_detect_pet", True)):
+            targets.add(cls.LABEL_PET)
 
         if not enabled:
             backend: ClassifierBackend = UnsupportedBackend("disabled")
@@ -283,6 +398,23 @@ class PersonPetClassifier:
                 input_width=int(config.get("classification_tm_input_width", 224)),
                 input_height=int(config.get("classification_tm_input_height", 224)),
             )
+        elif backend_name == "detection":
+            backend = MobileNetSsdDetectorBackend(
+                model_path=str(
+                    config.get(
+                        "classification_detection_model_path",
+                        "models/ssd_mobilenet_v2_coco.pb",
+                    )
+                ),
+                config_path=str(
+                    config.get(
+                        "classification_detection_config_path",
+                        "models/ssd_mobilenet_v2_coco.pbtxt",
+                    )
+                ),
+                input_size=int(config.get("classification_detection_input_size", 300)),
+                min_score=min_confidence,
+            )
         elif backend_name == "cloud":
             backend = CloudBackend(
                 endpoint=str(config.get("classification_cloud_endpoint", "")),
@@ -297,6 +429,7 @@ class PersonPetClassifier:
             min_confidence=min_confidence,
             sample_policy=sample_policy,
             backend=backend,
+            targets=targets,
         )
 
     def classify(self, frame: np.ndarray) -> dict | None:
@@ -304,28 +437,47 @@ class PersonPetClassifier:
             return None
         result = self.backend.classify(frame)
         if result is None:
+            # Distinguish a missing/unusable model ("unavailable") from a model that
+            # ran but found no person/pet in the frame ("no_detection").
+            status = "no_detection" if self.backend.is_ready() else "unavailable"
             return {
                 "class_label": self.LABEL_UNKNOWN,
                 "confidence": None,
                 "model_name": self.backend_name,
                 "inference_ms": None,
                 "backend": self.backend_name,
-                "classification_status": "unavailable",
+                "classification_status": status,
             }
 
         normalized = self._normalize_label(result.label)
-        accepted = normalized in {self.LABEL_PERSONA, self.LABEL_PET}
-        if result.confidence < self.min_confidence:
-            accepted = False
+        is_person_or_pet = normalized in {self.LABEL_PERSONA, self.LABEL_PET}
+        confident = result.confidence >= self.min_confidence
+        in_targets = normalized in self.targets
+        accepted = is_person_or_pet and confident and in_targets
+
+        if accepted:
+            status = "ok"
+        elif is_person_or_pet and not confident:
+            status = "low_confidence"
+        elif is_person_or_pet and not in_targets:
+            # A person/pet was recognized, but this category is disabled by the user.
+            status = "ignored"
+        else:
+            status = "unknown"
+
+        # The recognized category regardless of whether we notify for it: lets the
+        # archive label/filter a confident detection (incl. "ignored" ones) by category.
+        detected_label = normalized if (is_person_or_pet and confident) else None
 
         return {
             "class_label": normalized if accepted else self.LABEL_UNKNOWN,
+            "detected_label": detected_label,
             "confidence": round(float(result.confidence), 4),
             "raw_label": result.label,
             "model_name": result.model_name,
             "inference_ms": result.inference_ms,
             "backend": self.backend_name,
-            "classification_status": "ok" if accepted else "low_confidence",
+            "classification_status": status,
         }
 
     def _normalize_label(self, value: str) -> str:

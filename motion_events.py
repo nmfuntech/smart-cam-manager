@@ -11,6 +11,11 @@ import cv2
 class MotionEventStore:
     CLOSED_MARKER_NAME = ".closed"
     META_FILE_NAME = "meta.json"
+    # Separator between the timestamp and the category suffix in an event dir name,
+    # e.g. motion_event_20260617_120000__persona. Double underscore so it never
+    # collides with the single underscores inside the timestamp.
+    LABEL_SEPARATOR = "__"
+    EVENT_CATEGORIES = ("persona", "animale_domestico", "movimento")
 
     def __init__(self, config: dict):
         self.config = config
@@ -76,6 +81,31 @@ class MotionEventStore:
         self.current_event_last_at = None
         self.current_event_started_at = None
         self.current_event_frame_count = 0
+
+    def rename_event_with_label(self, event_id: str, label: str) -> str:
+        """Append a category suffix to a closed event directory (e.g. ...__persona).
+
+        Must be called only after the recorder has finished writing the event (the
+        clip is finalized), never on the active event. Idempotent and best-effort:
+        on any error or unknown label it leaves the directory untouched and returns
+        the original event_id. The ``motion_event_`` prefix is preserved so globbing
+        and retention keep working.
+        """
+        if not event_id or label not in self.EVENT_CATEGORIES:
+            return event_id
+        if self.LABEL_SEPARATOR in event_id:
+            return event_id  # already labelled
+        save_dir = Path(self.config["save_dir"])
+        src = save_dir / event_id
+        new_id = f"{event_id}{self.LABEL_SEPARATOR}{label}"
+        dst = save_dir / new_id
+        if not src.is_dir() or dst.exists():
+            return event_id
+        try:
+            src.rename(dst)
+        except OSError:
+            return event_id
+        return new_id
 
     def save_event_meta(self, event_id: str, data: dict) -> None:
         if not event_id or not isinstance(data, dict):
@@ -241,20 +271,35 @@ class MotionEventStore:
         preview_path = cover_path if cover_path.exists() else latest_path
         if not preview_path.exists():
             return None
+        name = event_dir.name
+        # Split the optional "__<category>" suffix off the timestamp for display.
+        base, _, dir_category = name.partition(self.LABEL_SEPARATOR)
         event = {
-            "id": event_dir.name,
-            "label": event_dir.name.replace("motion_event_", ""),
+            "id": name,
+            "label": base.replace("motion_event_", ""),
+            "category": dir_category or None,
             "path": str(event_dir),
             "preview_path": str(preview_path),
-            "url": f"/motion_event/{event_dir.name}/preview.jpg",
+            "url": f"/motion_event/{name}/preview.jpg",
             "frame_count": len(frames),
-            "timestamp": self._timestamp_from_name(event_dir.name),
+            "timestamp": self._timestamp_from_name(name),
         }
         if (event_dir / "event.mp4").exists():
-            event["video_url"] = f"/motion_event/{event_dir.name}/video.mp4"
+            event["video_url"] = f"/motion_event/{name}/video.mp4"
         meta = self._load_event_meta(event_dir)
         if meta:
             event.update(meta)
+        # Resolve the category for the UI filter: prefer the recognized detection,
+        # then an accepted class label (covers events classified before detected_label
+        # existed), then the folder suffix, otherwise treat it as plain motion.
+        classification = event.get("classification") or {}
+        class_label = classification.get("class_label")
+        event["category"] = (
+            classification.get("detected_label")
+            or (class_label if class_label in self.EVENT_CATEGORIES else None)
+            or event.get("category")
+            or "movimento"
+        )
         if include_frames:
             event["frames"] = [
                 f"/motion_event/{event_dir.name}/{frame_path.name}" for frame_path in frames

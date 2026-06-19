@@ -92,6 +92,27 @@ class RuntimeConfigManager:
                 "str",
                 internal_only=True,
             ),
+            "CLASSIFICATION_DETECTION_MODEL_PATH": ConfigField(
+                "CLASSIFICATION_DETECTION_MODEL_PATH",
+                "str",
+                internal_only=True,
+            ),
+            "CLASSIFICATION_DETECTION_CONFIG_PATH": ConfigField(
+                "CLASSIFICATION_DETECTION_CONFIG_PATH",
+                "str",
+                internal_only=True,
+            ),
+            "CLASSIFICATION_DETECTION_INPUT_SIZE": ConfigField(
+                "CLASSIFICATION_DETECTION_INPUT_SIZE",
+                "int",
+                minimum=64,
+            ),
+            "CLASSIFICATION_DETECT_PERSON": ConfigField("CLASSIFICATION_DETECT_PERSON", "bool"),
+            "CLASSIFICATION_DETECT_PET": ConfigField("CLASSIFICATION_DETECT_PET", "bool"),
+            "CLASSIFICATION_CROP_TO_MOTION": ConfigField("CLASSIFICATION_CROP_TO_MOTION", "bool"),
+            "CLASSIFICATION_CROP_PADDING": ConfigField(
+                "CLASSIFICATION_CROP_PADDING", "float", minimum=0.0
+            ),
             "CLASSIFICATION_CLOUD_ENDPOINT": ConfigField(
                 "CLASSIFICATION_CLOUD_ENDPOINT",
                 "str",
@@ -135,6 +156,7 @@ class RuntimeConfigManager:
                 "TELEGRAM_COMMANDS_POLL_TIMEOUT_SEC", "float", minimum=1
             ),
             "TELEGRAM_COMMANDS_SET_MENU": ConfigField("TELEGRAM_COMMANDS_SET_MENU", "bool"),
+            "TELEGRAM_INVITE_CODE": ConfigField("TELEGRAM_INVITE_CODE", "str", sensitive=True),
             "CONTINUOUS_RECORD_ENABLED": ConfigField("CONTINUOUS_RECORD_ENABLED", "bool"),
             "CONTINUOUS_RECORD_SEGMENT_MIN": ConfigField(
                 "CONTINUOUS_RECORD_SEGMENT_MIN", "float", minimum=1
@@ -209,12 +231,14 @@ class RuntimeConfigManager:
             raise ValueError("CLASSIFICATION_MIN_CONFIDENCE deve essere <= 1")
 
         if key == "CLASSIFICATION_BACKEND" and value not in {
+            "detection",
             "local",
             "teachable_machine",
             "cloud",
         }:
             raise ValueError(
-                "CLASSIFICATION_BACKEND deve essere uno tra: local, teachable_machine, cloud"
+                "CLASSIFICATION_BACKEND deve essere uno tra: "
+                "detection, local, teachable_machine, cloud"
             )
 
         if field.must_be_odd and isinstance(value, int) and value % 2 == 0:
