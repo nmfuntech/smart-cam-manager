@@ -16,12 +16,33 @@ ExecStart=/opt/blackframe/.venv/bin/gunicorn -c deploy/gunicorn.conf.py app:app
 # Always-on surveillance: restart on crash AND clean exit, after the camera reboots.
 Restart=always
 RestartSec=5
-# Hardening
+# Hardening — filesystem
 NoNewPrivileges=true
 PrivateTmp=true
-ProtectSystem=full
+ProtectSystem=strict
 ProtectHome=read-only
 ReadWritePaths=/opt/blackframe/captures /opt/blackframe/data
+# Footage stays private even if a future bug widens file modes.
+UMask=0077
+# Hardening — kernel / process sandbox (safe for a Python+OpenCV service)
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+# Hardening — network egress (defense in depth against SSRF; see audit A-1/D-2).
+# Disabled by default because Telegram notifications need public internet. To lock
+# egress to the camera LAN only (no cloud notifications), uncomment and tune:
+#IPAddressDeny=any
+#IPAddressAllow=localhost 192.168.0.0/16 10.0.0.0/8 172.16.0.0/12
 
 [Install]
 WantedBy=multi-user.target
