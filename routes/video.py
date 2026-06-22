@@ -1,3 +1,5 @@
+import os
+import threading
 import time
 
 from flask import Blueprint, Response, abort, current_app, redirect, render_template, url_for
@@ -6,35 +8,73 @@ from auth import require_auth
 
 video_bp = Blueprint("video", __name__)
 
+# Each MJPEG stream pins a worker thread in an infinite read loop. Cap the number
+# of concurrent streams so an authenticated client cannot open many at once and
+# exhaust CPU/threads on the single-worker process. Tune via APP_MAX_MJPEG_STREAMS.
+_stream_lock = threading.Lock()
+_active_streams = 0
+
 
 def get_services():
     return current_app.config["services"]
 
 
+def _max_streams() -> int:
+    try:
+        return max(1, int(os.getenv("APP_MAX_MJPEG_STREAMS", "8")))
+    except ValueError:
+        return 8
+
+
+def _acquire_stream_slot() -> bool:
+    global _active_streams
+    with _stream_lock:
+        if _active_streams >= _max_streams():
+            return False
+        _active_streams += 1
+        return True
+
+
+def _release_stream_slot() -> None:
+    global _active_streams
+    with _stream_lock:
+        _active_streams = max(0, _active_streams - 1)
+
+
 def _mjpeg_response(camera) -> Response:
+    if not _acquire_stream_slot():
+        return Response(
+            "Troppi stream video attivi. Riprova piu tardi.",
+            status=503,
+            mimetype="text/plain",
+        )
     target_interval_sec = 1 / 20  # Cap MJPEG push rate to reduce browser-side buffering.
 
     def generate():
         last_sequence = -1
         last_emit_at = 0.0
-        while True:
-            frame, sequence = camera.get_frame_packet()
-            if frame is None:
-                time.sleep(0.1)
-                continue
-            if sequence == last_sequence:
-                time.sleep(0.01)
-                continue
+        try:
+            while True:
+                frame, sequence = camera.get_frame_packet()
+                if frame is None:
+                    time.sleep(0.1)
+                    continue
+                if sequence == last_sequence:
+                    time.sleep(0.01)
+                    continue
 
-            now = time.time()
-            wait_for = target_interval_sec - (now - last_emit_at)
-            if wait_for > 0:
-                time.sleep(wait_for)
+                now = time.time()
+                wait_for = target_interval_sec - (now - last_emit_at)
+                if wait_for > 0:
+                    time.sleep(wait_for)
 
-            last_sequence = sequence
-            last_emit_at = time.time()
+                last_sequence = sequence
+                last_emit_at = time.time()
 
-            yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + frame + b"\r\n")
+                yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + frame + b"\r\n")
+        finally:
+            # Runs on client disconnect (GeneratorExit) so the slot is freed.
+            _release_stream_slot()
 
     return Response(generate(), mimetype="multipart/x-mixed-replace; boundary=frame")
 
