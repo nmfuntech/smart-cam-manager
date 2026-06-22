@@ -11,6 +11,9 @@ models/
 data/camera_profiles.json
 data/.camera_profiles.key
 data/.test-camera-profiles.key
+# Other runtime state in data/ (guest chat IDs, PTZ presets) is private too.
+data/telegram_guests.json
+data/presets.json
 
 # Local tooling
 .claude/
