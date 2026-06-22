@@ -12,6 +12,8 @@ from getpass import getpass
 from pathlib import Path
 from typing import Callable
 
+from werkzeug.security import generate_password_hash
+
 DEFAULT_ENV_PATH = Path(".env")
 EXAMPLE_ENV_PATH = Path(".env.example")
 DEFAULT_CAPTURES_PATH = Path("captures/motion")
@@ -42,6 +44,9 @@ class EnvField:
     default_resolver: DefaultResolver | None = None
     help_text: str | None = None
     include_in_minimal: bool = False
+    # Derived fields are never prompted: their value is computed from other fields
+    # before the .env is written (e.g. the admin password hash).
+    derived: bool = False
 
 
 @dataclass(frozen=True)
@@ -114,8 +119,16 @@ SECTIONS: tuple[EnvSection, ...] = (
                 parse_text,
                 secret=True,
                 generator=generate_admin_password,
-                help_text="Invio genera password forte se non esiste gia.",
+                help_text="Invio genera password forte. Salvata solo come hash.",
                 include_in_minimal=True,
+            ),
+            # Only the hash is persisted; APP_ADMIN_PASSWORD is blanked before write.
+            EnvField(
+                "APP_ADMIN_PASSWORD_HASH",
+                "Hash password admin",
+                parse_text,
+                allow_empty=True,
+                derived=True,
             ),
             EnvField(
                 "APP_SECRET_KEY",
@@ -457,6 +470,19 @@ def cleanup_setup_state(env_path: Path) -> list[Path]:
     return removed
 
 
+def hash_admin_password(values: dict[str, str]) -> None:
+    """Persist only a hash of the admin password, never the plaintext.
+
+    The plaintext (typed or generated) is hashed into APP_ADMIN_PASSWORD_HASH and
+    APP_ADMIN_PASSWORD is blanked, so the written .env holds no recoverable secret.
+    auth.verify_admin_password prefers the hash when present.
+    """
+    plaintext = values.get("APP_ADMIN_PASSWORD", "").strip()
+    if plaintext:
+        values["APP_ADMIN_PASSWORD_HASH"] = generate_password_hash(plaintext)
+        values["APP_ADMIN_PASSWORD"] = ""
+
+
 def build_env_content(values: dict[str, str]) -> str:
     lines = [
         "# File generato da make setup",
@@ -499,6 +525,8 @@ def collect_values(
         if section.description:
             print(section.description)
         for field in section.fields:
+            if field.derived:
+                continue
             current_default = values.get(field.key)
             if current_default is None:
                 current_default = resolve_default(field, values)
@@ -589,6 +617,7 @@ def main() -> int:
         print("Setup annullato. Nessun file scritto.")
         return 1
 
+    hash_admin_password(values)
     content = build_env_content(values)
     write_env_file(env_path, content)
 
