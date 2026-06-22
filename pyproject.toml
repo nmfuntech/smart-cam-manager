@@ -7,12 +7,27 @@ package-mode = false
 
 [tool.poetry.dependencies]
 python = "^3.11"
-flask = "*"
-python-dotenv = "*"
-opencv-python = "*"
-onvif-zeep = "*"
-cryptography = "*"
-gunicorn = "*"
+# Explicit version floors (no unconstrained wildcards) so a future lock cannot
+# regress onto a version with a known advisory.
+flask = ">=3.1.0"
+python-dotenv = ">=1.0.0"
+opencv-python = ">=4.10.0"
+onvif-zeep = ">=0.2.12"
+# Security floor: OpenSSL fix bundled in cryptography wheels (GHSA-537c-gmf6-5ccf).
+cryptography = ">=48.0.1"
+gunicorn = ">=23.0.0"  # request smuggling fixed in 22.0 (CVE-2024-1135)
+requests = ">=2.32.3"  # CVE-2024-35195 / cert-verify regressions fixed
+# Security floors for transitive deps reachable via the ONVIF/SOAP stack
+# (onvif-zeep -> zeep -> lxml + requests -> urllib3) which parses untrusted
+# camera responses. Pinned explicitly so a future lock cannot regress them:
+#   lxml  >=6.1.0  XXE: resolve_entities defaults to 'internal' (PYSEC-2026-87)
+#   zeep  >=4.3.3  SSRF: forbid_external is actually enforced (GHSA-4cc2-g9w2-fhf6)
+#   urllib3 >=2.7.0  decompression DoS + redirect header leak (PYSEC-2026-141/142)
+#   idna  >=3.15   IDNA encode DoS (PYSEC-2026-215)
+lxml = ">=6.1.0"
+zeep = ">=4.3.3"
+urllib3 = ">=2.7.0"
+idna = ">=3.15"
 
 [tool.poetry.group.dev.dependencies]
 ruff = "*"
