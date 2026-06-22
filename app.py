@@ -6,7 +6,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 import cv2
 from dotenv import load_dotenv
@@ -33,6 +33,12 @@ from telegram_commands import TelegramCommandBot
 load_dotenv()
 logger = logging.getLogger(__name__)
 
+# Privacy-at-rest: surveillance footage is the most sensitive asset here. Force a
+# restrictive process umask so every motion frame, clip and event dir is created
+# private (0600 files / 0700 dirs) instead of world-readable (default 0644/0755).
+# Secret stores already chmod themselves; this only tightens.
+os.umask(0o077)
+
 # Prefer low-delay RTSP options to reduce frame buffering latency.
 os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
     "rtsp_transport;tcp|fflags;nobuffer|flags;low_delay|max_delay;0|analyzeduration;0"
@@ -51,7 +57,12 @@ def get_rtsp_url() -> str:
             "Credenziali mancanti. Imposta TAPO_USERNAME e TAPO_PASSWORD nel file .env"
         )
 
-    return f"rtsp://{username}:{password}@{host}:{port}/{stream_path}"
+    # Percent-encode credentials: a password containing '@', ':' or '/' (all valid
+    # in Tapo passwords) would otherwise corrupt the URL and could redirect the
+    # RTSP client to an attacker-chosen host (credential exfiltration).
+    return (
+        f"rtsp://{quote(username, safe='')}:{quote(password, safe='')}@{host}:{port}/{stream_path}"
+    )
 
 
 def get_onvif_config() -> dict:
@@ -271,7 +282,9 @@ def rtsp_url_from_profile(profile: dict) -> str:
     host = profile.get("host", "")
     port = int(profile.get("rtsp_port", 554) or 554)
     stream_path = profile.get("stream_path", "stream1") or "stream1"
-    return f"rtsp://{user}:{password}@{host}:{port}/{stream_path}"
+    # Percent-encode credentials so special characters cannot corrupt the URL or
+    # redirect the RTSP client to another host (see get_rtsp_url).
+    return f"rtsp://{quote(user, safe='')}:{quote(password, safe='')}@{host}:{port}/{stream_path}"
 
 
 def onvif_config_from_profile(profile: dict) -> dict:
@@ -577,6 +590,103 @@ class CameraStream:
         self._reset_backoff()
 
 
+def harden_captures_permissions() -> None:
+    """Best-effort: make existing footage private (0700 dirs / 0600 files).
+
+    New writes are already private via the process umask; this retro-fixes any
+    clips/dirs created before the umask was in effect (e.g. an upgraded install).
+    """
+    candidates = [
+        "captures",
+        os.getenv("MOTION_SAVE_DIR", ""),
+        os.getenv("CONTINUOUS_RECORD_DIR", ""),
+    ]
+    seen: set[Path] = set()
+    for base in candidates:
+        if not base:
+            continue
+        try:
+            root = Path(base).resolve()
+        except OSError:
+            continue
+        if root in seen or not root.exists():
+            continue
+        seen.add(root)
+        try:
+            os.chmod(root, 0o700)
+            for path in root.rglob("*"):
+                try:
+                    os.chmod(path, 0o700 if path.is_dir() else 0o600)
+                except OSError:
+                    continue
+        except OSError:
+            logger.warning("Impossibile irrigidire i permessi di %s", root)
+
+
+_onvif_xml_hardened = False
+
+
+def _harden_onvif_xml_parser() -> None:
+    """Lock down the zeep/lxml settings onvif-zeep uses to parse camera responses.
+
+    The camera talks ONVIF/SOAP in cleartext on the LAN, so its XML responses are
+    untrusted input. onvif-zeep builds its zeep client with forbid_external unset
+    and xml_huge_tree=True, leaving the door open to XXE (local file disclosure,
+    e.g. reading .env), SSRF via remote schema imports, and entity-expansion DoS.
+    We patch the Settings it constructs to forbid DTDs/entities/external refs and
+    to keep libxml2's expansion limits. Idempotent; safe if onvif is absent.
+    """
+    global _onvif_xml_hardened
+    if _onvif_xml_hardened:
+        return
+    try:
+        import onvif.client as onvif_client
+        from zeep import Settings
+    except Exception:
+        return
+
+    class _HardenedSettings(Settings):
+        # onvif-zeep sets `settings.xml_huge_tree = True` *after* construction;
+        # expose it as a read-only False so that assignment is a no-op.
+        @property
+        def xml_huge_tree(self):
+            return False
+
+        @xml_huge_tree.setter
+        def xml_huge_tree(self, value):
+            pass
+
+    def _hardened_settings_factory(*args, **kwargs):
+        kwargs.setdefault("forbid_external", True)
+        kwargs.setdefault("forbid_dtd", True)
+        kwargs.setdefault("forbid_entities", True)
+        return _HardenedSettings(*args, **kwargs)
+
+    onvif_client.Settings = _hardened_settings_factory
+    _onvif_xml_hardened = True
+
+
+def _build_onvif_transport():
+    """A zeep transport that refuses to fetch remote WSDL/XSD documents (SSRF guard).
+
+    ONVIF WSDLs ship locally; the only remote references are http:// schema imports
+    (e.g. w3.org/xmlsoap). Blocking remote *document loads* stops a MITM or a
+    malicious schema from being pulled into the parser, while leaving the SOAP
+    calls to the camera (transport.post) working normally.
+    """
+    from zeep.transports import Transport
+
+    class _NoRemoteLoadTransport(Transport):
+        def load(self, url):
+            if str(url).lower().startswith(("http://", "https://")):
+                raise RuntimeError(
+                    f"Caricamento documento ONVIF remoto bloccato (anti-SSRF): {url}"
+                )
+            return super().load(url)
+
+    return _NoRemoteLoadTransport()
+
+
 class PTZController:
     def __init__(self, config: dict):
         self.config = config
@@ -599,11 +709,15 @@ class PTZController:
         try:
             from onvif import ONVIFCamera
 
+            # The camera is untrusted input over a cleartext LAN protocol: harden
+            # the SOAP/XML parser (XXE/SSRF/DoS) and block remote document fetches.
+            _harden_onvif_xml_parser()
             camera = ONVIFCamera(
                 self.config["host"],
                 self.config["port"],
                 self.config["username"],
                 self.config["password"],
+                transport=_build_onvif_transport(),
             )
             media_service = camera.create_media_service()
             ptz_service = camera.create_ptz_service()
@@ -1551,6 +1665,7 @@ class AppServices:
 
 
 def build_services() -> AppServices:
+    harden_captures_permissions()
     runtime_config = RuntimeConfigManager()
     camera_profiles = CameraProfileService()
     camera_profiles.ensure_default_profile(build_default_camera_profile())
