@@ -33,6 +33,24 @@ class SetupConfigTests(unittest.TestCase):
             "true",
         )
 
+    def test_hash_admin_password_stores_hash_and_clears_plaintext(self):
+        from werkzeug.security import check_password_hash
+
+        values = {"APP_ADMIN_PASSWORD": "super-secret-pw"}
+        setup_config.hash_admin_password(values)
+
+        self.assertEqual(values["APP_ADMIN_PASSWORD"], "")
+        self.assertTrue(check_password_hash(values["APP_ADMIN_PASSWORD_HASH"], "super-secret-pw"))
+        # The written env must not contain the plaintext anywhere.
+        content = setup_config.build_env_content(values)
+        self.assertNotIn("super-secret-pw", content)
+        self.assertIn("APP_ADMIN_PASSWORD_HASH=", content)
+
+    def test_hash_admin_password_noop_when_empty(self):
+        values = {"APP_ADMIN_PASSWORD": ""}
+        setup_config.hash_admin_password(values)
+        self.assertNotIn("APP_ADMIN_PASSWORD_HASH", values)
+
     def test_build_env_content_quotes_values_with_spaces(self):
         content = setup_config.build_env_content(
             {

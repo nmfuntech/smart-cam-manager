@@ -1980,6 +1980,17 @@ class SecurityHardeningTests(unittest.TestCase):
         self.assertIn("script-src 'self'", response.headers["Content-Security-Policy"])
         self.assertEqual(response.headers["X-Frame-Options"], "DENY")
 
+    def test_rate_limiter_evicts_keys_above_cap(self):
+        # A flood of distinct keys must not grow the dict without bound.
+        import auth
+
+        limiter = auth.RateLimiter()
+        with mock.patch.object(auth.RateLimiter, "_MAX_KEYS", 5):
+            for index in range(50):
+                allowed, _ = limiter.allow(f"login:ip{index}", limit=10, window_seconds=300)
+                self.assertTrue(allowed)
+            self.assertLessEqual(len(limiter._events), 5)
+
 
 class StreamApiTests(unittest.TestCase):
     def setUp(self):
@@ -2342,6 +2353,17 @@ class TelegramConfigEndpointTests(unittest.TestCase):
         self.assertIs(updates["NOTIFY_TELEGRAM_ENABLED"], True)
         self.assertIs(updates["NOTIFY_PREFER_VIDEO"], False)
 
+    def test_save_rejects_malformed_bot_token(self):
+        recorded = []
+        client, csrf = self._build_client(recorded)
+        response = client.post(
+            "/api/telegram_config",
+            json={"bot_token": "111:AAA/../evil", "chat_id": "123"},
+            headers=csrf_headers(csrf),
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(recorded, [])
+
     def test_discover_uses_body_token(self):
         client, csrf = self._build_client([])
         with mock.patch(
@@ -2370,6 +2392,122 @@ class TelegramConfigEndpointTests(unittest.TestCase):
                 headers=csrf_headers(csrf),
             )
         self.assertEqual(response.status_code, 400)
+
+
+class OnvifAndFootageHardeningTests(unittest.TestCase):
+    def setUp(self):
+        self.app_module = load_app_module()
+
+    def test_onvif_xml_parser_settings_are_hardened(self):
+        # The camera's SOAP responses are untrusted XML; the parser must forbid
+        # external refs/DTDs/entities and ignore onvif-zeep enabling xml_huge_tree.
+        self.app_module._harden_onvif_xml_parser()
+        import onvif.client as onvif_client
+
+        settings = onvif_client.Settings()
+        settings.xml_huge_tree = True  # onvif-zeep forces this after construction
+        self.assertTrue(settings.forbid_external)
+        self.assertTrue(settings.forbid_dtd)
+        self.assertTrue(settings.forbid_entities)
+        self.assertFalse(settings.xml_huge_tree)
+
+    def test_onvif_transport_blocks_remote_document_loads(self):
+        transport = self.app_module._build_onvif_transport()
+        for url in ("http://169.254.169.254/latest/meta-data/", "https://evil.example/x.xsd"):
+            with self.assertRaises(RuntimeError):
+                transport.load(url)
+
+    def test_harden_captures_permissions_makes_footage_private(self):
+        tmp = Path(tempfile.mkdtemp(prefix="footage-"))
+        try:
+            (tmp / "motion_event_20260101_000000").mkdir()
+            clip = tmp / "motion_event_20260101_000000" / "frame.jpg"
+            clip.write_bytes(b"x")
+            os.chmod(tmp, 0o755)
+            os.chmod(clip, 0o644)
+            with mock.patch.dict(os.environ, {"MOTION_SAVE_DIR": str(tmp)}, clear=False):
+                self.app_module.harden_captures_permissions()
+            self.assertEqual(os.stat(tmp).st_mode & 0o777, 0o700)
+            self.assertEqual(os.stat(clip).st_mode & 0o777, 0o600)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
+class NetworkAndCredentialHardeningTests(unittest.TestCase):
+    def setUp(self):
+        self.app_module = load_app_module()
+
+    def test_rtsp_url_percent_encodes_credentials(self):
+        url = self.app_module.rtsp_url_from_profile(
+            {
+                "username": "a@b",
+                "password": "p@:/ss",
+                "host": "10.0.0.1",
+                "rtsp_port": 554,
+                "stream_path": "stream1",
+            }
+        )
+        self.assertEqual(url, "rtsp://a%40b:p%40%3A%2Fss@10.0.0.1:554/stream1")
+        self.assertNotIn("p@:/ss", url)
+
+    def test_cloud_endpoint_metadata_guard(self):
+        import classification
+
+        # IP literals: no DNS needed, works offline.
+        self.assertTrue(classification._endpoint_targets_metadata("http://169.254.169.254/latest/"))
+        self.assertFalse(classification._endpoint_targets_metadata("http://93.184.216.34/predict"))
+
+    def test_session_has_absolute_lifetime(self):
+        from datetime import timedelta
+
+        app = self.app_module.create_app(
+            self.app_module.AppServices(
+                camera=mock.MagicMock(),
+                ptz=mock.MagicMock(),
+                motion=mock.MagicMock(),
+                features=build_feature_services(self.app_module),
+                runtime_config=mock.MagicMock(),
+            )
+        )
+        self.assertIsInstance(app.config["PERMANENT_SESSION_LIFETIME"], timedelta)
+        self.assertGreater(app.config["PERMANENT_SESSION_LIFETIME"].total_seconds(), 0)
+
+    def test_forwarded_for_garbage_does_not_bypass_rate_limit(self):
+        import auth
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "APP_ADMIN_PASSWORD": "admin-pass",
+                "APP_SECRET_KEY": "test-secret",
+                "APP_TRUST_PROXY": "true",
+            },
+            clear=False,
+        ):
+            auth.rate_limiter._events.clear()
+            app = self.app_module.create_app(
+                self.app_module.AppServices(
+                    camera=mock.MagicMock(),
+                    ptz=mock.MagicMock(),
+                    motion=mock.MagicMock(),
+                    features=build_feature_services(self.app_module),
+                    runtime_config=mock.MagicMock(),
+                )
+            )
+            client = app.test_client()
+            for _ in range(5):
+                r = client.post(
+                    "/login",
+                    data={"password": "wrong", "next": "/"},
+                    headers={"X-Forwarded-For": "not-an-ip"},
+                )
+                self.assertEqual(r.status_code, 401)
+            blocked = client.post(
+                "/login",
+                data={"password": "wrong", "next": "/"},
+                headers={"X-Forwarded-For": "also/garbage"},
+            )
+        self.assertEqual(blocked.status_code, 429)
 
 
 if __name__ == "__main__":
