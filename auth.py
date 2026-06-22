@@ -1,10 +1,12 @@
 import hmac
+import ipaddress
 import logging
 import os
 import secrets
 import threading
 import time
 from collections import defaultdict, deque
+from datetime import timedelta
 from functools import wraps
 from urllib.parse import urlsplit
 
@@ -28,6 +30,11 @@ logger = logging.getLogger(__name__)
 
 
 class RateLimiter:
+    # Hard cap on tracked keys so a flood of distinct client IPs (each spoofable
+    # via X-Forwarded-For when APP_TRUST_PROXY is on) cannot grow the dict without
+    # bound and exhaust memory in the single-worker process.
+    _MAX_KEYS = 10000
+
     def __init__(self):
         self._events: dict[str, deque[float]] = defaultdict(deque)
         self._lock = threading.Lock()
@@ -35,6 +42,8 @@ class RateLimiter:
     def allow(self, key: str, limit: int, window_seconds: int) -> tuple[bool, int]:
         now = time.monotonic()
         with self._lock:
+            if len(self._events) >= self._MAX_KEYS and key not in self._events:
+                self._evict(now)
             bucket = self._events[key]
             while bucket and bucket[0] <= now - window_seconds:
                 bucket.popleft()
@@ -43,6 +52,16 @@ class RateLimiter:
                 return False, retry_after
             bucket.append(now)
             return True, 0
+
+    def _evict(self, now: float) -> None:
+        """Drop empty buckets, then the least-recently-used keys above the cap."""
+        for stale_key in [k for k, b in self._events.items() if not b]:
+            del self._events[stale_key]
+        if len(self._events) < self._MAX_KEYS:
+            return
+        ordered = sorted(self._events.items(), key=lambda item: item[1][-1])
+        for stale_key, _ in ordered[: len(self._events) - self._MAX_KEYS + 1]:
+            del self._events[stale_key]
 
 
 rate_limiter = RateLimiter()
@@ -133,7 +152,13 @@ def _client_ip() -> str:
     if _trust_proxy_headers():
         forwarded = request.headers.get("X-Forwarded-For", "")
         if forwarded:
-            return forwarded.split(",", 1)[0].strip() or "unknown"
+            candidate = forwarded.split(",", 1)[0].strip()
+            # Only trust a well-formed IP; a garbage/rotating header value must not
+            # become a fresh rate-limit bucket key (brute-force bypass).
+            try:
+                return str(ipaddress.ip_address(candidate))
+            except ValueError:
+                pass
     return request.remote_addr or "unknown"
 
 
@@ -290,6 +315,13 @@ def configure_auth(app) -> None:
     app.config["SESSION_COOKIE_SECURE"] = os.getenv(
         "APP_SESSION_COOKIE_SECURE", str(secure_cookie_default)
     ).strip().lower() in {"1", "true", "yes", "on"}
+    # Absolute session lifetime: a stolen/forgotten session cookie expires instead
+    # of granting indefinite access. Default 12h; tune with APP_SESSION_LIFETIME_HOURS.
+    try:
+        lifetime_hours = max(0.25, float(os.getenv("APP_SESSION_LIFETIME_HOURS", "12")))
+    except ValueError:
+        lifetime_hours = 12.0
+    app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(hours=lifetime_hours)
     csp = "; ".join(
         [
             "default-src 'self'",
@@ -382,6 +414,7 @@ def login_submit():
         )
 
     session.clear()
+    session.permanent = True  # enforce PERMANENT_SESSION_LIFETIME (absolute expiry)
     session[AUTH_SESSION_KEY] = get_admin_username()
     session[CSRF_SESSION_KEY] = secrets.token_urlsafe(32)
     return redirect(next_url)
