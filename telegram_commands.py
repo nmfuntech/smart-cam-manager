@@ -6,6 +6,7 @@ webhook URL. It is disabled by default and only accepts exact configured chat ID
 
 from __future__ import annotations
 
+import hmac
 import json
 import logging
 import os
@@ -22,6 +23,7 @@ from typing import Any
 
 from notifications import TELEGRAM_API_BASE, telegram_api_call
 from recording import record_clip
+from service_layer import _write_private_text
 
 # Clip on-demand: durata di default e limite massimo (secondi).
 CLIP_DEFAULT_SEC = 10
@@ -281,9 +283,12 @@ class TelegramCommandBot:
             return {}
 
     def _save_guests(self, guests: dict[str, dict]) -> None:
-        f = self._guests_file()
-        f.parent.mkdir(parents=True, exist_ok=True)
-        f.write_text(json.dumps(guests, indent=2, ensure_ascii=False), encoding="utf-8")
+        # The guest list holds authorized Telegram chat IDs and names: write it
+        # 0o600 (atomic temp + replace) so other local users cannot read it.
+        _write_private_text(
+            self._guests_file(),
+            json.dumps(guests, indent=2, ensure_ascii=False),
+        )
 
     def _allowed_chat_ids(self) -> set[str]:
         ids = self._admin_chat_ids()
@@ -458,7 +463,7 @@ class TelegramCommandBot:
     def _handle_invite(self, chat_id: str, message: dict, text: str, invite_code: str) -> None:
         parts = text.split(maxsplit=1)
         provided = parts[1].strip() if len(parts) > 1 else ""
-        if provided != invite_code:
+        if not provided or not hmac.compare_digest(provided, invite_code):
             self._send_message(
                 chat_id, "Codice non valido. Chiedi il link di invito a un amministratore."
             )

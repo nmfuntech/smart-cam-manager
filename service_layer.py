@@ -155,8 +155,7 @@ class PresetService:
         presets = self.list_presets()
         presets = [item for item in presets if item.get("id") != preset.get("id")]
         presets.append(preset)
-        self.store_path.parent.mkdir(parents=True, exist_ok=True)
-        self.store_path.write_text(json.dumps(presets, indent=2))
+        _write_private_text(self.store_path, json.dumps(presets, indent=2))
         return preset
 
 

@@ -87,7 +87,10 @@ class ContinuousRecorder:
     def __init__(self, camera_stream, config: dict, camera_id: str = "default"):
         self.camera = camera_stream
         self.config = config
-        self.camera_id = camera_id
+        # camera_id is interpolated into the segment output path; restrict it to a
+        # filesystem-safe charset so a profile id can never traverse out of the dir.
+        safe_id = "".join(ch for ch in str(camera_id) if ch.isalnum() or ch in ("-", "_"))
+        self.camera_id = safe_id or "default"
         self.lock = threading.Lock()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
