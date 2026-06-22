@@ -1,11 +1,14 @@
+import ipaddress
 import json
 import logging
+import socket
 import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
+from urllib.parse import urlparse
 
 import cv2
 import numpy as np
@@ -270,6 +273,30 @@ class MobileNetSsdDetectorBackend:
         )
 
 
+def _endpoint_targets_metadata(endpoint: str) -> bool:
+    """True if the endpoint host resolves to a link-local / cloud-metadata address.
+
+    Public endpoints and RFC1918 LAN targets (a self-hosted classifier is a valid
+    use) are allowed; 169.254.0.0/16 (incl. 169.254.169.254) and fe80::/10 — never
+    a legitimate ML service — are blocked as an SSRF guard.
+    """
+    host = urlparse(endpoint).hostname
+    if not host:
+        return True
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except OSError:
+        return False
+    for info in infos:
+        try:
+            addr = ipaddress.ip_address(info[4][0])
+        except ValueError:
+            continue
+        if addr.is_link_local:
+            return True
+    return False
+
+
 class CloudBackend:
     """HTTP REST endpoint backend. POST JPEG → JSON {label, confidence}."""
 
@@ -289,6 +316,11 @@ class CloudBackend:
         # gopher://, ftp:// and similar schemes if the endpoint is ever misconfigured.
         if not self.endpoint.lower().startswith(("http://", "https://")):
             logger.warning("CLASSIFICATION_CLOUD_ENDPOINT deve usare http(s)://")
+            return None
+        if _endpoint_targets_metadata(self.endpoint):
+            logger.warning(
+                "CLASSIFICATION_CLOUD_ENDPOINT punta a un indirizzo link-local/metadata: bloccato"
+            )
             return None
         ok, buf = cv2.imencode(".jpg", frame)
         if not ok:

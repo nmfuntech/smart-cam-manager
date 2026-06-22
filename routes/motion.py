@@ -6,11 +6,15 @@ from pathlib import Path
 
 from flask import Blueprint, Response, abort, current_app, jsonify, request, send_file
 
-from auth import rate_limit, require_auth, require_csrf
+from auth import ensure_csrf_token, rate_limit, require_auth, require_csrf
 from continuous_recording import estimate_bitrate_bps
 from notifications import discover_telegram_chats, send_telegram_test
 
 motion_bp = Blueprint("motion", __name__)
+# A Telegram bot token is "<bot_id>:<secret>". Validate the shape before it is
+# interpolated into the API URL (https://api.telegram.org/bot<token>/<method>) so
+# a crafted token cannot inject '/' or '..' and alter the requested API path.
+TELEGRAM_TOKEN_PATTERN = re.compile(r"^\d+:[A-Za-z0-9_-]+$")
 EVENT_ID_PATTERN = re.compile(r"^motion_event_\d{8}_\d{6}$")
 EVENT_FRAME_PATTERN = re.compile(r"^(cover|latest|frame_\d{8}_\d{6}_\d{3})\.jpg$")
 LEGACY_CAPTURE_PATTERN = re.compile(r"^motion_\d{8}_\d{6}\.jpg$")
@@ -74,6 +78,12 @@ def camera_motion_status(profile_id: str):
     return motion.get_status()
 
 
+@motion_bp.get("/api/csrf_token")
+@require_auth(api=True)
+def get_csrf_token():
+    return jsonify({"csrf_token": ensure_csrf_token()})
+
+
 @motion_bp.get("/runtime_config")
 @require_auth(api=True)
 def runtime_config():
@@ -115,9 +125,17 @@ def update_runtime_config():
 
 
 def _resolve_token(payload: dict) -> str:
-    """Token from the request body if provided, else the saved env value."""
+    """Token from the request body if provided, else the saved env value.
+
+    A request-supplied token is rejected unless it matches the Telegram token
+    shape; the stored env value is trusted (it was validated when written).
+    """
     token = str(payload.get("bot_token") or "").strip()
-    return token or os.getenv("NOTIFY_TELEGRAM_BOT_TOKEN", "").strip()
+    if token:
+        if not TELEGRAM_TOKEN_PATTERN.fullmatch(token):
+            return ""
+        return token
+    return os.getenv("NOTIFY_TELEGRAM_BOT_TOKEN", "").strip()
 
 
 @motion_bp.get("/api/telegram_config")
@@ -161,6 +179,8 @@ def update_telegram_config():
 
     token = str(payload.get("bot_token") or "").strip()
     if token:
+        if not TELEGRAM_TOKEN_PATTERN.fullmatch(token):
+            return jsonify({"ok": False, "error": "Token del bot non valido"}), 400
         updates["NOTIFY_TELEGRAM_BOT_TOKEN"] = token
     if "chat_id" in payload:
         chat_id = str(payload.get("chat_id") or "").strip()
@@ -273,10 +293,11 @@ def open_captures_folder():
     Only works when the server runs on the same machine as the browser (the local
     surveillance use case). Opens the configured save_dir; no user input is used.
 
-    Disabled with APP_ENABLE_OPEN_FOLDER=false so a headless/remote deployment does
-    not let an authenticated request spawn a GUI process on the server host.
+    Opt-in via APP_ENABLE_OPEN_FOLDER=true. Disabled by default so a headless/remote
+    deployment does not let an authenticated request spawn a GUI process on the
+    server host; enable it only on a local desktop install.
     """
-    if os.getenv("APP_ENABLE_OPEN_FOLDER", "true").strip().lower() not in {
+    if os.getenv("APP_ENABLE_OPEN_FOLDER", "false").strip().lower() not in {
         "1",
         "true",
         "yes",
