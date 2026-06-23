@@ -33,6 +33,13 @@ idna = ">=3.15"
 ruff = "*"
 pytest = "^9.0.3"
 
+
+[tool.poetry.group.windows]
+optional = true
+
+[tool.poetry.group.windows.dependencies]
+waitress = ">=3.0.0"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]

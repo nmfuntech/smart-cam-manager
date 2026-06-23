@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 # Bootstrap BLACKFRAME on Windows from Git Bash / MSYS / WSL with Windows interop.
-# Installs/checks Python 3.11, Git, Poetry, Visual C++ runtime, project deps,
+# Installs/checks Python 3.11+, Git, Poetry, Visual C++ runtime, project deps,
 # then prepares a Windows .bat launcher.
 
 APP_NAME="BLACKFRAME"
@@ -14,6 +14,8 @@ OPEN_FIREWALL=0
 INSTALL_TOOLS=1
 INSTALL_DEPS=1
 INSTALL_VCREDIST=1
+
+PYTHON_MIN_MINOR=11
 
 log() {
   printf '\n[%s] %s\n' "$APP_NAME" "$*"
@@ -150,28 +152,33 @@ winget_install() {
     --exact \
     --source winget \
     --accept-package-agreements \
-    --accept-source-agreements || warn "$label non installato via winget. Proseguo se gia presente."
+    --accept-source-agreements || warn "$label non installato via winget. Proseguo se già presente."
 }
 
 append_known_windows_paths() {
   local candidates=()
 
+  # Python 3.11, 3.12, 3.13 — cerca dal più recente
   if [[ -n "${LOCALAPPDATA:-}" ]]; then
-    candidates+=(
-      "$LOCALAPPDATA\\Programs\\Python\\Python311"
-      "$LOCALAPPDATA\\Programs\\Python\\Python311\\Scripts"
-    )
+    for minor in 313 312 311; do
+      candidates+=(
+        "$LOCALAPPDATA\\Programs\\Python\\Python${minor}"
+        "$LOCALAPPDATA\\Programs\\Python\\Python${minor}\\Scripts"
+      )
+    done
   fi
 
   if [[ -n "${APPDATA:-}" ]]; then
     candidates+=("$APPDATA\\Python\\Scripts")
   fi
 
-  candidates+=(
-    "C:\\Program Files\\Python311"
-    "C:\\Program Files\\Python311\\Scripts"
-    "C:\\Program Files\\Git\\cmd"
-  )
+  for minor in 313 312 311; do
+    candidates+=(
+      "C:\\Program Files\\Python${minor}"
+      "C:\\Program Files\\Python${minor}\\Scripts"
+    )
+  done
+  candidates+=("C:\\Program Files\\Git\\cmd")
 
   local candidate unix_candidate
   for candidate in "${candidates[@]}"; do
@@ -193,38 +200,44 @@ ensure_user_path_contains() {
 PYTHON_CMD=()
 POETRY_CMD=()
 
-python_is_311() {
-  "$@" -c "import sys; raise SystemExit(0 if sys.version_info[:2] == (3, 11) else 1)" >/dev/null 2>&1
+python_is_ok() {
+  "$@" -c "import sys; raise SystemExit(0 if sys.version_info >= (3, $PYTHON_MIN_MINOR) else 1)" >/dev/null 2>&1
 }
 
-find_python311() {
+find_python() {
   append_known_windows_paths
 
-  if has_cmd py && python_is_311 py -3.11; then
-    PYTHON_CMD=(py -3.11)
-    return 0
-  fi
+  # Python Launcher (preferito su Windows: seleziona la versione esplicitamente)
+  for ver in 3.13 3.12 3.11; do
+    if has_cmd py && python_is_ok py -"$ver"; then
+      PYTHON_CMD=(py -"$ver")
+      return 0
+    fi
+  done
 
-  if has_cmd python && python_is_311 python; then
+  if has_cmd python && python_is_ok python; then
     PYTHON_CMD=(python)
     return 0
   fi
 
-  if has_cmd python3 && python_is_311 python3; then
+  if has_cmd python3 && python_is_ok python3; then
     PYTHON_CMD=(python3)
     return 0
   fi
 
+  # percorsi noti per 3.13, 3.12, 3.11
   local candidates=()
-  if [[ -n "${LOCALAPPDATA:-}" ]]; then
-    candidates+=("$LOCALAPPDATA\\Programs\\Python\\Python311\\python.exe")
-  fi
-  candidates+=("C:\\Program Files\\Python311\\python.exe")
+  for minor in 313 312 311; do
+    if [[ -n "${LOCALAPPDATA:-}" ]]; then
+      candidates+=("$LOCALAPPDATA\\Programs\\Python\\Python${minor}\\python.exe")
+    fi
+    candidates+=("C:\\Program Files\\Python${minor}\\python.exe")
+  done
 
   local candidate unix_candidate
   for candidate in "${candidates[@]}"; do
     unix_candidate="$(unix_path "$candidate")"
-    if [[ -x "$unix_candidate" ]] && python_is_311 "$unix_candidate"; then
+    if [[ -x "$unix_candidate" ]] && python_is_ok "$unix_candidate"; then
       PYTHON_CMD=("$unix_candidate")
       return 0
     fi
@@ -260,10 +273,22 @@ find_poetry() {
 
 install_poetry() {
   log "Installo Poetry"
+
+  # Niente 'curl | python': scarica l'installer su file e poi eseguilo. Così un
+  # MITM o un errore HTTP non vengono eseguiti come codice.
   if has_cmd curl; then
-    curl -sSL https://install.python-poetry.org | "${PYTHON_CMD[@]}" -
+    local installer
+    installer="$(mktemp --suffix=.py 2>/dev/null || printf '%s' "${TEMP:-${TMP:-/tmp}}/poetry_install_$$.py")"
+    # shellcheck disable=SC2064
+    trap "rm -f '$installer'" RETURN
+    if ! curl -fsSL --proto '=https' --tlsv1.2 \
+          https://install.python-poetry.org -o "$installer"; then
+      die "Download dell'installer Poetry fallito."
+    fi
+    "${PYTHON_CMD[@]}" "$installer"
   else
-    run_ps "(Invoke-WebRequest -Uri https://install.python-poetry.org -UseBasicParsing).Content | py -3.11 -"
+    # Fallback PowerShell: scarica su file temporaneo, poi esegue
+    run_ps "\$tmp = [System.IO.Path]::GetTempFileName() + '.py'; Invoke-WebRequest -Uri 'https://install.python-poetry.org' -OutFile \$tmp -UseBasicParsing; python \$tmp; Remove-Item \$tmp"
   fi
 
   if [[ -n "${APPDATA:-}" ]]; then
@@ -278,15 +303,15 @@ install_poetry() {
 ensure_tools() {
   append_known_windows_paths
 
-  if ! find_python311; then
+  if ! find_python; then
     if ((INSTALL_TOOLS)) && winget_available; then
       winget_install "Python.Python.3.11" "Python 3.11"
       append_known_windows_paths
     else
-      die "Python 3.11 mancante. Installa Python 3.11 x64 e ripeti."
+      die "Python 3.${PYTHON_MIN_MINOR}+ mancante. Installa Python 3.11+ x64 e ripeti."
     fi
   fi
-  find_python311 || die "Python 3.11 non trovato dopo installazione. Apri nuovo terminale e ripeti."
+  find_python || die "Python 3.${PYTHON_MIN_MINOR}+ non trovato dopo installazione. Apri nuovo terminale e ripeti."
   log "Python OK: $("${PYTHON_CMD[@]}" --version 2>&1)"
 
   if ! has_cmd git; then
@@ -315,11 +340,11 @@ ensure_tools() {
 }
 
 install_project_deps() {
-  log "Installo dipendenze Python con Poetry"
-  "${POETRY_CMD[@]}" install
+  log "Installo dipendenze Python con Poetry (incluso waitress per Windows)"
+  "${POETRY_CMD[@]}" install --with windows
 
   log "Verifico import principali"
-  "${POETRY_CMD[@]}" run python -c "import cv2, flask, dotenv, cryptography; print('OK')"
+  "${POETRY_CMD[@]}" run python -c "import cv2, flask, dotenv, cryptography, waitress; print('OK')"
 }
 
 run_env_setup_if_needed() {
@@ -348,7 +373,7 @@ write_launcher() {
   cat > "$PROJECT_DIR/start_blackframe.bat" <<BAT
 @echo off
 cd /d "$project_win"
-poetry run python app.py >> "$project_win\\blackframe.log" 2>&1
+poetry run python deploy\serve_waitress.py >> "$project_win\\blackframe.log" 2>&1
 BAT
 }
 
@@ -370,7 +395,7 @@ Cartella progetto:
 
 Comandi utili:
   poetry run python scripts\\setup_config.py --minimal
-  poetry run python app.py
+  poetry run python deploy\\serve_waitress.py
 
 Launcher:
   $project_win\\start_blackframe.bat
@@ -389,7 +414,7 @@ main() {
 
   if ((INSTALL_TOOLS)); then
     if ! winget_available; then
-      warn "winget non trovato. Posso solo verificare tool gia installati."
+      warn "winget non trovato. Posso solo verificare tool già installati."
     fi
   fi
 
@@ -411,7 +436,7 @@ main() {
   if ((RUN_APP)); then
     [[ -f ".env" ]] || die ".env mancante: esegui prima con --setup-env"
     log "Avvio app. Ctrl+C per fermare."
-    exec "${POETRY_CMD[@]}" run python app.py
+    exec "${POETRY_CMD[@]}" run python deploy/serve_waitress.py
   fi
 }
 

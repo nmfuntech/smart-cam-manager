@@ -79,8 +79,8 @@ Su Windows `gunicorn` **non** è disponibile: si usa `waitress` tramite
 
 **Preparazione (una tantum):**
 ```powershell
-# nella cartella dell'app, con il venv Poetry attivo
-poetry run pip install waitress
+# nella cartella dell'app
+poetry install --with windows
 # prova manuale:
 poetry run python deploy/serve_waitress.py
 ```

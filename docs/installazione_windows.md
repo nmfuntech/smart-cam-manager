@@ -36,13 +36,13 @@ inclusi tutti i prerequisiti, la configurazione iniziale e l'avvio automatico al
 
 ---
 
-## 2. Installare Python 3.11
+## 2. Installare Python 3.11+
 
-> BLACKFRAME richiede Python **3.11**. Versioni più vecchie (3.9, 3.10) o più nuove (3.12+) potrebbero
-> causare incompatibilità con le dipendenze OpenCV.
+> BLACKFRAME richiede Python **3.11 o superiore** (3.11, 3.12, 3.13 vanno tutti bene).
+> Versioni precedenti (3.9, 3.10) non sono supportate.
 
-1. Vai su [python.org/downloads](https://www.python.org/downloads/) e scarica **Python 3.11.x** (scegli
-   "Windows installer (64-bit)").
+1. Vai su [python.org/downloads](https://www.python.org/downloads/) e scarica l'ultima versione
+   **Python 3.x** stabile (scegli "Windows installer (64-bit)").
 
 2. Avvia l'installer. **Spunta le due opzioni in basso prima di premere "Install Now":**
    - ✅ `Add Python 3.11 to PATH`
@@ -54,7 +54,7 @@ inclusi tutti i prerequisiti, la configurazione iniziale e l'avvio automatico al
    python --version
    ```
 
-   Deve rispondere: `Python 3.11.x`
+   Deve rispondere: `Python 3.11.x` (o 3.12.x / 3.13.x)
 
 ---
 
@@ -84,8 +84,14 @@ Poetry gestisce le dipendenze Python in un ambiente virtuale isolato.
 In PowerShell (come utente normale, **non** come amministratore):
 
 ```powershell
-(Invoke-WebRequest -Uri https://install.python-poetry.org -UseBasicParsing).Content | python -
+$tmp = [System.IO.Path]::GetTempFileName() + '.py'
+Invoke-WebRequest -Uri https://install.python-poetry.org -OutFile $tmp -UseBasicParsing
+python $tmp
+Remove-Item $tmp
 ```
+
+> Scaricare su file prima di eseguire è più sicuro del classico `| python -`: un errore
+> di rete o un MITM non viene mai eseguito come codice.
 
 Poi aggiungi Poetry al PATH per la sessione corrente:
 
@@ -133,16 +139,16 @@ cd blackframe
 Dalla cartella `C:\blackframe`:
 
 ```powershell
-poetry install
+poetry install --with windows
 ```
 
-Poetry crea automaticamente un ambiente virtuale isolato e installa Flask, OpenCV, e tutte le
-altre librerie. Il primo avvio richiede qualche minuto.
+Poetry crea automaticamente un ambiente virtuale isolato e installa Flask, OpenCV, waitress
+(il server WSGI per Windows) e tutte le altre librerie. Il primo avvio richiede qualche minuto.
 
 Verifica che tutto sia andato a buon fine:
 
 ```powershell
-poetry run python -c "import cv2, flask; print('OK')"
+poetry run python -c "import cv2, flask, waitress; print('OK')"
 ```
 
 Deve stampare `OK`.
@@ -231,11 +237,11 @@ CONTINUOUS_RECORD_RETAIN_HOURS=24
 
 ## 8. Primo avvio e verifica
 
-Avvia l'app in modalità sviluppo:
+Avvia l'app:
 
 ```powershell
 cd C:\blackframe
-poetry run python app.py
+poetry run python deploy\serve_waitress.py
 ```
 
 Vedrai dei log nel terminale. Quando compare una riga del tipo:
@@ -268,7 +274,7 @@ Crea il file `C:\blackframe\start_blackframe.bat` con questo contenuto:
 ```bat
 @echo off
 cd /d C:\blackframe
-poetry run python app.py >> C:\blackframe\blackframe.log 2>&1
+poetry run python deploy\serve_waitress.py >> C:\blackframe\blackframe.log 2>&1
 ```
 
 > Il log dell'app viene salvato in `C:\blackframe\blackframe.log`. Utile per diagnosticare
@@ -391,17 +397,12 @@ Poetry al PATH permanente (§4) e riapri PowerShell.
 - Prova l'URL RTSP direttamente con VLC:
   `rtsp://utente:password@192.168.1.50:554/stream1`
 
-### `poetry install` fallisce con errore su OpenCV
+### `poetry install --with windows` fallisce con errore su OpenCV
 
-OpenCV richiede alcune librerie di sistema. Se l'installazione fallisce:
+OpenCV richiede il runtime Visual C++. Se l'installazione fallisce:
 
-```powershell
-pip install --upgrade pip
-poetry run pip install opencv-python
-```
-
-In alternativa, su alcuni mini PC è necessario installare i
-[Microsoft Visual C++ Redistributable](https://aka.ms/vs/17/release/vc_redist.x64.exe).
+1. Installa [Microsoft Visual C++ Redistributable](https://aka.ms/vs/17/release/vc_redist.x64.exe)
+2. Riapri PowerShell e ripeti `poetry install --with windows`
 
 ### Il log mostra `Configura APP_ADMIN_PASSWORD prima di usare BLACKFRAME`
 
@@ -424,8 +425,7 @@ python scripts\setup_config.py
 
 | Operazione | Comando |
 |---|---|
-| Avvio manuale | `poetry run python app.py` |
-| Avvio produzione | `poetry run gunicorn -c deploy/gunicorn.conf.py app:app` |
+| Avvio | `poetry run python deploy\serve_waitress.py` |
 | Test suite | `poetry run python -m pytest -v` |
 | Genera hash password | `poetry run python -c "from getpass import getpass; from werkzeug.security import generate_password_hash; pw=getpass(); print(generate_password_hash(pw))"` |
 | Log Task Scheduler | `C:\blackframe\blackframe.log` |
