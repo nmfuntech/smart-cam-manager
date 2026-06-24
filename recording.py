@@ -10,6 +10,7 @@ detection loop so it cannot drop detection frames.
 import logging
 import shutil
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -22,8 +23,17 @@ logger = logging.getLogger(__name__)
 RECORDING_FILE_NAME = "event.mp4"
 
 # Browsers only play H.264 in an HTML5 <video>; mp4v (MPEG-4 Part 2) is rejected.
-# Try avc1 (H.264) first and fall back to mp4v if the FFmpeg build lacks an encoder.
-_VIDEO_FOURCC_PREFERENCE = ("avc1", "mp4v")
+# Try avc1 (H.264) first on Linux/macOS and fall back to mp4v if unavailable.
+# On Windows OpenCV ships a broken OpenH264 DLL for avc1 — skip it and transcode
+# event clips to H.264 via ffmpeg in finalize_recording(transcode=True).
+_DEFAULT_FOURCC_PREFERENCE = ("avc1", "mp4v")
+_WINDOWS_FOURCC_PREFERENCE = ("mp4v",)
+
+
+def _writer_fourcc_tags() -> tuple[str, ...]:
+    if sys.platform == "win32":
+        return _WINDOWS_FOURCC_PREFERENCE
+    return _DEFAULT_FOURCC_PREFERENCE
 
 
 def _video_codec(path: "Path | str") -> str | None:
@@ -186,16 +196,121 @@ def fit_frame(frame, size):
 def open_mp4_writer(path: "Path | str", fps: float, size) -> "cv2.VideoWriter | None":
     """Open a VideoWriter preferring browser-playable H.264, falling back to mp4v."""
     path = str(path)
-    for tag in _VIDEO_FOURCC_PREFERENCE:
+    for tag in _writer_fourcc_tags():
         fourcc = cv2.VideoWriter_fourcc(*tag)
         writer = cv2.VideoWriter(path, fourcc, fps, size)
         if writer.isOpened():
             if tag != "avc1":
-                logger.warning("Codec H.264 non disponibile, uso fallback %s per %s", tag, path)
+                logger.debug("VideoWriter aperto con codec %s per %s", tag, path)
             return writer
         writer.release()
     logger.warning("Impossibile aprire VideoWriter per %s", path)
     return None
+
+
+def _read_raw_packet(camera) -> tuple:
+    """Return (frame, sequence). Supports legacy cameras without packet API."""
+    getter = getattr(camera, "get_raw_frame_packet", None)
+    if getter is not None:
+        return getter()
+    frame = camera.get_raw_frame()
+    if frame is None:
+        return None, -1
+    return frame, 0
+
+
+def _poll_new_frame(camera, last_sequence: int, timeout: float):
+    """Wait up to ``timeout`` seconds for a frame with a new sequence number."""
+    deadline = time.time() + max(0.0, timeout)
+    while time.time() < deadline:
+        frame, sequence = _read_raw_packet(camera)
+        if frame is not None and sequence != last_sequence:
+            return frame, sequence
+        time.sleep(0.004)
+    return None, last_sequence
+
+
+def _merge_timed_packets(
+    *groups: list[tuple[float, bytes, int]],
+) -> list[tuple[float, bytes, int]]:
+    """Merge packet lists by sequence, keeping the newest timestamp per sequence."""
+    by_sequence: dict[int, tuple[float, bytes, int]] = {}
+    for group in groups:
+        for ts, jpeg, seq in group:
+            by_sequence[seq] = (ts, jpeg, seq)
+    return [by_sequence[seq] for seq in sorted(by_sequence)]
+
+
+def subsample_timed_packets(
+    packets: list[tuple[float, bytes, int]],
+    fps: float,
+) -> list[tuple[bytes, int]]:
+    """Pick one frame per 1/fps window so playback duration matches real time."""
+    if not packets:
+        return []
+    interval = 1.0 / max(1.0, float(fps))
+    buckets: dict[int, tuple[bytes, int]] = {}
+    for ts, jpeg, seq in packets:
+        buckets[int(ts / interval)] = (jpeg, seq)
+    return [buckets[key] for key in sorted(buckets)]
+
+
+def _collect_preroll_packets(camera, preroll_sec: float) -> list[tuple[float, bytes, int]]:
+    getter = getattr(camera, "get_preroll_timed_packets", None)
+    if getter is not None:
+        return getter(preroll_sec)
+    return [
+        (0.0, jpeg, seq)
+        for jpeg, seq in camera.get_preroll_packets(preroll_sec)
+    ]
+
+
+def _write_frames_at_fps(
+    camera,
+    writer,
+    size,
+    stop: threading.Event,
+    fps: float,
+    max_duration: float,
+    started_at: float,
+    *,
+    initial_frames: list | None = None,
+    initial_sequences: list[int] | None = None,
+    postroll_sec: float = 0.0,
+) -> None:
+    """Write unique stream frames, capped at ``fps``, until stop or max duration."""
+    min_interval = 1.0 / max(1.0, float(fps))
+    last_sequence = -1
+    last_write_at = 0.0
+    poll_timeout = max(min_interval * 2.0, 0.05)
+    stop_deadline: float | None = None
+
+    for frame, sequence in zip(initial_frames or [], initial_sequences or [], strict=False):
+        if frame is not None:
+            writer.write(fit_frame(frame, size))
+            last_sequence = sequence
+
+    while True:
+        if stop.is_set():
+            if postroll_sec <= 0:
+                break
+            if stop_deadline is None:
+                stop_deadline = time.time() + postroll_sec
+            elif time.time() >= stop_deadline:
+                break
+        if time.time() - started_at >= max_duration:
+            break
+        frame, sequence = _poll_new_frame(camera, last_sequence, poll_timeout)
+        if frame is None:
+            continue
+        now = time.time()
+        if now - last_write_at < min_interval:
+            # Throttle to target FPS: consume the frame but don't write it.
+            last_sequence = sequence
+            continue
+        writer.write(fit_frame(frame, size))
+        last_sequence = sequence
+        last_write_at = now
 
 
 class EventRecorder:
@@ -237,15 +352,14 @@ class EventRecorder:
             thread = self._thread
             path = self._active_dir / RECORDING_FILE_NAME if self._active_dir else None
             self._stop_locked()
-        if on_complete is not None and thread is not None and path is not None:
+        if on_complete is not None and thread is not None:
 
             def _wait_and_notify():
                 thread.join(timeout=30)
-                if path.exists():
-                    try:
-                        on_complete(path)
-                    except Exception:
-                        logger.exception("Errore callback completamento registrazione")
+                try:
+                    on_complete(path if path is not None and path.exists() else None)
+                except Exception:
+                    logger.exception("Errore callback completamento registrazione")
 
             threading.Thread(target=_wait_and_notify, daemon=True).start()
 
@@ -259,37 +373,49 @@ class EventRecorder:
         fps = max(1.0, float(self.config.get("record_fps", 10) or 10))
         max_duration = float(self.config.get("record_max_duration_sec", 60) or 60)
         preroll_sec = float(self.config.get("record_preroll_sec", 2.0) or 0.0)
-        interval = 1.0 / fps
         writer = None
         size = None
         try:
-            preroll = [decode_jpeg(jpeg) for jpeg in self.camera.get_preroll_jpegs(preroll_sec)]
-            preroll = [frame for frame in preroll if frame is not None]
+            packets = _collect_preroll_packets(self.camera, preroll_sec)
+            first_frame = None
+            for _ts, jpeg, _seq in packets[:1]:
+                first_frame = decode_jpeg(jpeg)
+            if first_frame is None:
+                first_frame = _poll_new_frame(self.camera, -1, 2.0)[0]
+            if first_frame is None:
+                return
+            size = scaled_size(first_frame, int(self.config.get("record_max_width", 0) or 0))
+            writer = self._open_writer(event_dir, fps, size)
+            if writer is None:
+                return
+
+            # Re-fetch after writer setup: frames that arrived during decode stay in the buffer.
+            packets = _merge_timed_packets(
+                packets,
+                _collect_preroll_packets(self.camera, preroll_sec),
+            )
+            preroll_frames: list = []
+            preroll_sequences: list[int] = []
+            for jpeg, sequence in subsample_timed_packets(packets, fps):
+                frame = decode_jpeg(jpeg)
+                if frame is None:
+                    continue
+                preroll_frames.append(frame)
+                preroll_sequences.append(sequence)
 
             started_at = time.time()
-            next_frame_at = started_at
-            while not stop.is_set():
-                if time.time() - started_at >= max_duration:
-                    break
-                frame = self.camera.get_raw_frame()
-                if frame is None:
-                    time.sleep(interval)
-                    continue
-                if writer is None:
-                    size = scaled_size(frame, int(self.config.get("record_max_width", 0) or 0))
-                    writer = self._open_writer(event_dir, fps, size)
-                    if writer is None:
-                        return
-                    for pre in preroll:
-                        writer.write(fit_frame(pre, size))
-                    preroll = []
-                writer.write(fit_frame(frame, size))
-                next_frame_at += interval
-                sleep_for = next_frame_at - time.time()
-                if sleep_for > 0:
-                    time.sleep(min(sleep_for, interval))
-                else:
-                    next_frame_at = time.time()
+            _write_frames_at_fps(
+                self.camera,
+                writer,
+                size,
+                stop,
+                fps,
+                max_duration,
+                started_at,
+                initial_frames=preroll_frames,
+                initial_sequences=preroll_sequences,
+                postroll_sec=float(self.config.get("record_postroll_sec", 3.0) or 0.0),
+            )
         except Exception:
             logger.exception("Errore registrazione video evento")
         finally:
@@ -321,35 +447,34 @@ def record_clip(
     be captured or the writer failed.
     """
     fps = max(1.0, float(fps))
-    interval = 1.0 / fps
     path = Path(path)
     writer = None
     size = None
+    stop = threading.Event()
     try:
         started_at = time.time()
-        next_frame_at = started_at
-        while time.time() - started_at < seconds:
-            frame = camera_stream.get_raw_frame()
-            if frame is None:
-                time.sleep(interval)
-                continue
-            if writer is None:
-                size = scaled_size(frame, int(max_width or 0))
-                path.parent.mkdir(parents=True, exist_ok=True)
-                writer = open_mp4_writer(path, fps, size)
-                if writer is None:
-                    return None
-            writer.write(fit_frame(frame, size))
-            next_frame_at += interval
-            sleep_for = next_frame_at - time.time()
-            if sleep_for > 0:
-                time.sleep(min(sleep_for, interval))
-            else:
-                next_frame_at = time.time()
+        first_frame = _poll_new_frame(camera_stream, -1, 2.0)[0]
+        if first_frame is None:
+            return None
+        size = scaled_size(first_frame, int(max_width or 0))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        writer = open_mp4_writer(path, fps, size)
+        if writer is None:
+            return None
+        _write_frames_at_fps(
+            camera_stream,
+            writer,
+            size,
+            stop,
+            fps,
+            seconds,
+            started_at,
+        )
     except Exception:
         logger.exception("Errore registrazione clip on-demand")
         return None
     finally:
+        stop.set()
         if writer is not None:
             writer.release()
             # On-demand clip (short): transcode to H.264 if needed for playback.

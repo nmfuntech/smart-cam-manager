@@ -25,7 +25,8 @@ class MotionEventStore:
         self.current_event_started_at = None
         self.current_event_frame_count = 0
 
-    def save_frame(self, frame, timestamp: str) -> tuple[str | None, str | None]:
+    def _prepare_event(self, timestamp: str) -> tuple[str | None, Path | None]:
+        """Open an event directory if needed, without saving a frame yet."""
         if not self.config["save_frames"]:
             return None, None
 
@@ -54,20 +55,34 @@ class MotionEventStore:
             self.current_event_frame_count = 0
 
         self.current_event_last_at = now
+        return self.current_event_id, self.current_event_dir
+
+    def open_event(self, timestamp: str) -> tuple[str | None, Path | None]:
+        """Create/reuse the active event dir so video recording can start early."""
+        return self._prepare_event(timestamp)
+
+    def save_frame(self, frame, timestamp: str) -> tuple[str | None, str | None]:
+        if not self.config["save_frames"]:
+            return None, None
+
+        event_id, event_dir = self._prepare_event(timestamp)
+        if event_dir is None:
+            return None, None
+
         self.current_event_frame_count += 1
         filepath = (
-            self.current_event_dir / f"frame_{timestamp}_{self.current_event_frame_count:03d}.jpg"
+            event_dir / f"frame_{timestamp}_{self.current_event_frame_count:03d}.jpg"
         )
         ok = cv2.imwrite(str(filepath), frame)
         if not ok:
             raise RuntimeError("Impossibile salvare il fotogramma di movimento")
 
-        cover_path = self.current_event_dir / "cover.jpg"
-        latest_path = self.current_event_dir / "latest.jpg"
+        cover_path = event_dir / "cover.jpg"
+        latest_path = event_dir / "latest.jpg"
         if not cover_path.exists():
             cv2.imwrite(str(cover_path), frame)
         cv2.imwrite(str(latest_path), frame)
-        return str(filepath), self.current_event_id
+        return str(filepath), event_id
 
     def latest_event(self):
         events = self.list_events(limit=1)
@@ -156,25 +171,45 @@ class MotionEventStore:
 
         return removed
 
+    def find_event_dir(self, event_id: str) -> Path | None:
+        """Resolve an event directory, including after a category suffix rename."""
+        if not event_id:
+            return None
+        save_dir = Path(self.config["save_dir"])
+        direct = save_dir / event_id
+        if direct.is_dir():
+            return direct
+        match = re.search(r"(\d{8}_\d{6})", event_id)
+        if not match:
+            return None
+        timestamp = match.group(1)
+        for candidate in sorted(save_dir.glob(f"motion_event_{timestamp}*"), reverse=True):
+            if candidate.is_dir():
+                return candidate
+        return None
+
     def event_has_classification(self, event_id: str) -> bool:
         """Check on disk whether an event was already classified (dedup survives restart)."""
-        if not event_id:
+        event_dir = self.find_event_dir(event_id)
+        if event_dir is None:
             return False
-        event_dir = Path(self.config["save_dir"]) / event_id
         meta = self._load_event_meta(event_dir)
         return bool(meta.get("classification"))
 
     def event_was_notified(self, event_id: str) -> bool:
         """Check on disk whether a notification was already sent (dedup survives restart)."""
-        if not event_id:
+        event_dir = self.find_event_dir(event_id)
+        if event_dir is None:
             return False
-        event_dir = Path(self.config["save_dir"]) / event_id
         meta = self._load_event_meta(event_dir)
         return bool(meta.get("notified"))
 
     def mark_event_notified(self, event_id: str) -> None:
         """Persist that a notification was sent for this event."""
-        self.save_event_meta(event_id, {"notified": True})
+        event_dir = self.find_event_dir(event_id)
+        if event_dir is None:
+            return
+        self.save_event_meta(event_dir.name, {"notified": True})
 
     def purge_old_events(self, max_age_days: float = 0.0, max_total_mb: float = 0.0) -> int:
         """Delete closed events older than max_age_days and/or beyond the max_total_mb quota.

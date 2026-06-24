@@ -8,6 +8,7 @@ from flask import Blueprint, Response, abort, current_app, jsonify, request, sen
 
 from auth import ensure_csrf_token, rate_limit, require_auth, require_csrf
 from continuous_recording import estimate_bitrate_bps
+from motion_events import MotionEventStore
 from notifications import discover_telegram_chats, send_telegram_test
 
 motion_bp = Blueprint("motion", __name__)
@@ -15,7 +16,8 @@ motion_bp = Blueprint("motion", __name__)
 # interpolated into the API URL (https://api.telegram.org/bot<token>/<method>) so
 # a crafted token cannot inject '/' or '..' and alter the requested API path.
 TELEGRAM_TOKEN_PATTERN = re.compile(r"^\d+:[A-Za-z0-9_-]+$")
-EVENT_ID_PATTERN = re.compile(r"^motion_event_\d{8}_\d{6}$")
+_CATEGORY_SUFFIX = "(?:" + "|".join(re.escape(c) for c in MotionEventStore.EVENT_CATEGORIES) + ")"
+EVENT_ID_PATTERN = re.compile(rf"^motion_event_\d{{8}}_\d{{6}}(?:__{_CATEGORY_SUFFIX})?$")
 EVENT_FRAME_PATTERN = re.compile(r"^(cover|latest|frame_\d{8}_\d{6}_\d{3})\.jpg$")
 LEGACY_CAPTURE_PATTERN = re.compile(r"^motion_\d{8}_\d{6}\.jpg$")
 PUBLIC_RUNTIME_UPDATE_KEYS = {
