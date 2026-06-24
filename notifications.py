@@ -14,11 +14,26 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 TELEGRAM_API_BASE = "https://api.telegram.org"
+# Limite prudente per sendVideo (Telegram accetta ~50MB; oltre ~20MB spesso fallisce).
+DEFAULT_MAX_VIDEO_BYTES = 20 * 1024 * 1024
+
+
+@dataclass(frozen=True)
+class _DeliveryJob:
+    event_id: str
+    class_label: str | None
+    image_path: str | None
+    video_path: str | None
+    token: str
+    chat_id: str
+    on_delivered: Callable[[], None] | None = None
 
 
 def telegram_api_call(token: str, method: str, params: dict | None = None) -> dict:
@@ -120,6 +135,74 @@ class TelegramNotifier:
         self._lock = threading.Lock()
         self._last_sent_at: float | None = None
         self._muted_until: float | None = None
+        self._pending: list[_DeliveryJob] = []
+        self._worker_running = False
+
+    def _max_video_bytes(self) -> int:
+        try:
+            mb = float(_env("NOTIFY_TELEGRAM_MAX_VIDEO_MB", "20"))
+        except ValueError:
+            mb = 20.0
+        return max(1, int(mb * 1024 * 1024))
+
+    def _start_worker(self) -> None:
+        with self._lock:
+            if self._worker_running:
+                return
+            self._worker_running = True
+            threading.Thread(target=self._delivery_worker, daemon=True).start()
+
+    def _enqueue(self, job: _DeliveryJob) -> bool:
+        self._start_worker()
+        with self._lock:
+            self._pending.append(job)
+        return True
+
+    def _delivery_worker(self) -> None:
+        while True:
+            if self._is_muted():
+                time.sleep(1.0)
+                continue
+            with self._lock:
+                job = self._pending.pop(0) if self._pending else None
+            if job is None:
+                time.sleep(0.25)
+                continue
+            with self._lock:
+                if self._last_sent_at is not None:
+                    wait = self._min_interval() - (time.monotonic() - self._last_sent_at)
+                else:
+                    wait = 0.0
+            if wait > 0:
+                time.sleep(wait)
+            if self._deliver(job):
+                with self._lock:
+                    self._last_sent_at = time.monotonic()
+                if job.on_delivered is not None:
+                    try:
+                        job.on_delivered()
+                    except Exception:
+                        logger.exception("Callback post-invio Telegram fallito")
+            else:
+                logger.warning("Invio Telegram non riuscito per %s", job.event_id)
+
+    def _deliver(self, job: _DeliveryJob) -> bool:
+        if job.video_path and Path(job.video_path).is_file():
+            size = Path(job.video_path).stat().st_size
+            if size <= self._max_video_bytes():
+                if self._send_video(job.token, job.chat_id, job.event_id, job.class_label, job.video_path):
+                    return True
+            cover = Path(job.video_path).parent / "cover.jpg"
+            if cover.is_file():
+                logger.info(
+                    "Clip %s troppo grande (%d MB), invio foto di copertina su Telegram",
+                    job.event_id,
+                    size // (1024 * 1024),
+                )
+                return self._send(job.token, job.chat_id, job.event_id, job.class_label, str(cover))
+            logger.warning("Clip %s troppo grande e senza cover.jpg", job.event_id)
+            return self._send(job.token, job.chat_id, job.event_id, job.class_label, None)
+        return self._send(job.token, job.chat_id, job.event_id, job.class_label, job.image_path)
 
     @property
     def enabled(self) -> bool:
@@ -171,8 +254,9 @@ class TelegramNotifier:
         event_id: str,
         class_label: str | None = None,
         image_path: str | None = None,
+        on_delivered: Callable[[], None] | None = None,
     ) -> bool:
-        """Queue a Telegram notification for an event. Returns True if accepted for sending."""
+        """Accoda una notifica Telegram. ``on_delivered`` viene chiamato solo dopo invio riuscito."""
         if not self.enabled or self._is_muted():
             return False
         token = self._bot_token()
@@ -185,18 +269,17 @@ class TelegramNotifier:
         if allowed and (class_label is None or class_label not in allowed):
             return False
 
-        with self._lock:
-            now = time.monotonic()
-            if self._last_sent_at is not None and now - self._last_sent_at < self._min_interval():
-                return False
-            self._last_sent_at = now
-
-        threading.Thread(
-            target=self._send,
-            args=(token, chat_id, event_id, class_label, image_path),
-            daemon=True,
-        ).start()
-        return True
+        return self._enqueue(
+            _DeliveryJob(
+                event_id=event_id,
+                class_label=class_label,
+                image_path=image_path,
+                video_path=None,
+                token=token,
+                chat_id=chat_id,
+                on_delivered=on_delivered,
+            )
+        )
 
     # Emoji per categoria classificata, mostrata accanto all'etichetta.
     _CLASS_EMOJI = {"persona": "🧍", "animale_domestico": "🐕"}
@@ -216,7 +299,7 @@ class TelegramNotifier:
         event_id: str,
         class_label: str | None,
         image_path: str | None,
-    ) -> None:
+    ) -> bool:
         caption = self._caption(event_id, class_label)
         try:
             if image_path and Path(image_path).is_file():
@@ -233,20 +316,23 @@ class TelegramNotifier:
                 )
             req = urllib.request.Request(url, data=body, method="POST")
             req.add_header("Content-Type", content_type)
-            with urllib.request.urlopen(req, timeout=10) as resp:
+            with urllib.request.urlopen(req, timeout=30) as resp:
                 resp.read()
+            return True
         except (urllib.error.URLError, OSError) as exc:
             logger.warning("Invio Telegram fallito: %s", exc)
         except Exception:
             logger.exception("Errore inatteso invio Telegram")
+        return False
 
     def notify_event_video(
         self,
         event_id: str,
         class_label: str | None = None,
         video_path: str | None = None,
+        on_delivered: Callable[[], None] | None = None,
     ) -> bool:
-        """Queue a Telegram sendVideo notification. Returns True if accepted for sending."""
+        """Accoda un video Telegram. ``on_delivered`` viene chiamato solo dopo invio riuscito."""
         if not self.enabled or self._is_muted():
             return False
         token = self._bot_token()
@@ -259,18 +345,17 @@ class TelegramNotifier:
         if allowed and (class_label is None or class_label not in allowed):
             return False
 
-        with self._lock:
-            now = time.monotonic()
-            if self._last_sent_at is not None and now - self._last_sent_at < self._min_interval():
-                return False
-            self._last_sent_at = now
-
-        threading.Thread(
-            target=self._send_video,
-            args=(token, chat_id, event_id, class_label, video_path),
-            daemon=True,
-        ).start()
-        return True
+        return self._enqueue(
+            _DeliveryJob(
+                event_id=event_id,
+                class_label=class_label,
+                image_path=None,
+                video_path=video_path,
+                token=token,
+                chat_id=chat_id,
+                on_delivered=on_delivered,
+            )
+        )
 
     def _send_video(
         self,
@@ -279,7 +364,7 @@ class TelegramNotifier:
         event_id: str,
         class_label: str | None,
         video_path: str | None,
-    ) -> None:
+    ) -> bool:
         caption = self._caption(event_id, class_label)
         try:
             if video_path and Path(video_path).is_file():
@@ -297,12 +382,14 @@ class TelegramNotifier:
                 )
             req = urllib.request.Request(url, data=body, method="POST")
             req.add_header("Content-Type", content_type)
-            with urllib.request.urlopen(req, timeout=60) as resp:
+            with urllib.request.urlopen(req, timeout=120) as resp:
                 resp.read()
+            return True
         except (urllib.error.URLError, OSError) as exc:
             logger.warning("Invio video Telegram fallito: %s", exc)
         except Exception:
             logger.exception("Errore inatteso invio video Telegram")
+        return False
 
     def status(self) -> dict:
         return {
