@@ -16,6 +16,10 @@ def _env_flag(name: str, default: str = "false") -> bool:
     return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _env(name: str, default: str = "") -> str:
+    return os.getenv(name, default).strip()
+
+
 def _env_path(name: str, default: str) -> Path:
     return ROOT / os.getenv(name, default).strip()
 
@@ -81,6 +85,20 @@ def check_motion_tuning() -> list[str]:
     return issues
 
 
+def check_telegram_commands() -> list[str]:
+    if not _env_flag("NOTIFY_TELEGRAM_ENABLED"):
+        return []
+    if not _env("NOTIFY_TELEGRAM_BOT_TOKEN") or not _env("NOTIFY_TELEGRAM_CHAT_ID"):
+        return []
+    if _env_flag("TELEGRAM_COMMANDS_ENABLED"):
+        return []
+    return [
+        "NOTIFY_TELEGRAM_ENABLED=true ma TELEGRAM_COMMANDS_ENABLED=false: "
+        "le notifiche funzionano ma /status e gli altri comandi bot no. "
+        "Imposta TELEGRAM_COMMANDS_ENABLED=true e riavvia l'app."
+    ]
+
+
 def run_checks() -> tuple[list[str], list[str]]:
     """Ritorna (errori, avvisi). Gli errori bloccano --strict."""
     errors: list[str] = []
@@ -95,6 +113,7 @@ def run_checks() -> tuple[list[str], list[str]]:
         errors.extend(model_issues)
 
     warnings.extend(check_motion_tuning())
+    warnings.extend(check_telegram_commands())
     return errors, warnings
 
 
