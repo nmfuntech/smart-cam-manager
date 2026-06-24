@@ -18,6 +18,13 @@ Register as a Windows service with NSSM (see docs/gestione_servizio.md).
 """
 
 import os
+import sys
+from pathlib import Path
+
+# Script lives in deploy/; project modules (app, routes, …) are at repo root.
+_ROOT = Path(__file__).resolve().parent.parent
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
 
 from waitress import serve
 

@@ -5,7 +5,7 @@ ifeq ($(MINIMAL),1)
 SETUP_FLAGS += --minimal
 endif
 
-.PHONY: setup install lock run serve hash-password fetch-model test lint lint-fix audit clean bf install-ubuntu help
+.PHONY: setup install lock run serve hash-password fetch-model check-prerequisites install-windows install-ubuntu test lint lint-fix audit clean bf help
 
 help:
 	@echo "Targets:"
@@ -17,13 +17,15 @@ help:
 	@echo "  make serve         - start the production server (gunicorn, single worker)"
 	@echo "  make hash-password - generate an APP_ADMIN_PASSWORD_HASH (prompts for password)"
 	@echo "  make fetch-model   - download the MobileNet-SSD detection model into models/"
+	@echo "  make check-prerequisites - verify ffmpeg, models and .env tuning"
+	@echo "  make install-windows - install on Windows mini PC (PowerShell script)"
+	@echo "  make install-ubuntu - install on Ubuntu (wraps scripts/install_ubuntu.sh)"
 	@echo "  make test          - run unit tests"
 	@echo "  make lint          - run ruff (E/F/I, line-length 100)"
 	@echo "  make lint-fix      - run ruff with autofix (import sorting + safe fixes)"
 	@echo "  make audit         - SCA: scan dependencies for known CVEs (pip-audit)"
 	@echo "  make clean         - remove local caches and generated local state"
 	@echo "  make bf ARGS='...' - run the BLACKFRAME CLI (es: make bf ARGS='status')"
-	@echo "  make install-ubuntu - installa su Ubuntu (wrappa scripts/install_ubuntu.sh)"
 
 setup:
 	$(SETUP_PYTHON) scripts/setup_config.py $(SETUP_FLAGS)
@@ -45,6 +47,12 @@ hash-password:
 
 fetch-model:
 	$(PYTHON) scripts/fetch_model.py
+
+check-prerequisites:
+	$(PYTHON) scripts/check_prerequisites.py
+
+install-windows:
+	powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install_windows.ps1 -TuneMiniPc
 
 bf:
 	$(PYTHON) scripts/bf.py $(ARGS)

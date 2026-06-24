@@ -14,6 +14,9 @@ OPEN_FIREWALL=0
 INSTALL_TOOLS=1
 INSTALL_DEPS=1
 INSTALL_VCREDIST=1
+INSTALL_FFMPEG=1
+FETCH_MODEL=1
+TUNE_MINI_PC=0
 
 PYTHON_MIN_MINOR=11
 
@@ -43,6 +46,9 @@ Opzioni:
   --no-tools         non installa Python/Git/Poetry/VC++ runtime
   --no-deps          non esegue poetry install
   --no-vcredist      non installa Microsoft Visual C++ Redistributable
+  --no-ffmpeg        non installa ffmpeg via winget
+  --no-model         non scarica il modello classificazione
+  --tune-mini-pc     applica profilo tuning mini PC al .env esistente
   -h, --help         mostra questa guida
 
 Variabili:
@@ -77,6 +83,15 @@ while (($#)); do
       ;;
     --no-vcredist)
       INSTALL_VCREDIST=0
+      ;;
+    --no-ffmpeg)
+      INSTALL_FFMPEG=0
+      ;;
+    --no-model)
+      FETCH_MODEL=0
+      ;;
+    --tune-mini-pc)
+      TUNE_MINI_PC=1
       ;;
     -h | --help)
       usage
@@ -328,6 +343,10 @@ ensure_tools() {
     winget_install "Microsoft.VCRedist.2015+.x64" "Microsoft Visual C++ Redistributable"
   fi
 
+  if ((INSTALL_FFMPEG)) && winget_available; then
+    winget_install "Gyan.FFmpeg" "FFmpeg"
+  fi
+
   if ! find_poetry; then
     if ((INSTALL_TOOLS)); then
       install_poetry
@@ -345,6 +364,25 @@ install_project_deps() {
 
   log "Verifico import principali"
   "${POETRY_CMD[@]}" run python -c "import cv2, flask, dotenv, cryptography, waitress; print('OK')"
+}
+
+fetch_detection_model() {
+  log "Scarico modello classificazione (MobileNet-SSD)"
+  "${POETRY_CMD[@]}" run python scripts/fetch_model.py
+}
+
+apply_mini_pc_tune() {
+  if [[ ! -f ".env" ]]; then
+    warn ".env mancante: salto tuning mini PC"
+    return
+  fi
+  log "Applico profilo tuning mini-pc-windows"
+  "${POETRY_CMD[@]}" run python scripts/env_profiles.py --profile mini-pc-windows
+}
+
+check_prerequisites() {
+  log "Verifico prerequisiti runtime"
+  "${POETRY_CMD[@]}" run python scripts/check_prerequisites.py || true
 }
 
 run_env_setup_if_needed() {
@@ -373,7 +411,16 @@ write_launcher() {
   cat > "$PROJECT_DIR/start_blackframe.bat" <<BAT
 @echo off
 cd /d "$project_win"
-poetry run python deploy\serve_waitress.py >> "$project_win\\blackframe.log" 2>&1
+poetry run python scripts\\check_prerequisites.py
+if errorlevel 1 (
+  echo.
+  echo [BLACKFRAME] Prerequisiti mancanti. Vedi messaggi sopra.
+  echo Installa ffmpeg: winget install Gyan.FFmpeg
+  echo Poi riapri il terminale e rilancia.
+  pause
+  exit /b 1
+)
+poetry run python deploy\\serve_waitress.py >> "$project_win\\blackframe.log" 2>&1
 BAT
 }
 
@@ -395,7 +442,10 @@ Cartella progetto:
 
 Comandi utili:
   poetry run python scripts\\setup_config.py --minimal
+  poetry run python scripts\\check_prerequisites.py
+  poetry run python scripts\\env_profiles.py --profile mini-pc-windows
   poetry run python deploy\\serve_waitress.py
+  make fetch-model
 
 Launcher:
   $project_win\\start_blackframe.bat
@@ -424,8 +474,20 @@ main() {
     install_project_deps
   fi
 
+  if ((FETCH_MODEL)); then
+    fetch_detection_model
+  fi
+
   run_env_setup_if_needed
+
+  if ((TUNE_MINI_PC)); then
+    apply_mini_pc_tune
+  elif [[ -f ".env" ]] && ! grep -q '^MOTION_SCALE_WIDTH=' .env 2>/dev/null; then
+    apply_mini_pc_tune
+  fi
+
   write_launcher
+  check_prerequisites
 
   if ((OPEN_FIREWALL)); then
     open_firewall_port
