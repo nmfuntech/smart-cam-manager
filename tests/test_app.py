@@ -123,6 +123,12 @@ class ClassificationNotifyGateTests(unittest.TestCase):
             def save_event_meta(self, event_id, data):
                 pass
 
+            def rename_event_with_label(self, event_id, label):
+                return f"{event_id}__{label}" if label else event_id
+
+            def find_event_dir(self, event_id):
+                return None
+
         class FakeClassifier:
             enabled = True
             sample_policy = "event_cover"
@@ -143,29 +149,48 @@ class ClassificationNotifyGateTests(unittest.TestCase):
             enabled = True
 
         detector = self.app_module.MotionDetector.__new__(self.app_module.MotionDetector)
-        detector.config = {"notify_prefer_video": prefer_video}
+        detector.config = {"notify_prefer_video": prefer_video, "save_dir": tempfile.gettempdir()}
         detector.recorder = FakeRecorder() if prefer_video else None
         detector._last_motion_rect_norm = None
         detector.event_store = FakeStore()
         detector.classifier = FakeClassifier()
         detector._classified_events = set()
+        detector._notified_events = set()
+        detector.notifier = object()
         detector.notified = []
         detector._notify_event = lambda event_id, result: detector.notified.append(event_id)
+        detector._deliver_event_notification = (
+            lambda event_id, result, video_path=None: detector.notified.append(event_id)
+        )
         return detector
 
-    def test_ok_status_notifies_with_photo_when_no_video(self):
+    def test_ok_status_defers_notification_until_event_close(self):
         detector = self._detector("ok")
         detector._classify_event_frame("ev1", object())
-        self.assertEqual(detector.notified, ["ev1"])
+        self.assertEqual(detector.notified, [])
+        detector._finalize_closed_event_notification(
+            "ev1",
+            "persona",
+            {"classification_status": "ok", "detected_label": "persona"},
+            should_notify=True,
+        )
+        self.assertEqual(detector.notified, ["ev1__persona"])
 
-    def test_unavailable_status_notifies_as_fallback(self):
+    def test_unavailable_status_notifies_on_close(self):
         detector = self._detector("unavailable")
         detector._classify_event_frame("ev1", object())
-        self.assertEqual(detector.notified, ["ev1"])
+        self.assertEqual(detector.notified, [])
+        detector._finalize_closed_event_notification(
+            "ev1",
+            "movimento",
+            {"classification_status": "unavailable"},
+            should_notify=True,
+        )
+        self.assertEqual(detector.notified, ["ev1__movimento"])
 
     def test_ok_status_defers_photo_when_video_preferred(self):
-        # With a clip preferred, the snapshot must NOT fire here; the video
-        # notification on event close delivers the alert (with the same label).
+        # With a clip preferred, the snapshot must NOT fire on classify; the close
+        # callback delivers the alert once the event is archived.
         detector = self._detector("ok", prefer_video=True)
         detector._classify_event_frame("ev1", object())
         self.assertEqual(detector.notified, [])
@@ -196,10 +221,107 @@ class ClassificationNotifyGateTests(unittest.TestCase):
         detector._classify_event_frame("ev1", object())
         self.assertEqual(detector.notified, [])
 
-    def test_no_detection_status_does_not_notify(self):
+    def test_no_detection_status_notifies_on_close(self):
         detector = self._detector("no_detection")
         detector._classify_event_frame("ev1", object())
         self.assertEqual(detector.notified, [])
+        detector._finalize_closed_event_notification(
+            "ev1",
+            "movimento",
+            {"classification_status": "no_detection"},
+            should_notify=True,
+        )
+        self.assertEqual(detector.notified, ["ev1__movimento"])
+
+
+class ClosedEventNotificationTests(unittest.TestCase):
+    def setUp(self):
+        self.app_module = load_app_module()
+        self.tmpdir = tempfile.mkdtemp(prefix="closed-notify-")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir)
+
+    def _detector(self, *, prefer_video=True):
+        class FakeNotifier:
+            def __init__(self):
+                self.calls = []
+
+            def notify_event_video(self, **kwargs):
+                self.calls.append(("video", kwargs))
+                return True
+
+            def notify_event(self, **kwargs):
+                self.calls.append(("photo", kwargs))
+                return True
+
+        notifier = FakeNotifier()
+        detector = self.app_module.MotionDetector.__new__(self.app_module.MotionDetector)
+        detector.config = {
+            "notify_prefer_video": prefer_video,
+            "save_dir": self.tmpdir,
+        }
+        detector.event_store = self.app_module.MotionEventStore(
+            {"save_dir": self.tmpdir, "save_frames": True, "event_gap": 5.0}
+        )
+        detector.notifier = notifier
+        detector._notified_events = set()
+        detector.recorder = type("R", (), {"enabled": prefer_video})()
+        return detector, notifier
+
+    def _seed_event(self, event_id: str, *, with_video=False):
+        event_dir = Path(self.tmpdir) / event_id
+        event_dir.mkdir(parents=True, exist_ok=True)
+        (event_dir / "cover.jpg").write_bytes(b"jpg")
+        (event_dir / self.app_module.MotionEventStore.CLOSED_MARKER_NAME).touch()
+        if with_video:
+            (event_dir / "event.mp4").write_bytes(b"mp4")
+
+    def test_finalize_falls_back_to_photo_when_video_missing(self):
+        detector, notifier = self._detector(prefer_video=True)
+        self._seed_event("motion_event_20260624_120000")
+        detector._finalize_closed_event_notification(
+            "motion_event_20260624_120000",
+            "persona",
+            {"classification_status": "ok", "detected_label": "persona"},
+            should_notify=True,
+            video_path=None,
+        )
+        self.assertEqual(len(notifier.calls), 1)
+        self.assertEqual(notifier.calls[0][0], "photo")
+        self.assertTrue(
+            (Path(self.tmpdir) / "motion_event_20260624_120000__persona").is_dir()
+        )
+
+    def test_finalize_sends_video_from_renamed_event_dir(self):
+        detector, notifier = self._detector(prefer_video=True)
+        event_id = "motion_event_20260624_120000"
+        self._seed_event(event_id, with_video=True)
+        stale_clip = Path(self.tmpdir) / event_id / "event.mp4"
+        detector._finalize_closed_event_notification(
+            event_id,
+            "persona",
+            {"classification_status": "ok", "detected_label": "persona"},
+            should_notify=True,
+            video_path=stale_clip,
+        )
+        self.assertEqual(len(notifier.calls), 1)
+        self.assertEqual(notifier.calls[0][0], "video")
+        sent_path = notifier.calls[0][1]["video_path"]
+        self.assertTrue(sent_path.endswith("motion_event_20260624_120000__persona\\event.mp4")
+                        or sent_path.endswith("motion_event_20260624_120000__persona/event.mp4"))
+        self.assertTrue(Path(sent_path).is_file())
+
+    def test_mark_notified_resolves_renamed_event_dir(self):
+        store = self.app_module.MotionEventStore(
+            {"save_dir": self.tmpdir, "save_frames": True, "event_gap": 5.0}
+        )
+        event_dir = Path(self.tmpdir) / "motion_event_20260624_120000"
+        event_dir.mkdir(parents=True, exist_ok=True)
+        (event_dir / "cover.jpg").write_bytes(b"jpg")
+        renamed = store.rename_event_with_label("motion_event_20260624_120000", "persona")
+        store.mark_event_notified("motion_event_20260624_120000")
+        self.assertTrue(store.event_was_notified(renamed))
 
 
 class EventLabelTests(unittest.TestCase):
@@ -411,6 +533,20 @@ class MotionDetectorEventTests(unittest.TestCase):
 
         self.assertNotEqual(first_event_id, second_event_id)
         self.assertTrue((Path(self.tmpdir) / first_event_id / store.CLOSED_MARKER_NAME).exists())
+
+    def test_open_event_creates_directory_without_frame(self):
+        store = self.app_module.MotionEventStore(
+            {
+                "save_frames": True,
+                "save_dir": self.tmpdir,
+                "event_gap": 30.0,
+                "max_event_duration": 45.0,
+            }
+        )
+        event_id, event_dir = store.open_event("20260417_120001")
+        self.assertEqual(event_id, "motion_event_20260417_120001")
+        self.assertTrue(event_dir.is_dir())
+        self.assertEqual(list(event_dir.glob("frame_*.jpg")), [])
 
     def test_clear_all_handles_current_event_without_crashing(self):
         event_dir = Path(self.tmpdir) / "motion_event_20260417_120001"

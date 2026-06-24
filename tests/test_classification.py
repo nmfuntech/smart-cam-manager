@@ -209,11 +209,18 @@ class DetectionBackendTests(unittest.TestCase):
         self.assertEqual(result.label, "dog")
 
     def test_picks_highest_confidence_relevant_class(self):
-        # cat=17 @ 0.6 and person=1 @ 0.88 -> person wins.
+        # cat=17 @ 0.6 and person=1 @ 0.88 -> person wins (margine > 0.12).
         backend = _detector_with([(17, 0.6), (1, 0.88)])
         result = backend.classify(self._frame())
         self.assertEqual(result.label, "person")
         self.assertAlmostEqual(result.confidence, 0.88, places=5)
+
+    def test_pet_priority_when_person_margin_is_small(self):
+        # person @ 0.70 e dog @ 0.65 -> animale vince (margine 0.05 < 0.12).
+        backend = _detector_with([(1, 0.70), (18, 0.65)])
+        result = backend.classify(self._frame())
+        self.assertEqual(result.label, "dog")
+        self.assertAlmostEqual(result.confidence, 0.65, places=5)
 
     def test_ignores_non_pet_classes(self):
         # 3 is "car" in the COCO map; not person/cat/dog -> no relevant detection.
