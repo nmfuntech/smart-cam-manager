@@ -1,6 +1,7 @@
 import ipaddress
 import json
 import logging
+import os
 import socket
 import time
 import urllib.error
@@ -201,6 +202,9 @@ class MobileNetSsdDetectorBackend:
 
     # COCO class id -> raw label understood by PersonPetClassifier.LABEL_MAP.
     COCO_LABELS = {1: "person", 17: "cat", 18: "dog"}
+    # Se person e pet sono entrambi presenti, preferisci il pet quando la persona
+    # non supera il pet di almeno questo margine (evita cane → persona).
+    DEFAULT_PERSON_OVER_PET_MARGIN = 0.12
 
     def __init__(
         self,
@@ -208,11 +212,21 @@ class MobileNetSsdDetectorBackend:
         config_path: str,
         input_size: int = 300,
         min_score: float = 0.5,
+        pet_priority_margin: float | None = None,
     ):
         self.model_path = model_path
         self.config_path = config_path
         self.input_size = int(input_size)
         self.min_score = float(min_score)
+        try:
+            env_margin = float(os.getenv("CLASSIFICATION_PET_PRIORITY_MARGIN", ""))
+        except ValueError:
+            env_margin = self.DEFAULT_PERSON_OVER_PET_MARGIN
+        self.pet_priority_margin = (
+            float(pet_priority_margin)
+            if pet_priority_margin is not None
+            else env_margin
+        )
         self.model_name = f"mobilenet-ssd:{Path(model_path).name}"
         self.net = None
         self._loaded = False
@@ -252,19 +266,40 @@ class MobileNetSsdDetectorBackend:
         output = np.array(self.net.forward()).reshape(-1, 7)
         inference_ms = (time.perf_counter() - start) * 1000.0
 
-        best_label: str | None = None
-        best_score = self.min_score
+        candidates: dict[str, float] = {}
         for row in output:
             class_id = int(row[1])
             confidence = float(row[2])
             label = self.COCO_LABELS.get(class_id)
-            if label is None or confidence < best_score:
+            if label is None or confidence < self.min_score:
                 continue
-            best_score = confidence
-            best_label = label
+            if confidence > candidates.get(label, 0.0):
+                candidates[label] = confidence
 
-        if best_label is None:
+        if not candidates:
             return None
+
+        person_score = candidates.get("person", 0.0)
+        pet_labels = [label for label in ("cat", "dog") if label in candidates]
+        best_pet_label = max(pet_labels, key=lambda label: candidates[label]) if pet_labels else None
+        best_pet_score = candidates[best_pet_label] if best_pet_label else 0.0
+
+        if best_pet_label and person_score > 0.0:
+            if person_score - best_pet_score < self.pet_priority_margin:
+                best_label = best_pet_label
+                best_score = best_pet_score
+            else:
+                best_label = "person"
+                best_score = person_score
+        elif person_score > 0.0:
+            best_label = "person"
+            best_score = person_score
+        elif best_pet_label:
+            best_label = best_pet_label
+            best_score = best_pet_score
+        else:
+            return None
+
         return ClassificationResult(
             label=best_label,
             confidence=best_score,

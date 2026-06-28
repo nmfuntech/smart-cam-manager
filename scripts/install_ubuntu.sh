@@ -20,6 +20,7 @@ MINIMAL_ENV=1
 DO_INSTALL_SERVICE=0
 DO_BF_SYMLINK=1
 DO_RUN=0
+DO_FETCH_MODEL=1
 
 INSTALL_DIR="/opt/blackframe"
 SERVICE_USER="blackframe"
@@ -54,6 +55,7 @@ Opzioni:
   --no-poetry          non installa/aggiorna Poetry
   --no-deps            non esegue poetry install
   --no-bf-symlink      non crea symlink bf in ~/.local/bin
+  --no-model           non scarica il modello classificazione
   --run                avvia l'app alla fine (solo modalità locale, non servizio)
   --port PORT          porta app (default: 8000, env: APP_PORT)
   -h, --help           mostra questa guida
@@ -86,6 +88,7 @@ while (($#)); do
     --no-poetry)        DO_POETRY=0 ;;
     --no-deps)          DO_PROJECT_DEPS=0 ;;
     --no-bf-symlink)    DO_BF_SYMLINK=0 ;;
+    --no-model)         DO_FETCH_MODEL=0 ;;
     --run)              DO_RUN=1 ;;
     --port)             APP_PORT="${2:?--port richiede un valore}"; shift ;;
     -h|--help)          usage; exit 0 ;;
@@ -249,6 +252,18 @@ print('flask: OK')
 print('cryptography: OK')
 print('requests: OK')
 "
+}
+
+fetch_detection_model() {
+  log "Scarico modello classificazione (MobileNet-SSD)"
+  cd "$PROJECT_DIR"
+  "$POETRY_CMD" run python scripts/fetch_model.py
+}
+
+check_prerequisites() {
+  log "Verifico prerequisiti runtime"
+  cd "$PROJECT_DIR"
+  "$POETRY_CMD" run python scripts/check_prerequisites.py || true
 }
 
 # ---------------------------------------------------------------------------
@@ -478,8 +493,15 @@ main() {
     install_project_deps
   fi
 
+  # modello classificazione
+  if ((DO_FETCH_MODEL)); then
+    fetch_detection_model
+  fi
+
   # .env
   run_env_setup
+
+  check_prerequisites
 
   # CLI bf
   if ((DO_BF_SYMLINK)); then

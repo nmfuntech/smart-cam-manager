@@ -2,6 +2,7 @@ import json
 import os
 import shutil
 import tempfile
+import time
 import unittest
 from datetime import datetime
 from pathlib import Path
@@ -108,8 +109,24 @@ class TelegramNotifierTests(unittest.TestCase):
         self.addCleanup(self._patch.stop)
         notifier = TelegramNotifier()
         self.sent = []
-        notifier._send = lambda *a, **k: self.sent.append(a)
+        self.delivered: list[str] = []
+
+        def _send(*args, **kwargs):
+            self.sent.append(("send", args))
+            return True
+
+        def _send_video(*args, **kwargs):
+            self.sent.append(("video", args))
+            return True
+
+        notifier._send = _send
+        notifier._send_video = _send_video
         return notifier
+
+    def _wait_deliveries(self, count: int, timeout: float = 2.0) -> None:
+        deadline = time.time() + timeout
+        while len(self.sent) < count and time.time() < deadline:
+            time.sleep(0.05)
 
     def test_disabled_notifier_does_not_send(self):
         notifier = self._notifier(NOTIFY_TELEGRAM_ENABLED="false")
@@ -124,10 +141,38 @@ class TelegramNotifierTests(unittest.TestCase):
         self.assertFalse(notifier.notify_event("motion_event_1", class_label="animale_domestico"))
         self.assertTrue(notifier.notify_event("motion_event_2", class_label="persona"))
 
-    def test_cooldown_blocks_rapid_second_event(self):
-        notifier = self._notifier(NOTIFY_MIN_INTERVAL_SEC="3600")
+    def test_cooldown_queues_second_event(self):
+        notifier = self._notifier(NOTIFY_MIN_INTERVAL_SEC="0.05")
         self.assertTrue(notifier.notify_event("motion_event_1", class_label="persona"))
-        self.assertFalse(notifier.notify_event("motion_event_2", class_label="persona"))
+        self.assertTrue(notifier.notify_event("motion_event_2", class_label="persona"))
+        self._wait_deliveries(2)
+        self.assertEqual(len(self.sent), 2)
+
+    def test_on_delivered_only_after_successful_send(self):
+        delivered: list[str] = []
+
+        notifier_fail = self._notifier()
+        notifier_fail._send = lambda *a, **k: False
+        self.assertTrue(
+            notifier_fail.notify_event(
+                "motion_event_fail",
+                class_label="persona",
+                on_delivered=lambda: delivered.append("fail"),
+            )
+        )
+        time.sleep(0.5)
+        self.assertEqual(delivered, [])
+
+        notifier_ok = self._notifier()
+        self.assertTrue(
+            notifier_ok.notify_event(
+                "motion_event_ok",
+                class_label="persona",
+                on_delivered=lambda: delivered.append("ok"),
+            )
+        )
+        self._wait_deliveries(1)
+        self.assertEqual(delivered, ["ok"])
 
     def test_mute_blocks_notifications(self):
         notifier = self._notifier()
@@ -596,6 +641,52 @@ class RecordingConfigTests(unittest.TestCase):
         recorder = EventRecorder(camera_stream=None, config={"record_enabled": True})
         self.assertTrue(recorder.enabled)
 
+    def test_subsample_timed_packets_targets_record_fps(self):
+        from recording import subsample_timed_packets
+
+        # 6 frames in 0.5s -> 6 buckets at 10 fps (one every 0.1s).
+        packets = [(index * 0.1, b"jpeg", index + 1) for index in range(6)]
+        sampled = subsample_timed_packets(packets, fps=10.0)
+        self.assertEqual(len(sampled), 6)
+        dense = [(index * 0.05, b"jpeg", index + 1) for index in range(20)]
+        self.assertEqual(len(subsample_timed_packets(dense, fps=10.0)), 10)
+
+    def test_write_frames_at_fps_skips_duplicate_sequences(self):
+        import numpy as np
+
+        from recording import _write_frames_at_fps
+
+        class SeqCamera:
+            def __init__(self):
+                self.seq = 0
+                self.frame = np.zeros((48, 64, 3), dtype=np.uint8)
+
+            def get_raw_frame_packet(self):
+                self.seq += 1
+                return self.frame.copy(), self.seq
+
+        import cv2
+
+        path = Path(tempfile.mkdtemp()) / "seq.mp4"
+        writer = cv2.VideoWriter(
+            str(path),
+            cv2.VideoWriter_fourcc(*"mp4v"),
+            5.0,
+            (64, 48),
+        )
+        if not writer.isOpened():
+            self.skipTest("VideoWriter non disponibile")
+        stop = __import__("threading").Event()
+        camera = SeqCamera()
+        _write_frames_at_fps(camera, writer, (64, 48), stop, fps=5.0, max_duration=0.5, started_at=__import__("time").time())
+        writer.release()
+        from recording import _video_duration_sec
+
+        duration = _video_duration_sec(path) or 0.0
+        # 5 unique frames/sec for 0.5s -> ~2-3 frames, not 25 duplicates of the same frame.
+        self.assertGreaterEqual(duration, 0.2)
+        self.assertLessEqual(duration, 0.8)
+
 
 def _write_mp4v_clip(path: Path, frames: int = 6, size=(64, 48), fps: float = 10.0) -> bool:
     """Write a tiny mp4v-coded clip with OpenCV; returns False if the writer fails."""
@@ -610,6 +701,20 @@ def _write_mp4v_clip(path: Path, frames: int = 6, size=(64, 48), fps: float = 10
         writer.write(frame)
     writer.release()
     return path.is_file() and path.stat().st_size > 0
+
+
+class OpenMp4WriterTests(unittest.TestCase):
+    def test_windows_skips_avc1(self):
+        from recording import _writer_fourcc_tags
+
+        with mock.patch("recording.sys.platform", "win32"):
+            self.assertEqual(_writer_fourcc_tags(), ("mp4v",))
+
+    def test_non_windows_tries_avc1_first(self):
+        from recording import _writer_fourcc_tags
+
+        with mock.patch("recording.sys.platform", "linux"):
+            self.assertEqual(_writer_fourcc_tags(), ("avc1", "mp4v"))
 
 
 @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "ffmpeg/ffprobe richiesti")
@@ -718,6 +823,17 @@ class WifiServiceTests(unittest.TestCase):
     def test_windows_no_connection_when_empty(self):
         with mock.patch.object(self.wifi, "_run_command", return_value=""):
             self.assertIsNone(self.wifi._detect_windows_wifi())
+
+
+class MotionRouteIdTests(unittest.TestCase):
+    def test_event_id_pattern_accepts_category_suffix(self):
+        from routes.motion import EVENT_ID_PATTERN
+
+        self.assertTrue(
+            EVENT_ID_PATTERN.fullmatch("motion_event_20260623_230013__persona")
+        )
+        self.assertTrue(EVENT_ID_PATTERN.fullmatch("motion_event_20260623_230013"))
+        self.assertFalse(EVENT_ID_PATTERN.fullmatch("motion_event_20260623_230013__hacker"))
 
 
 if __name__ == "__main__":

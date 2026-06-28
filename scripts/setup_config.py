@@ -7,12 +7,15 @@ import base64
 import os
 import re
 import secrets
+import sys
 from dataclasses import dataclass
 from getpass import getpass
 from pathlib import Path
 from typing import Callable
 
 from werkzeug.security import generate_password_hash
+
+from scripts.env_profiles import active_platform_profile, format_env_value
 
 DEFAULT_ENV_PATH = Path(".env")
 EXAMPLE_ENV_PATH = Path(".env.example")
@@ -180,7 +183,13 @@ SECTIONS: tuple[EnvSection, ...] = (
                 include_in_minimal=True,
             ),
             EnvField("TAPO_RTSP_PORT", "Porta RTSP", parse_int, default="554"),
-            EnvField("TAPO_STREAM_PATH", "Stream path RTSP", parse_text, default="stream1"),
+            EnvField(
+                "TAPO_STREAM_PATH",
+                "Stream path RTSP",
+                parse_text,
+                default="stream2" if sys.platform == "win32" else "stream1",
+                help_text="stream2 = sottostream SD (consigliato su mini PC Windows).",
+            ),
             EnvField("TAPO_USERNAME", "Username RTSP", parse_text, include_in_minimal=True),
             EnvField(
                 "TAPO_PASSWORD",
@@ -231,22 +240,22 @@ SECTIONS: tuple[EnvSection, ...] = (
         description="Sensibilita, timing e archivio eventi.",
         fields=(
             EnvField("MOTION_ENABLED", "Motion enabled", parse_bool, default="true"),
-            EnvField("MOTION_MIN_AREA", "Area minima motion", parse_int, default="1400"),
-            EnvField("MOTION_THRESHOLD", "Soglia motion", parse_int, default="24"),
-            EnvField("MOTION_BLUR_SIZE", "Blur size motion", parse_int, default="21"),
+            EnvField("MOTION_MIN_AREA", "Area minima motion", parse_int, default="1800"),
+            EnvField("MOTION_THRESHOLD", "Soglia motion", parse_int, default="55"),
+            EnvField("MOTION_BLUR_SIZE", "Blur size motion", parse_int, default="7"),
             EnvField("MOTION_COOLDOWN", "Cooldown motion", parse_float, default="3"),
             EnvField(
-                "MOTION_FRAME_INTERVAL", "Intervallo frame motion", parse_float, default="0.25"
+                "MOTION_FRAME_INTERVAL", "Intervallo frame motion", parse_float, default="0.33"
             ),
             EnvField(
-                "MOTION_CAPTURE_INTERVAL", "Intervallo capture motion", parse_float, default="0.18"
+                "MOTION_CAPTURE_INTERVAL", "Intervallo capture motion", parse_float, default="0.25"
             ),
             EnvField(
                 "MOTION_MAX_AREA_RATIO", "Rapporto area massima motion", parse_float, default="0.45"
             ),
-            EnvField("MOTION_WARMUP_FRAMES", "Warmup frames motion", parse_int, default="12"),
-            EnvField("MOTION_TRIGGER_FRAMES", "Trigger frames motion", parse_int, default="2"),
-            EnvField("MOTION_CLEAR_FRAMES", "Clear frames motion", parse_int, default="8"),
+            EnvField("MOTION_WARMUP_FRAMES", "Warmup frames motion", parse_int, default="30"),
+            EnvField("MOTION_TRIGGER_FRAMES", "Trigger frames motion", parse_int, default="4"),
+            EnvField("MOTION_CLEAR_FRAMES", "Clear frames motion", parse_int, default="10"),
             EnvField(
                 "MOTION_BACKGROUND_ALPHA",
                 "Background alpha motion",
@@ -261,6 +270,122 @@ SECTIONS: tuple[EnvSection, ...] = (
                 default="captures/motion",
             ),
             EnvField("MOTION_EVENT_GAP", "Gap tra eventi motion", parse_float, default="4.0"),
+            EnvField(
+                "MOTION_EVENT_MAX_DURATION",
+                "Durata max evento (s)",
+                parse_float,
+                default="45.0",
+            ),
+            EnvField(
+                "MOTION_SCALE_WIDTH",
+                "Larghezza frame analisi MOG2",
+                parse_int,
+                default="360",
+            ),
+            EnvField("MOTION_MOG2_HISTORY", "Storia MOG2", parse_int, default="500"),
+            EnvField("MOTION_MORPH_KERNEL", "Kernel morfologia", parse_int, default="3"),
+            EnvField("MOTION_MORPH_DILATE_ITER", "Iterazioni dilatazione", parse_int, default="2"),
+            EnvField(
+                "MOTION_GLOBAL_CHANGE_RATIO",
+                "Soglia cambio globale luce",
+                parse_float,
+                default="0.4",
+            ),
+            EnvField("MOTION_LEARNING_RATE", "Learning rate MOG2", parse_float, default="-1"),
+            EnvField(
+                "MOTION_LEARNING_RATE_ACTIVE",
+                "Learning rate MOG2 attivo",
+                parse_float,
+                default="0.0005",
+            ),
+        ),
+    ),
+    EnvSection(
+        title="Registrazione video eventi",
+        description="Clip MP4 per evento (richiede ffmpeg in PATH per H.264 nel browser).",
+        fields=(
+            EnvField("RECORD_ENABLED", "Registrazione clip evento", parse_bool, default="true"),
+            EnvField("RECORD_FPS", "FPS registrazione", parse_float, default="8"),
+            EnvField(
+                "RECORD_PREROLL_SEC",
+                "Pre-roll registrazione (s)",
+                parse_float,
+                default="2.0",
+            ),
+            EnvField("RECORD_MAX_DURATION_SEC", "Durata max clip (s)", parse_float, default="30"),
+            EnvField("RECORD_MAX_WIDTH", "Larghezza max clip (px)", parse_int, default="960"),
+        ),
+    ),
+    EnvSection(
+        title="Classificazione persona/pet",
+        description="Backend detection (scarica modelli con make fetch-model).",
+        fields=(
+            EnvField(
+                "CLASSIFICATION_ENABLED",
+                "Classificazione abilitata",
+                parse_bool,
+                default="true",
+            ),
+            EnvField(
+                "CLASSIFICATION_BACKEND",
+                "Backend classificazione",
+                parse_text,
+                default="detection",
+            ),
+            EnvField(
+                "CLASSIFICATION_MIN_CONFIDENCE",
+                "Confidenza minima",
+                parse_float,
+                default="0.55",
+            ),
+            EnvField(
+                "CLASSIFICATION_SAMPLE_POLICY",
+                "Policy campionamento",
+                parse_text,
+                default="event_cover",
+            ),
+            EnvField(
+                "CLASSIFICATION_DETECT_PERSON",
+                "Rileva persona",
+                parse_bool,
+                default="true",
+            ),
+            EnvField(
+                "CLASSIFICATION_DETECT_PET",
+                "Rileva animali",
+                parse_bool,
+                default="true",
+            ),
+            EnvField(
+                "CLASSIFICATION_DETECTION_MODEL_PATH",
+                "Percorso modello detection",
+                parse_text,
+                default="models/ssd_mobilenet_v2_coco.pb",
+            ),
+            EnvField(
+                "CLASSIFICATION_DETECTION_CONFIG_PATH",
+                "Percorso config detection",
+                parse_text,
+                default="models/ssd_mobilenet_v2_coco.pbtxt",
+            ),
+            EnvField(
+                "CLASSIFICATION_DETECTION_INPUT_SIZE",
+                "Input size detection",
+                parse_int,
+                default="300",
+            ),
+            EnvField(
+                "CLASSIFICATION_CROP_TO_MOTION",
+                "Ritaglia su bbox movimento",
+                parse_bool,
+                default="true",
+            ),
+            EnvField(
+                "CLASSIFICATION_CROP_PADDING",
+                "Padding ritaglio",
+                parse_float,
+                default="0.2",
+            ),
         ),
     ),
     EnvSection(
@@ -289,7 +414,7 @@ SECTIONS: tuple[EnvSection, ...] = (
                 default="2500",
             ),
             EnvField(
-                "RTSP_BACKLOG_SKIP_FRAMES", "Frame backlog da saltare", parse_int, default="1"
+                "RTSP_BACKLOG_SKIP_FRAMES", "Frame backlog da saltare", parse_int, default="2"
             ),
             EnvField("STREAM_JPEG_QUALITY", "Qualita JPEG live", parse_int, default="85"),
             EnvField(
@@ -419,15 +544,6 @@ def prompt_secret(
             print(f"  Valore non valido: {exc}")
 
 
-def format_env_value(value: str) -> str:
-    if value == "":
-        return ""
-    if any(char.isspace() for char in value) or any(char in value for char in '#"\\'):
-        escaped = value.replace("\\", "\\\\").replace('"', '\\"')
-        return f'"{escaped}"'
-    return value
-
-
 def generated_value_message(key: str, value: str) -> str:
     return f"  Generato {key}: {value}"
 
@@ -483,20 +599,49 @@ def hash_admin_password(values: dict[str, str]) -> None:
         values["APP_ADMIN_PASSWORD"] = ""
 
 
+def merged_env_values(values: dict[str, str]) -> dict[str, str]:
+    """Unisce .env.example, profilo piattaforma e valori raccolti dallo setup."""
+    merged = load_env_values(EXAMPLE_ENV_PATH)
+    merged.update(active_platform_profile())
+    for section in SECTIONS:
+        for field in section.fields:
+            if field.key in values:
+                merged[field.key] = values[field.key]
+    merged.update(values)
+    return merged
+
+
 def build_env_content(values: dict[str, str]) -> str:
-    lines = [
+    merged = merged_env_values(values)
+    header = [
         "# File generato da make setup",
         "# Modifica con cautela. I file sensibili vengono salvati con permessi privati.",
         "",
     ]
-    for section in SECTIONS:
-        lines.append(f"# {section.title}")
-        if section.description:
-            lines.append(f"# {section.description}")
-        for field in section.fields:
-            lines.append(f"{field.key}={format_env_value(values.get(field.key, ''))}")
-        lines.append("")
-    return "\n".join(lines).rstrip() + "\n"
+    if not EXAMPLE_ENV_PATH.exists():
+        lines = list(header)
+        for section in SECTIONS:
+            lines.append(f"# {section.title}")
+            if section.description:
+                lines.append(f"# {section.description}")
+            for field in section.fields:
+                lines.append(f"{field.key}={format_env_value(merged.get(field.key, ''))}")
+            lines.append("")
+        return "\n".join(lines).rstrip() + "\n"
+
+    pattern = re.compile(r"^(\s*)([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$")
+    out = list(header)
+    for raw_line in EXAMPLE_ENV_PATH.read_text(encoding="utf-8").splitlines():
+        if not raw_line.strip() or raw_line.strip().startswith("#"):
+            out.append(raw_line)
+            continue
+        match = pattern.match(raw_line)
+        if match and match.group(2) in merged:
+            key = match.group(2)
+            out.append(f"{key}={format_env_value(merged[key])}")
+        else:
+            out.append(raw_line)
+    return "\n".join(out).rstrip() + "\n"
 
 
 def write_env_file(path: Path, content: str) -> None:
@@ -635,6 +780,10 @@ def main() -> int:
     print("")
     print("Prossimi passi:")
     print("- make install")
+    print("- make fetch-model          # modelli classificazione persona/pet")
+    if sys.platform == "win32":
+        print("- installa ffmpeg (winget install Gyan.FFmpeg) e riapri il terminale")
+    print("- poetry run python scripts/check_prerequisites.py")
     print("- make run")
     print("- apri http://127.0.0.1:8000/login")
     return 0

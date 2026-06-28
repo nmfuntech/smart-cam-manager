@@ -7,18 +7,57 @@ inclusi tutti i prerequisiti, la configurazione iniziale e l'avvio automatico al
 
 ## Indice
 
+0. [Installazione rapida (script automatico)](#0-installazione-rapida-script-automatico)
 1. [Prerequisiti hardware e rete](#1-prerequisiti-hardware-e-rete)
 2. [Installare Python 3.11](#2-installare-python-311)
 3. [Installare Git](#3-installare-git)
-4. [Installare Poetry](#4-installare-poetry)
-5. [Scaricare il codice](#5-scaricare-il-codice)
-6. [Installare le dipendenze Python](#6-installare-le-dipendenze-python)
-7. [Configurare il file .env](#7-configurare-il-file-env)
-8. [Primo avvio e verifica](#8-primo-avvio-e-verifica)
-9. [Avvio automatico al boot (Task Scheduler)](#9-avvio-automatico-al-boot-task-scheduler)
-10. [Accesso da altri dispositivi in LAN](#10-accesso-da-altri-dispositivi-in-lan)
-11. [Aggiornare il progetto](#11-aggiornare-il-progetto)
-12. [Troubleshooting](#12-troubleshooting)
+4. [Installare FFmpeg](#4-installare-ffmpeg)
+5. [Installare Poetry](#5-installare-poetry)
+6. [Scaricare il codice](#6-scaricare-il-codice)
+7. [Installare le dipendenze Python](#7-installare-le-dipendenze-python)
+8. [Scaricare il modello di classificazione](#8-scaricare-il-modello-di-classificazione)
+9. [Configurare il file .env](#9-configurare-il-file-env)
+10. [Primo avvio e verifica](#10-primo-avvio-e-verifica)
+11. [Avvio automatico al boot (Task Scheduler)](#11-avvio-automatico-al-boot-task-scheduler)
+12. [Accesso da altri dispositivi in LAN](#12-accesso-da-altri-dispositivi-in-lan)
+13. [Aggiornare il progetto](#13-aggiornare-il-progetto)
+14. [Troubleshooting](#14-troubleshooting)
+
+---
+
+## 0. Installazione rapida (script automatico)
+
+Se preferisci un'installazione guidata che installa **Python, Git, Poetry, FFmpeg**, le
+dipendenze Python, il modello di classificazione e il tuning per mini PC:
+
+```powershell
+cd C:\blackframe
+Set-ExecutionPolicy -Scope Process Bypass
+.\scripts\install_windows.ps1 -SetupEnv -TuneMiniPc
+```
+
+Oppure, dalla root del progetto:
+
+```powershell
+make install-windows
+```
+
+Lo script:
+
+- installa i prerequisiti via `winget` (se disponibile)
+- esegue `poetry install --with windows`
+- scarica il modello MobileNet-SSD (`make fetch-model`)
+- crea/aggiorna `start_blackframe.bat` con controllo prerequisiti
+- applica il profilo **mini-pc-windows** al `.env` (stream SD, motion MOG2, clip leggere)
+
+**Dopo l'installazione:** chiudi e riapri PowerShell, poi verifica:
+
+```powershell
+ffmpeg -version
+poetry run python scripts\check_prerequisites.py
+```
+
+Se la guida passo-passo ti serve per capire ogni componente, continua dalla sezione 1.
 
 ---
 
@@ -77,7 +116,38 @@ Git serve per scaricare il codice e per ricevere aggiornamenti futuri.
 
 ---
 
-## 4. Installare Poetry
+## 4. Installare FFmpeg
+
+**Obbligatorio su Windows** per le clip video degli eventi. OpenCV scrive spesso MP4 in
+codec `mp4v`, che i browser non riproducono; BLACKFRAME usa `ffmpeg` per transcodificare
+le clip in H.264 alla chiusura di ogni evento.
+
+### Installazione via winget (consigliata)
+
+```powershell
+winget install Gyan.FFmpeg
+```
+
+Chiudi e riapri PowerShell, poi verifica:
+
+```powershell
+ffmpeg -version
+ffprobe -version
+```
+
+### Installazione manuale
+
+1. Scarica da [gyan.dev/ffmpeg/builds](https://www.gyan.dev/ffmpeg/builds/) il pacchetto
+   **ffmpeg-release-essentials** (zip).
+2. Estrai in `C:\ffmpeg` (o altra cartella fissa).
+3. Aggiungi `C:\ffmpeg\bin` al PATH utente in *Impostazioni → Sistema → Informazioni →
+   Impostazioni di sistema avanzate → Variabili d'ambiente*.
+
+> Senza ffmpeg le clip vengono salvate ma **non si vedono** nell'interfaccia web.
+
+---
+
+## 5. Installare Poetry
 
 Poetry gestisce le dipendenze Python in un ambiente virtuale isolato.
 
@@ -119,7 +189,7 @@ Deve rispondere: `Poetry (version 1.x.x)`
 
 ---
 
-## 5. Scaricare il codice
+## 6. Scaricare il codice
 
 Scegli una cartella dove installare BLACKFRAME, ad esempio `C:\blackframe`.
 
@@ -134,7 +204,7 @@ cd blackframe
 
 ---
 
-## 6. Installare le dipendenze Python
+## 7. Installare le dipendenze Python
 
 Dalla cartella `C:\blackframe`:
 
@@ -155,12 +225,42 @@ Deve stampare `OK`.
 
 ---
 
-## 7. Configurare il file .env
+---
+
+## 8. Scaricare il modello di classificazione
+
+Il repository **non include** i file del modello persona/pet. Se hai
+`CLASSIFICATION_ENABLED=true` (default dopo setup su Windows), scaricali una volta:
+
+```powershell
+make fetch-model
+```
+
+Oppure:
+
+```powershell
+poetry run python scripts\fetch_model.py
+```
+
+Il download è ~180 MB (una tantum). I file finiscono in `models/`:
+
+- `ssd_mobilenet_v2_coco.pb`
+- `ssd_mobilenet_v2_coco.pbtxt`
+
+Verifica:
+
+```powershell
+poetry run python scripts\check_prerequisites.py
+```
+
+---
+
+## 9. Configurare il file .env
 
 Il file `.env` contiene tutte le credenziali e le impostazioni dell'app. Non viene mai
 salvato nel repository — va creato manualmente.
 
-### 7a. Setup guidato (consigliato)
+### 9a. Setup guidato (consigliato)
 
 BLACKFRAME include uno script di setup interattivo che guida passo passo e genera
 automaticamente le chiavi di sicurezza:
@@ -182,7 +282,7 @@ I valori **obbligatori** che lo script richiede:
 | `TAPO_USERNAME` | Username account RTSP della camera |
 | `TAPO_PASSWORD` | Password account RTSP della camera |
 
-### 7b. Setup manuale (alternativa)
+### 9b. Setup manuale (alternativa)
 
 Se preferisci configurare a mano, copia il file di esempio:
 
@@ -209,7 +309,28 @@ Per generare una `APP_SECRET_KEY` casuale sicura:
 poetry run python -c "import secrets; print(secrets.token_hex(32))"
 ```
 
-### 7c. Impostazioni facoltative importanti
+### 9c. Tuning mini PC (hardware modesto)
+
+Su mini PC Windows conviene usare il **sottostream** della camera e parametri motion
+più conservativi. Applica il profilo predefinito senza toccare le credenziali:
+
+```powershell
+poetry run python scripts\env_profiles.py --profile mini-pc-windows
+```
+
+Il profilo imposta tra l'altro:
+
+| Parametro | Valore | Effetto |
+|---|---|---|
+| `TAPO_STREAM_PATH` | `stream2` | Flusso SD, meno CPU |
+| `MOTION_THRESHOLD` | `55` | Meno falsi positivi |
+| `MOTION_MIN_AREA` | `1800` | Blob più significativi |
+| `MOTION_SCALE_WIDTH` | `360` | Analisi MOG2 più leggera |
+| `RECORD_MAX_WIDTH` | `960` | Clip più piccole e veloci |
+
+Riavvia l'app dopo le modifiche.
+
+### 9d. Impostazioni facoltative importanti
 
 **Notifiche Telegram** (si possono configurare anche dall'interfaccia web dopo l'avvio):
 
@@ -235,7 +356,7 @@ CONTINUOUS_RECORD_RETAIN_HOURS=24
 
 ---
 
-## 8. Primo avvio e verifica
+## 10. Primo avvio e verifica
 
 Avvia l'app:
 
@@ -256,31 +377,44 @@ Accedi con:
 - **Username:** `admin`
 - **Password:** quella impostata in `APP_ADMIN_PASSWORD`
 
-Controlla che lo stream video sia visibile e che la sezione "Rilevamento" sia attiva.
+Controlla che lo stream video sia visibile, che la sezione "Rilevamento" sia attiva e che
+un evento di prova produca una clip riproducibile nel browser.
+
+Verifica prerequisiti:
+
+```powershell
+poetry run python scripts\check_prerequisites.py
+```
 
 Per fermare l'app: premi `Ctrl+C` nel terminale.
 
 ---
 
-## 9. Avvio automatico al boot (Task Scheduler)
+## 11. Avvio automatico al boot (Task Scheduler)
 
 Per far partire BLACKFRAME automaticamente quando il mini PC si accende, senza dover
 aprire un terminale ogni volta.
 
-### 9a. Crea lo script di avvio
+### 11a. Crea lo script di avvio
 
-Crea il file `C:\blackframe\start_blackframe.bat` con questo contenuto:
+Usa `start_blackframe.bat` generato da `make install-windows` o crea manualmente:
 
 ```bat
 @echo off
 cd /d C:\blackframe
+poetry run python scripts\check_prerequisites.py
+if errorlevel 1 (
+  echo Prerequisiti mancanti — vedi blackframe.log
+  pause
+  exit /b 1
+)
 poetry run python deploy\serve_waitress.py >> C:\blackframe\blackframe.log 2>&1
 ```
 
 > Il log dell'app viene salvato in `C:\blackframe\blackframe.log`. Utile per diagnosticare
 > problemi di avvio.
 
-### 9b. Configura Task Scheduler
+### 11b. Configura Task Scheduler
 
 1. Apri il menu Start, cerca **"Utilità di pianificazione"** (o "Task Scheduler") e aprila.
 
@@ -303,7 +437,7 @@ poetry run python deploy\serve_waitress.py >> C:\blackframe\blackframe.log 2>&1
 
 6. Clicca OK e inserisci la password del tuo utente Windows se richiesta.
 
-### 9c. Test del Task Scheduler
+### 11c. Test del Task Scheduler
 
 Per verificare che l'attività funzioni senza riavviare il PC:
 
@@ -320,12 +454,12 @@ Deve mostrare una riga con `LISTENING`.
 
 ---
 
-## 10. Accesso da altri dispositivi in LAN
+## 12. Accesso da altri dispositivi in LAN
 
 Di default l'app risponde solo su `127.0.0.1` (solo dal mini PC stesso). Per accedere
 dall'app Telegram, dal telefono, o da altri computer nella stessa rete:
 
-### 10a. Abilita l'ascolto su tutta la rete
+### 12a. Abilita l'ascolto su tutta la rete
 
 Nel file `.env` cambia:
 
@@ -335,7 +469,7 @@ APP_BIND_HOST=0.0.0.0
 
 Riavvia l'app. Ora è raggiungibile da qualsiasi dispositivo in LAN.
 
-### 10b. Apri la porta nel Firewall di Windows
+### 12b. Apri la porta nel Firewall di Windows
 
 1. Start → cerca **"Windows Defender Firewall"** → clicca **"Impostazioni avanzate"**
 2. Nel pannello sinistro: **"Regole connessioni in entrata"** → **"Nuova regola..."**
@@ -345,7 +479,7 @@ Riavvia l'app. Ora è raggiungibile da qualsiasi dispositivo in LAN.
 6. Spunta solo **Privata** (rete domestica) → Avanti
 7. Nome: `BLACKFRAME` → Fine
 
-### 10c. Trova l'IP del mini PC
+### 12c. Trova l'IP del mini PC
 
 ```powershell
 ipconfig
@@ -360,21 +494,44 @@ Da qualsiasi altro dispositivo della stessa rete, apri: **http://192.168.1.100:8
 
 ---
 
-## 11. Aggiornare il progetto
+## 13. Aggiornare il progetto
 
 Quando è disponibile una nuova versione:
 
 ```powershell
 cd C:\blackframe
 git pull
-poetry install
+poetry install --with windows
+make fetch-model
+poetry run python scripts\check_prerequisites.py
 ```
 
 Poi riavvia l'app (o riavvia il PC se usi Task Scheduler).
 
 ---
 
-## 12. Troubleshooting
+## 14. Troubleshooting
+
+### Le clip evento non si riproducono nel browser
+
+1. Verifica ffmpeg: `ffmpeg -version` — se manca, installa con `winget install Gyan.FFmpeg`
+   e **riapri PowerShell**
+2. Esegui `poetry run python scripts\check_prerequisites.py`
+3. Le clip registrate **prima** dell'installazione di ffmpeg restano in codec `mp4v`.
+   Rigenera un evento di prova oppure ritrascodifica con ffmpeg (vedi sezione 4).
+
+### Falsi eventi di movimento / rilevamento impreciso
+
+1. Applica il profilo mini PC:
+   `poetry run python scripts\env_profiles.py --profile mini-pc-windows`
+2. Passa a `TAPO_STREAM_PATH=stream2` (sottostream SD)
+3. Dall'interfaccia web, sezione Rilevamento, alza leggermente la soglia motion
+
+### Classificazione sempre "movimento" / persona non rilevata
+
+1. Verifica i modelli: `dir models\ssd_mobilenet_v2_coco.*`
+2. Se mancanti: `make fetch-model`
+3. Controlla `CLASSIFICATION_ENABLED=true` e `CLASSIFICATION_BACKEND=detection` nel `.env`
 
 ### `poetry: comando non trovato` / `poetry non riconosciuto`
 
@@ -425,6 +582,10 @@ python scripts\setup_config.py
 
 | Operazione | Comando |
 |---|---|
+| Installazione completa | `.\scripts\install_windows.ps1 -SetupEnv -TuneMiniPc` |
+| Verifica prerequisiti | `poetry run python scripts\check_prerequisites.py` |
+| Tuning mini PC | `poetry run python scripts\env_profiles.py --profile mini-pc-windows` |
+| Modello classificazione | `make fetch-model` |
 | Avvio | `poetry run python deploy\serve_waitress.py` |
 | Test suite | `poetry run python -m pytest -v` |
 | Genera hash password | `poetry run python -c "from getpass import getpass; from werkzeug.security import generate_password_hash; pw=getpass(); print(generate_password_hash(pw))"` |

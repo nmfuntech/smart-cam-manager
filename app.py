@@ -121,6 +121,7 @@ def get_motion_config() -> dict:
     record_enabled = os.getenv("RECORD_ENABLED", "false").lower() == "true"
     record_fps = float(os.getenv("RECORD_FPS", "10"))
     record_preroll_sec = float(os.getenv("RECORD_PREROLL_SEC", "2.0"))
+    record_postroll_sec = float(os.getenv("RECORD_POSTROLL_SEC", "3.0"))
     record_max_duration_sec = float(os.getenv("RECORD_MAX_DURATION_SEC", "60"))
     record_max_width = int(os.getenv("RECORD_MAX_WIDTH", "1280"))
     continuous_record_enabled = os.getenv("CONTINUOUS_RECORD_ENABLED", "false").lower() == "true"
@@ -194,6 +195,7 @@ def get_motion_config() -> dict:
         "record_enabled": record_enabled,
         "record_fps": record_fps,
         "record_preroll_sec": record_preroll_sec,
+        "record_postroll_sec": record_postroll_sec,
         "record_max_duration_sec": record_max_duration_sec,
         "record_max_width": record_max_width,
         "continuous_record_enabled": continuous_record_enabled,
@@ -476,7 +478,7 @@ class CameraStream:
                     self.last_error = ""
                     self.last_error_stage = ""
                     self.connection_state = "online"
-                    self.preroll.append((self.last_frame_at, self.frame))
+                    self.preroll.append((self.last_frame_at, self.frame, self.frame_sequence))
                     self._trim_preroll(self.last_frame_at)
                 self._reset_backoff()
             except Exception:
@@ -508,20 +510,45 @@ class CameraStream:
                 return None
             return self.raw_frame.copy()
 
+    def get_raw_frame_packet(self) -> tuple:
+        """Return (raw_frame copy, frame_sequence) or (None, sequence)."""
+        with self.lock:
+            if self.raw_frame is None:
+                return None, self.frame_sequence
+            return self.raw_frame.copy(), self.frame_sequence
+
     def _trim_preroll(self, now: float) -> None:
         cutoff = now - self.preroll_seconds
         while self.preroll and self.preroll[0][0] < cutoff:
             self.preroll.popleft()
 
-    def get_preroll_jpegs(self, seconds: float) -> list[bytes]:
-        """Return recent encoded JPEG frames within the requested time window."""
+    def get_frame_sequence(self) -> int:
+        with self.lock:
+            return self.frame_sequence
+
+    def get_preroll_timed_packets(self, seconds: float) -> list[tuple[float, bytes, int]]:
+        """Return recent JPEG frames with capture time and stream sequence."""
         if seconds <= 0:
             return []
         with self.lock:
             if not self.preroll:
                 return []
             cutoff = self.preroll[-1][0] - seconds
-            return [jpeg for ts, jpeg in self.preroll if ts >= cutoff]
+            return [(ts, jpeg, seq) for ts, jpeg, seq in self.preroll if ts >= cutoff]
+
+    def get_preroll_packets(self, seconds: float) -> list[tuple[bytes, int]]:
+        """Return recent JPEG frames and their stream sequence within the time window."""
+        if seconds <= 0:
+            return []
+        with self.lock:
+            if not self.preroll:
+                return []
+            cutoff = self.preroll[-1][0] - seconds
+            return [(jpeg, seq) for ts, jpeg, seq in self.preroll if ts >= cutoff]
+
+    def get_preroll_jpegs(self, seconds: float) -> list[bytes]:
+        """Return recent encoded JPEG frames within the requested time window."""
+        return [jpeg for jpeg, _seq in self.get_preroll_packets(seconds)]
 
     def get_status(self) -> dict:
         with self.lock:
@@ -1009,13 +1036,17 @@ class MotionDetector:
             self.event_store = MotionEventStore(self.config)
         return self.event_store
 
+    def _start_event_recording(self, event_dir) -> None:
+        if self.recorder is not None and self.recorder.enabled and event_dir is not None:
+            self.recorder.start_event(event_dir)
+
     def _save_motion_frame(self, frame, timestamp: str) -> str | None:
         store = self._get_event_store()
         filepath, event_id = store.save_frame(frame, timestamp)
         self.last_event_id = event_id
         self.last_capture_saved_at = time.time()
-        if event_id and self.recorder is not None:
-            self.recorder.start_event(store.current_event_dir)
+        if event_id:
+            self._start_event_recording(store.current_event_dir)
         # Classification is subordinate to motion: it only ever runs as part of a motion
         # event. The _run loop already short-circuits when motion is disabled; this guard
         # makes the dependency explicit so classification can never run on its own.
@@ -1027,9 +1058,6 @@ class MotionDetector:
         )
         if event_id and classification_on:
             self._classify_event_frame(event_id, frame)
-        elif event_id and not self._prefer_video_notify():
-            # No classifier and video notification not preferred: notify immediately with photo.
-            self._notify_event(event_id, None)
         return filepath
 
     def _prefer_video_notify(self) -> bool:
@@ -1043,11 +1071,24 @@ class MotionDetector:
         """Dedup notifications: in-memory fast path + on-disk marker surviving restarts."""
         if event_id in self._notified_events:
             return True
-        return self._get_event_store().event_was_notified(event_id)
+        store = self._get_event_store()
+        if store.event_was_notified(event_id):
+            return True
+        event_dir = store.find_event_dir(event_id)
+        if event_dir is not None and event_dir.name != event_id:
+            return event_dir.name in self._notified_events or store.event_was_notified(
+                event_dir.name
+            )
+        return False
 
     def _mark_notified(self, event_id: str) -> None:
-        self._notified_events.add(event_id)
-        self._get_event_store().mark_event_notified(event_id)
+        store = self._get_event_store()
+        event_dir = store.find_event_dir(event_id)
+        resolved_id = event_dir.name if event_dir is not None else event_id
+        self._notified_events.add(resolved_id)
+        if resolved_id != event_id:
+            self._notified_events.add(event_id)
+        store.mark_event_notified(resolved_id)
 
     def _resolve_event_label(self, classification: dict | None) -> str:
         """Category used for the folder name / archive: the confidently recognized
@@ -1057,63 +1098,120 @@ class MotionDetector:
             return detected
         return "movimento"
 
-    def _make_event_complete_callback(
-        self, event_id: str, label: str, class_label: str | None, notify_video: bool
-    ):
-        """Runs after the recorder finalizes the clip: it's now safe to rename the
-        event directory with its category, then (optionally) send the video alert."""
+    def _notification_class_label(self, classification: dict | None) -> str | None:
+        """Etichetta per Telegram: preferisce la categoria riconosciuta (detected_label)."""
+        classification = classification or {}
+        label = classification.get("detected_label") or classification.get("class_label")
+        if label in (PersonPetClassifier.LABEL_UNKNOWN, "unknown", None, ""):
+            return None
+        return label
 
-        def _callback(video_path: Path):
-            store = self._get_event_store()
-            new_id = store.rename_event_with_label(event_id, label) if event_id else event_id
-            if not notify_video or self.notifier is None or not new_id:
-                return
-            if self._already_notified(new_id):
-                return
-            # The clip moved with the renamed directory; point the notifier at the new path.
-            clip = Path(self.config["save_dir"]) / new_id / Path(video_path).name
-            try:
-                sent = self.notifier.notify_event_video(
-                    event_id=new_id,
-                    class_label=class_label,
-                    video_path=str(clip if clip.exists() else video_path),
-                )
-            except Exception:
-                logger.exception("Invio video Telegram fallito")
-                return
-            if sent:
-                self._mark_notified(new_id)
+    def _make_event_complete_callback(
+        self, event_id: str, label: str, classification: dict | None, should_notify: bool
+    ):
+        """Runs after the recorder finalizes (or abandons) the clip."""
+
+        def _callback(video_path: Path | None):
+            self._finalize_closed_event_notification(
+                event_id,
+                label,
+                classification,
+                should_notify=should_notify,
+                video_path=video_path,
+            )
 
         return _callback
+
+    def _finalize_closed_event_notification(
+        self,
+        event_id: str | None,
+        label: str,
+        classification: dict | None,
+        *,
+        should_notify: bool,
+        video_path: Path | None = None,
+    ) -> str | None:
+        """Rename a closed event and send Telegram once it is visible in the archive."""
+        if not event_id:
+            return None
+        store = self._get_event_store()
+        resolved_id = store.rename_event_with_label(event_id, label)
+        if not should_notify or self.notifier is None:
+            return resolved_id
+        if not self._should_notify_for(classification):
+            return resolved_id
+        self._deliver_event_notification(resolved_id, classification, video_path)
+        return resolved_id
+
+    def _deliver_event_notification(
+        self,
+        event_id: str,
+        classification: dict | None,
+        video_path: Path | None,
+    ) -> None:
+        """Send video when available and preferred; otherwise fall back to cover photo."""
+        if self.notifier is None or not event_id or self._already_notified(event_id):
+            return
+
+        store = self._get_event_store()
+        event_dir = store.find_event_dir(event_id)
+        resolved_id = event_dir.name if event_dir is not None else event_id
+        class_label = self._notification_class_label(classification)
+        base_dir = event_dir or Path(self.config["save_dir"]) / resolved_id
+        # Resolve the clip after any category rename — the callback may still hold
+        # the pre-rename path, which no longer exists once the folder is suffixed.
+        clip = base_dir / "event.mp4"
+
+        if self._prefer_video_notify() and clip.is_file():
+            try:
+                self.notifier.notify_event_video(
+                    event_id=resolved_id,
+                    class_label=class_label,
+                    video_path=str(clip),
+                    on_delivered=lambda eid=resolved_id: self._mark_notified(eid),
+                )
+                return
+            except Exception:
+                logger.exception("Invio video Telegram fallito")
+
+        cover = base_dir / "cover.jpg"
+        image_path = str(cover) if cover.exists() else None
+        try:
+            self.notifier.notify_event(
+                event_id=resolved_id,
+                class_label=class_label,
+                image_path=image_path,
+                on_delivered=lambda eid=resolved_id: self._mark_notified(eid),
+            )
+        except Exception:
+            logger.exception("Invio notifica evento fallito")
 
     def _notify_event(self, event_id: str, classification: dict | None) -> None:
         if self.notifier is None or not event_id:
             return
         if self._already_notified(event_id):
             return
-        class_label = (classification or {}).get("class_label")
-        cover = Path(self.config["save_dir"]) / event_id / "cover.jpg"
+        class_label = self._notification_class_label(classification)
+        store = self._get_event_store()
+        event_dir = store.find_event_dir(event_id)
+        cover = (event_dir or Path(self.config["save_dir"]) / event_id) / "cover.jpg"
         image_path = str(cover) if cover.exists() else None
+        resolved_id = event_dir.name if event_dir is not None else event_id
         try:
-            sent = self.notifier.notify_event(
-                event_id=event_id,
+            self.notifier.notify_event(
+                event_id=resolved_id,
                 class_label=class_label,
                 image_path=image_path,
+                on_delivered=lambda eid=resolved_id: self._mark_notified(eid),
             )
         except Exception:
             logger.exception("Invio notifica evento fallito")
-            return
-        if sent:
-            self._mark_notified(event_id)
 
-    # Classification outcomes that should NOT raise an alert: the model ran but the
-    # frame held no recognizable subject ("no_detection"/"unknown"), the detection
-    # was too weak ("low_confidence"), or it was a person/pet of a category the user
-    # disabled ("ignored"). "unavailable" is intentionally absent: when the model
-    # can't run we fall back to notifying on motion so events are not lost.
-    _NON_NOTIFY_CLASSIFICATION_STATUSES = frozenset(
-        {"no_detection", "unknown", "low_confidence", "ignored"}
-    )
+    # Outcomes that should NOT raise an alert: a person/pet of a disabled category
+    # ("ignored"), or a detection too weak ("low_confidence"). Plain motion without
+    # a recognized subject ("no_detection") still notifies — the motion pipeline
+    # already filtered the event and it appears in the archive.
+    _NON_NOTIFY_CLASSIFICATION_STATUSES = frozenset({"low_confidence", "ignored"})
 
     def _classification_allows_notify(self, status: str | None) -> bool:
         return status not in self._NON_NOTIFY_CLASSIFICATION_STATUSES
@@ -1140,7 +1238,10 @@ class MotionDetector:
         try:
             import json
 
-            meta_path = Path(self.config["save_dir"]) / event_id / "meta.json"
+            event_dir = self._get_event_store().find_event_dir(event_id)
+            if event_dir is None:
+                return {}
+            meta_path = event_dir / "meta.json"
             if not meta_path.exists():
                 return {}
             data = json.loads(meta_path.read_text(encoding="utf-8"))
@@ -1189,15 +1290,8 @@ class MotionDetector:
             return
         store.save_event_meta(event_id, {"classification": result})
         self._classified_events.add(event_id)
-        # Only alert when the recognized subject is an enabled category (or when the
-        # model is unavailable and we fall back to motion-based notification).
-        if not self._should_notify_for(result):
-            return
-        # When a clip is preferred, don't send the snapshot now: defer to the video
-        # notification fired on event close (it carries the same class label). Sending
-        # the photo here would mark the event notified and suppress the clip.
-        if not self._prefer_video_notify():
-            self._notify_event(event_id, result)
+        # Alerts are sent only after the event closes so Telegram and the UI archive
+        # stay aligned (.closed marker exists before we notify).
 
     def _should_save_active_event_frame(self, now: float) -> bool:
         if not self.motion_detected:
@@ -1244,7 +1338,7 @@ class MotionDetector:
             if self._needs_subtractor_rebuild:
                 self._build_subtractor()
 
-            frame = self.camera_stream.get_raw_frame()
+            frame, _frame_sequence = self.camera_stream.get_raw_frame_packet()
             if frame is None:
                 time.sleep(self.config["min_interval"])
                 continue
@@ -1268,6 +1362,17 @@ class MotionDetector:
                     elif motion_now:
                         self.trigger_streak += 1
                         self.clear_streak = 0
+                        if self.trigger_streak == 1:
+                            # Start MP4 capture on the first motion frame (with preroll),
+                            # not only after trigger_frames JPEG saves — catches arm
+                            # gestures and other motion that ramps up slowly.
+                            now_dt = datetime.now()
+                            early_ts = now_dt.strftime("%Y%m%d_%H%M%S")
+                            store = self._get_event_store()
+                            early_id, early_dir = store.open_event(early_ts)
+                            if early_id:
+                                self.last_event_id = early_id
+                            self._start_event_recording(early_dir)
                         if self.trigger_streak >= self.config["trigger_frames"]:
                             self.motion_detected = True
                             self.last_motion_at = now
@@ -1304,41 +1409,42 @@ class MotionDetector:
                             # Every event must carry a label. With classification off there
                             # is no meta yet: stamp a generic 'motion only' tag.
                             if closed_event_id and not closed_classification:
+                                closed_classification = {
+                                    "class_label": "movimento",
+                                    "detected_label": None,
+                                    "classification_status": "motion_only",
+                                }
                                 store.save_event_meta(
                                     closed_event_id,
-                                    {
-                                        "classification": {
-                                            "class_label": "movimento",
-                                            "detected_label": None,
-                                            "classification_status": "motion_only",
-                                        }
-                                    },
+                                    {"classification": closed_classification},
                                 )
                             label = self._resolve_event_label(closed_classification)
-                            wire_video = self._prefer_video_notify()
                             classification_on = (
                                 bool(self.config.get("enabled", True))
                                 and self.classifier is not None
                                 and self.classifier.enabled
                             )
-                            if wire_video and classification_on:
-                                # Re-check the per-category filter at close time so an
-                                # event classified before a toggle still respects it.
-                                wire_video = self._should_notify_for(closed_classification)
+                            should_notify = True
+                            if classification_on:
+                                should_notify = self._should_notify_for(closed_classification)
                             if self.recorder is not None and self.recorder.enabled:
-                                # Rename happens inside the callback, after the clip is finalized.
+                                # Rename and notify happen in the callback, after the clip
+                                # is finalized (or after we know the clip is missing).
                                 self.recorder.stop_event(
                                     on_complete=self._make_event_complete_callback(
                                         closed_event_id,
                                         label,
-                                        closed_classification.get("class_label"),
-                                        wire_video,
+                                        closed_classification,
+                                        should_notify,
                                     )
                                 )
                             else:
-                                # No active recording: nothing is writing the dir, rename now.
-                                if closed_event_id:
-                                    store.rename_event_with_label(closed_event_id, label)
+                                self._finalize_closed_event_notification(
+                                    closed_event_id,
+                                    label,
+                                    closed_classification,
+                                    should_notify=should_notify,
+                                )
                                 if self.recorder is not None:
                                     self.recorder.stop_event()
             except Exception:
@@ -1441,6 +1547,8 @@ class MotionDetector:
                     self.config["record_fps"] = float(value)
                 elif key == "RECORD_PREROLL_SEC":
                     self.config["record_preroll_sec"] = float(value)
+                elif key == "RECORD_POSTROLL_SEC":
+                    self.config["record_postroll_sec"] = float(value)
                 elif key == "RECORD_MAX_DURATION_SEC":
                     self.config["record_max_duration_sec"] = float(value)
                 elif key == "RECORD_MAX_WIDTH":
