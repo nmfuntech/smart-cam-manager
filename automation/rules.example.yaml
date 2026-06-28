@@ -1,0 +1,33 @@
+# Esempio di regole di automazione BLACKFRAME.
+# Copia in automation/rules.yaml (o nel path AUTOMATION_RULES_PATH) e adatta.
+# I nomi 'device' devono corrispondere a quelli salvati nel registry (data/tuya_devices.json).
+#
+# Campi regola:
+#   name      (obbligatorio) id leggibile, usato nei log
+#   on        (obbligatorio) person_detected | animal_detected | motion_detected
+#   source    (opzionale)    id profilo camera; assente = qualsiasi camera
+#   between   (opzionale)    ["HH:MM","HH:MM"], supporta wrap notturno
+#   do        (obbligatorio) lista di azioni
+#       device  (obbligatorio) nome logico del device
+#       action  (obbligatorio) turn_on | turn_off | set_state
+#       state   (solo set_state) dict di valori (es. {brightness: 80})
+#       for     (opzionale)  auto-off dopo la durata (es. 5m, 120s)
+#   cooldown  (opzionale)    debounce per-regola (es. 120s) anti-flapping
+
+- name: luce_ingresso_notturna
+  on: person_detected
+  between: ["18:00", "07:00"]
+  do:
+    - device: luce_ingresso
+      action: turn_on
+      for: 5m
+    - device: presa_studio
+      action: turn_on
+  cooldown: 120s
+
+- name: spegni_se_solo_animale
+  on: animal_detected
+  do:
+    - device: luce_ingresso
+      action: turn_off
+  cooldown: 60s

@@ -28,6 +28,10 @@ lxml = ">=6.1.0"
 zeep = ">=4.3.3"
 urllib3 = ">=2.7.0"
 idna = ">=3.15"
+# Smart-home automation layer (Tuya LAN control + YAML rules). Pure-python,
+# importati pigramente: la suite gira anche senza installarli.
+tinytuya = ">=1.13.0"
+pyyaml = ">=6.0.1"
 
 [tool.poetry.group.dev.dependencies]
 ruff = "*"
