@@ -3,6 +3,7 @@ import os
 import threading
 import time
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -972,6 +973,14 @@ class MotionDetector:
         self._notified_events: set[str] = set()
         self._stopped = threading.Event()
         self.lock = threading.Lock()
+        # Coda dei task pesanti (I/O su disco + inferenza ONNX): eseguiti su un thread
+        # daemon separato così non vengono mai svolti sotto self.lock né sul thread di
+        # detection. Il thread di detection resta reattivo e get_status() non si blocca
+        # mai dietro un salvataggio o una classificazione. Task "critical" (apertura/
+        # chiusura evento) non vengono mai scartati; i salvataggi frame intermedi sì,
+        # se la coda è sovraccarica (backpressure).
+        self._event_queue: list[tuple[bool, Callable[[], None]]] = []
+        self._event_queue_lock = threading.Lock()
         self.processed_frames = 0
         self.trigger_streak = 0
         self.clear_streak = 0
@@ -994,6 +1003,10 @@ class MotionDetector:
         self._build_subtractor()
         self._restore_last_capture()
         self._warn_if_classification_unready()
+        self._event_thread = threading.Thread(
+            target=self._event_worker_loop, daemon=True, name="motion-event-worker"
+        )
+        self._event_thread.start()
         self.thread = threading.Thread(target=self._run, daemon=True)
         self.thread.start()
 
@@ -1393,6 +1406,86 @@ class MotionDetector:
     def stop(self) -> None:
         self._stopped.set()
 
+    # --- worker eventi (I/O + classificazione fuori dal lock di detection) ---
+
+    # Oltre questa profondità di coda i task non critici (salvataggi frame intermedi)
+    # vengono scartati: su un mini PC sotto carico è meglio perdere un frame che far
+    # crescere la coda senza limite. Apertura/chiusura evento restano sempre.
+    _EVENT_QUEUE_MAX = 128
+
+    def _enqueue_event(self, fn: Callable[[], None], *, critical: bool = False) -> None:
+        with self._event_queue_lock:
+            if not critical and len(self._event_queue) >= self._EVENT_QUEUE_MAX:
+                logger.warning("Coda eventi piena: salvataggio frame scartato (backpressure)")
+                return
+            self._event_queue.append((critical, fn))
+
+    def _event_worker_loop(self) -> None:
+        while not self._stopped.is_set():
+            with self._event_queue_lock:
+                item = self._event_queue.pop(0) if self._event_queue else None
+            if item is None:
+                time.sleep(0.02)
+                continue
+            _critical, fn = item
+            try:
+                fn()
+            except Exception:
+                logger.exception("Task evento fallito sul worker")
+
+    def _task_open_event(self, early_ts: str) -> None:
+        store = self._get_event_store()
+        early_id, early_dir = store.open_event(early_ts)
+        if early_id:
+            self.last_event_id = early_id
+        self._start_event_recording(early_dir)
+
+    def _task_save_frame(self, frame, timestamp: str) -> None:
+        self.last_capture_path = self._save_motion_frame(frame, timestamp)
+
+    def _task_close_event(self, closed_event_id: str | None) -> None:
+        closed_classification = self._read_event_classification(closed_event_id)
+        store = self._get_event_store()
+        store.close_current_event()
+        # Every event must carry a label. With classification off there is no meta yet:
+        # stamp a generic 'motion only' tag.
+        if closed_event_id and not closed_classification:
+            closed_classification = {
+                "class_label": "movimento",
+                "detected_label": None,
+                "classification_status": "motion_only",
+            }
+            store.save_event_meta(closed_event_id, {"classification": closed_classification})
+        label = self._resolve_event_label(closed_classification)
+        classification_on = (
+            bool(self.config.get("enabled", True))
+            and self.classifier is not None
+            and self.classifier.enabled
+        )
+        should_notify = True
+        if classification_on:
+            should_notify = self._should_notify_for(closed_classification)
+        if self.recorder is not None and self.recorder.enabled:
+            # Rename and notify happen in the callback, after the clip is finalized
+            # (or after we know the clip is missing).
+            self.recorder.stop_event(
+                on_complete=self._make_event_complete_callback(
+                    closed_event_id,
+                    label,
+                    closed_classification,
+                    should_notify,
+                )
+            )
+        else:
+            self._finalize_closed_event_notification(
+                closed_event_id,
+                label,
+                closed_classification,
+                should_notify=should_notify,
+            )
+            if self.recorder is not None:
+                self.recorder.stop_event()
+
     def _run(self) -> None:
         while not self._stopped.is_set():
             if not self.config["enabled"]:
@@ -1416,6 +1509,11 @@ class MotionDetector:
                 motion_now, largest_usable_area, frame_area = self._detect_motion(frame)
 
                 now = time.time()
+                # Sotto il lock: SOLO la macchina a stati (contatori/flag letti da
+                # get_status). Le azioni pesanti (apertura/chiusura evento, salvataggio
+                # frame, classificazione, finalize+notifica) vengono raccolte qui come
+                # closure e accodate al worker DOPO aver rilasciato il lock.
+                deferred: list[tuple[bool, Callable[[], None]]] = []
                 with self.lock:
                     self.processed_frames += 1
                     self.current_area = (
@@ -1432,26 +1530,20 @@ class MotionDetector:
                         self.trigger_streak += 1
                         self.clear_streak = 0
                         if self.trigger_streak == 1:
-                            # Start MP4 capture on the first motion frame (with preroll),
-                            # not only after trigger_frames JPEG saves — catches arm
-                            # gestures and other motion that ramps up slowly.
-                            now_dt = datetime.now()
-                            early_ts = now_dt.strftime("%Y%m%d_%H%M%S")
-                            store = self._get_event_store()
-                            early_id, early_dir = store.open_event(early_ts)
-                            if early_id:
-                                self.last_event_id = early_id
-                            self._start_event_recording(early_dir)
+                            # Apre l'evento MP4 al primo frame di movimento (con preroll),
+                            # non solo dopo trigger_frames: cattura gesti che salgono piano.
+                            early_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                            deferred.append((True, lambda ts=early_ts: self._task_open_event(ts)))
                         if self.trigger_streak >= self.config["trigger_frames"]:
                             self.motion_detected = True
                             self.last_motion_at = now
                             self.last_trigger_area = largest_usable_area
                             now_dt = datetime.now()
                             self.last_motion_at_display = now_dt.strftime("%Y-%m-%d %H:%M:%S")
-                            capture_timestamp = now_dt.strftime("%Y%m%d_%H%M%S")
-                            self.last_capture_path = self._save_motion_frame(
-                                frame,
-                                capture_timestamp,
+                            ts = now_dt.strftime("%Y%m%d_%H%M%S")
+                            self.last_capture_saved_at = now
+                            deferred.append(
+                                (False, lambda f=frame, t=ts: self._task_save_frame(f, t))
                             )
                     else:
                         self.trigger_streak = 0
@@ -1459,10 +1551,10 @@ class MotionDetector:
                         if self._should_save_active_event_frame(now):
                             now_dt = datetime.now()
                             self.last_motion_at_display = now_dt.strftime("%Y-%m-%d %H:%M:%S")
-                            capture_timestamp = now_dt.strftime("%Y%m%d_%H%M%S")
-                            self.last_capture_path = self._save_motion_frame(
-                                frame,
-                                capture_timestamp,
+                            ts = now_dt.strftime("%Y%m%d_%H%M%S")
+                            self.last_capture_saved_at = now
+                            deferred.append(
+                                (False, lambda f=frame, t=ts: self._task_save_frame(f, t))
                             )
                         enough_quiet = self.clear_streak >= self.config["clear_frames"]
                         out_of_cooldown = (
@@ -1472,50 +1564,13 @@ class MotionDetector:
                         if enough_quiet and out_of_cooldown:
                             self.motion_detected = False
                             closed_event_id = self.last_event_id
-                            closed_classification = self._read_event_classification(closed_event_id)
-                            store = self._get_event_store()
-                            store.close_current_event()
-                            # Every event must carry a label. With classification off there
-                            # is no meta yet: stamp a generic 'motion only' tag.
-                            if closed_event_id and not closed_classification:
-                                closed_classification = {
-                                    "class_label": "movimento",
-                                    "detected_label": None,
-                                    "classification_status": "motion_only",
-                                }
-                                store.save_event_meta(
-                                    closed_event_id,
-                                    {"classification": closed_classification},
-                                )
-                            label = self._resolve_event_label(closed_classification)
-                            classification_on = (
-                                bool(self.config.get("enabled", True))
-                                and self.classifier is not None
-                                and self.classifier.enabled
+                            deferred.append(
+                                (True, lambda eid=closed_event_id: self._task_close_event(eid))
                             )
-                            should_notify = True
-                            if classification_on:
-                                should_notify = self._should_notify_for(closed_classification)
-                            if self.recorder is not None and self.recorder.enabled:
-                                # Rename and notify happen in the callback, after the clip
-                                # is finalized (or after we know the clip is missing).
-                                self.recorder.stop_event(
-                                    on_complete=self._make_event_complete_callback(
-                                        closed_event_id,
-                                        label,
-                                        closed_classification,
-                                        should_notify,
-                                    )
-                                )
-                            else:
-                                self._finalize_closed_event_notification(
-                                    closed_event_id,
-                                    label,
-                                    closed_classification,
-                                    should_notify=should_notify,
-                                )
-                                if self.recorder is not None:
-                                    self.recorder.stop_event()
+
+                # Fuori dal lock: accoda i task pesanti al worker (FIFO, serializzati).
+                for critical, fn in deferred:
+                    self._enqueue_event(fn, critical=critical)
             except Exception:
                 logger.exception("Errore motion detection")
                 with self.lock:

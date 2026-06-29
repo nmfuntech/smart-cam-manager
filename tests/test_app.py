@@ -2323,6 +2323,54 @@ class CameraStreamStateTests(unittest.TestCase):
         self.assertEqual(cfg["encode_interval_ms"], 250)
 
 
+class MotionEventWorkerTests(unittest.TestCase):
+    """Il worker eventi esegue i task pesanti fuori dal lock di detection."""
+
+    def setUp(self):
+        self.app_module = load_app_module()
+
+    def _bare_detector(self, *, start_worker: bool):
+        det = self.app_module.MotionDetector.__new__(self.app_module.MotionDetector)
+        det._stopped = threading.Event()
+        det._event_queue = []
+        det._event_queue_lock = threading.Lock()
+        if start_worker:
+            t = threading.Thread(target=det._event_worker_loop, daemon=True)
+            t.start()
+            self.addCleanup(det._stopped.set)
+        return det
+
+    def _wait(self, condition, timeout=2.0):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if condition():
+                return True
+            time.sleep(0.02)
+        return False
+
+    def test_worker_runs_fifo_and_isolates_errors(self):
+        det = self._bare_detector(start_worker=True)
+        results = []
+
+        def _boom():
+            raise RuntimeError("task fallito")
+
+        det._enqueue_event(_boom, critical=True)  # non deve uccidere il worker
+        det._enqueue_event(lambda: results.append("a"))
+        det._enqueue_event(lambda: results.append("b"))
+        self.assertTrue(self._wait(lambda: results == ["a", "b"]), f"results={results}")
+
+    def test_backpressure_drops_noncritical_keeps_critical(self):
+        det = self._bare_detector(start_worker=False)  # nessun drain: coda resta piena
+        for _ in range(det._EVENT_QUEUE_MAX):
+            det._enqueue_event(lambda: None, critical=False)
+        self.assertEqual(len(det._event_queue), det._EVENT_QUEUE_MAX)
+        det._enqueue_event(lambda: None, critical=False)  # scartato
+        self.assertEqual(len(det._event_queue), det._EVENT_QUEUE_MAX)
+        det._enqueue_event(lambda: None, critical=True)  # apertura/chiusura: mai scartati
+        self.assertEqual(len(det._event_queue), det._EVENT_QUEUE_MAX + 1)
+
+
 class RuntimeConfigManagerTests(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp(prefix="runtime-config-")
