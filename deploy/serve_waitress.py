@@ -25,7 +25,7 @@ _ROOT = Path(__file__).resolve().parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from scripts.runtime_paths import configure_runtime_environment
+from scripts.runtime_paths import configure_runtime_environment  # noqa: E402
 
 configure_runtime_environment()
 

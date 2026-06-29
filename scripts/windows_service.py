@@ -13,13 +13,12 @@ import urllib.request
 import zipfile
 from pathlib import Path
 
+from scripts.runtime_paths import installed_data_home, runtime_python
+
 SERVICE_NAME = "BLACKFRAME"
 DEFAULT_NSSM_DIR = Path(r"C:\Tools\nssm")
 NSSM_DOWNLOAD_URL = "https://nssm.cc/release/nssm-2.24.zip"
 NSSM_ZIP_EXE = "nssm-2.24/win64/nssm.exe"
-
-
-from scripts.runtime_paths import installed_data_home, runtime_python
 
 
 def project_root() -> Path:
