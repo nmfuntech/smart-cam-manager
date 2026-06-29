@@ -1577,19 +1577,52 @@ details[open].sidebar-advanced .sidebar-advanced-chevron {
   background: rgba(255, 92, 138, 0.12);
 }
 
-/* ─── Automazione: toggle topbar (no uppercase) ──────────────────────────── */
+/* ─── Automazione: toggle topbar ─────────────────────────────────────────── */
 .auto-topbar-toggle {
   display: flex;
   align-items: center;
   gap: 8px;
   cursor: pointer;
   font-size: 0.78rem;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.04em;
   color: var(--text-muted);
+  text-transform: none;
 }
 
 .auto-topbar-toggle span {
-  text-transform: none;
+  text-transform: none !important;
+}
+
+.auto-topbar-toggle input[type="checkbox"] {
+  width: 46px;
+  height: 24px;
+  appearance: none;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.2);
+  border: 1px solid var(--line);
+  position: relative;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.auto-topbar-toggle input[type="checkbox"]::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  background: #fff;
+  transition: transform 140ms ease;
+}
+
+.auto-topbar-toggle input[type="checkbox"]:checked {
+  background: rgba(82, 242, 199, 0.5);
+}
+
+.auto-topbar-toggle input[type="checkbox"]:checked::after {
+  transform: translateX(22px);
 }
 
 /* ─── Feedback vuoto invisibile ma preserva spazio ──────────────────────── */

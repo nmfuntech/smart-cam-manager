@@ -43,7 +43,15 @@ def _load_rules_raw() -> list[dict]:
         import yaml
 
         data = yaml.safe_load(path.read_text(encoding="utf-8")) or []
-        return data if isinstance(data, list) else []
+        if not isinstance(data, list):
+            return []
+        # PyYAML 1.1 parses bare `on:` key as Python True — normalize back to "on"
+        normalized = []
+        for rule in data:
+            if isinstance(rule, dict) and True in rule and "on" not in rule:
+                rule = {("on" if k is True else k): v for k, v in rule.items()}
+            normalized.append(rule)
+        return normalized
     except Exception:
         current_app.logger.exception("Lettura rules.yaml fallita")
         return []

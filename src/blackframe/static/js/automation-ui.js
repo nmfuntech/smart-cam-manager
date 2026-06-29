@@ -168,7 +168,7 @@ export function createAutomationController(elements) {
     document.getElementById("dev-version").value = device?.version ?? 3.3;
     document.getElementById("dev-switch-dp").value = device?.switch_dp ?? 1;
     document.getElementById("dev-access-secret").value = ""; // write-only
-    setDeviceFeedback("-");
+    setDeviceFeedback("");
     deviceDialog.showModal();
   }
 
