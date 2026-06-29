@@ -18,6 +18,12 @@ Register as a Windows service with NSSM (see docs/gestione_servizio.md).
 """
 
 import os
+import sys
+from pathlib import Path
+
+_ROOT = Path(__file__).resolve().parent.parent
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
 
 from scripts.runtime_paths import configure_runtime_environment
 

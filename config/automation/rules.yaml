@@ -35,15 +35,14 @@
 #       for: 2m
 #   cooldown: 60s
 
+# Regola di test: persona rilevata → accende entrambe le luci scrivania.
 - name: test_luci_su_persona
   on: person_detected
   do:
     - device: luce_scrivania_1
       action: turn_on
-      for: 30s
     - device: luce_scrivania_2
       action: turn_on
-      for: 30s
   cooldown: 60s
 
 # Aggiungere qui le proprie regole. Device disponibili:

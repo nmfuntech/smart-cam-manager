@@ -1,4 +1,4 @@
-# Wizard di installazione BLACKFRAME su Windows mini PC.
+﻿# Wizard di installazione BLACKFRAME su Windows mini PC.
 # Esegui dalla root del progetto in PowerShell:
 #   Set-ExecutionPolicy -Scope Process Bypass
 #   .\scripts\install_windows.ps1
@@ -32,7 +32,8 @@ param(
     [string]$ServiceMode = "",
     [switch]$OpenFirewall,
     [switch]$Run,
-    [int]$AppPort = 0
+    [int]$AppPort = 0,
+    [switch]$Elevated
 )
 
 $ErrorActionPreference = "Stop"
@@ -238,7 +239,28 @@ function Install-Service {
     switch ($Mode) {
         "nssm" {
             if (-not (Test-IsAdmin)) {
-                Write-Warn "NSSM richiede PowerShell come Amministratore."
+                if ($Elevated) {
+                    Write-Warn "Privilegi amministratore non disponibili anche dopo l'elevazione."
+                    return
+                }
+                Write-Warn "La registrazione del servizio NSSM richiede privilegi amministratore."
+                if (Read-YesNo "Riavviare automaticamente come amministratore solo per questo passo?" $true) {
+                    $relaunchArgs = @(
+                        "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $PSCommandPath,
+                        "-SkipWizard", "-SkipTools", "-SkipDeps", "-SkipModel", "-SkipConfig",
+                        "-ServiceMode", "nssm", "-AppPort", "$Port", "-Elevated"
+                    )
+                    if ($OpenFirewall -or $script:WizardLanAccess) { $relaunchArgs += "-OpenFirewall" }
+                    try {
+                        Start-Process powershell -Verb RunAs -Wait -ArgumentList $relaunchArgs
+                        Write-Ok "Servizio registrato tramite sessione amministratore."
+                    } catch {
+                        Write-Warn "Elevazione annullata o fallita. Apri PowerShell come amministratore ed esegui:"
+                        Write-Host "    cd `"$ProjectDir`""
+                        Write-Host "    .\scripts\install_windows.ps1 -SkipWizard -SkipTools -SkipDeps -SkipModel -SkipConfig -ServiceMode nssm"
+                    }
+                    return
+                }
                 Write-Host @"
 
   Apri PowerShell come amministratore ed esegui:

@@ -171,6 +171,37 @@ class MotionEventStore:
 
         return removed
 
+    def ensure_preview_image(self, event_id: str) -> bool:
+        """Crea cover.jpg (e latest.jpg) dal primo fotogramma di event.mp4 se mancanti.
+
+        Serve quando il salvataggio JPEG è stato scartato dalla coda eventi ma la clip
+        MP4 esiste: Telegram può inviare il video, ma l'archivio UI richiede un'anteprima.
+        """
+        event_dir = self.find_event_dir(event_id)
+        if event_dir is None:
+            return False
+        cover_path = event_dir / "cover.jpg"
+        latest_path = event_dir / "latest.jpg"
+        if cover_path.exists() or latest_path.exists():
+            return True
+        clip_path = event_dir / "event.mp4"
+        if not clip_path.is_file():
+            return False
+        try:
+            capture = cv2.VideoCapture(str(clip_path))
+            try:
+                ok, frame = capture.read()
+            finally:
+                capture.release()
+            if not ok or frame is None:
+                return False
+            if not cv2.imwrite(str(cover_path), frame):
+                return False
+            cv2.imwrite(str(latest_path), frame)
+            return cover_path.exists()
+        except Exception:
+            return False
+
     def find_event_dir(self, event_id: str) -> Path | None:
         """Resolve an event directory, including after a category suffix rename."""
         if not event_id:

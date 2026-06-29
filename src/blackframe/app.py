@@ -224,6 +224,12 @@ def get_motion_config() -> dict:
         "classification_crop_padding": classification_crop_padding,
         "classification_detect_person": classification_detect_person,
         "classification_detect_pet": classification_detect_pet,
+        "notify_tail_suppress_sec": max(
+            float(os.getenv("NOTIFY_TAIL_SUPPRESS_SEC", "0") or 0),
+            event_gap * 2,
+            15.0,
+        ),
+        "notify_burst_sec": max(float(os.getenv("NOTIFY_BURST_SEC", "0") or 0), 20.0),
     }
 
 
@@ -977,6 +983,15 @@ class MotionDetector:
         self.automation = automation
         self._classified_events: set[str] = set()
         self._notified_events: set[str] = set()
+        self._finalized_events: set[str] = set()
+        self._last_classified_notify_at: float | None = None
+        self._last_notify_at: float | None = None
+        self._CLIP_CLASSIFY_MAX_FRAMES = 24
+        # Automazione a bassa latenza: scatta durante l'evento appena un frame
+        # contiene un soggetto, senza attendere la chiusura/registrazione/transcodifica.
+        self._automation_fired: set[str] = set()
+        self._live_classify_attempts: dict[str, int] = {}
+        self._LIVE_CLASSIFY_MAX = 12
         self._stopped = threading.Event()
         self.lock = threading.Lock()
         # Coda dei task pesanti (I/O su disco + inferenza ONNX): eseguiti su un thread
@@ -1163,6 +1178,37 @@ class MotionDetector:
             self._notified_events.add(event_id)
         store.mark_event_notified(resolved_id)
 
+    def _note_classified_notification(self, class_label: str | None) -> None:
+        if class_label in (
+            PersonPetClassifier.LABEL_PERSONA,
+            PersonPetClassifier.LABEL_PET,
+        ):
+            self._last_classified_notify_at = time.monotonic()
+
+    def _note_notification_sent(self) -> None:
+        self._last_notify_at = time.monotonic()
+
+    def _is_within_notify_burst(self) -> bool:
+        last = getattr(self, "_last_notify_at", None)
+        if last is None:
+            return False
+        return (time.monotonic() - last) < float(self.config.get("notify_burst_sec", 20))
+
+    def _is_tail_motion_notification(self, classification: dict | None) -> bool:
+        """Movimento generico subito dopo un alert persona/pet (stesso passaggio)."""
+        classification = classification or {}
+        if classification.get("detected_label") in (
+            PersonPetClassifier.LABEL_PERSONA,
+            PersonPetClassifier.LABEL_PET,
+        ):
+            return False
+        status = classification.get("classification_status")
+        if status not in ("no_detection", "motion_only", "unknown"):
+            return False
+        window = float(self.config.get("notify_tail_suppress_sec", 15))
+        last = getattr(self, "_last_classified_notify_at", None)
+        return last is not None and (time.monotonic() - last) < window
+
     def _resolve_event_label(self, classification: dict | None) -> str:
         """Category used for the folder name / archive: the confidently recognized
         class (person/pet, even if 'ignored'), otherwise a generic 'movimento' tag."""
@@ -1195,6 +1241,75 @@ class MotionDetector:
 
         return _callback
 
+    def _classify_best_from_event(self, event_dir: Path) -> dict | None:
+        """Scansiona la clip evento e sceglie il miglior rilevamento persona/pet.
+
+        Il primo fotogramma (preroll) spesso non contiene ancora il soggetto: classificare
+        solo cover.jpg o il frame iniziale produce falsi ``no_detection``.
+        """
+        if not self.classifier.enabled or not self.classifier.ready:
+            return None
+        best: dict | None = None
+        best_conf = -1.0
+        clip = event_dir / "event.mp4"
+        if clip.is_file():
+            capture = cv2.VideoCapture(str(clip))
+            try:
+                for _ in range(getattr(self, "_CLIP_CLASSIFY_MAX_FRAMES", 24)):
+                    ok, frame = capture.read()
+                    if not ok or frame is None:
+                        break
+                    result = self.classifier.classify(frame)
+                    if result and result.get("classification_status") == "ok":
+                        label = result.get("detected_label")
+                        conf = float(result.get("confidence") or 0)
+                        if label in (
+                            PersonPetClassifier.LABEL_PERSONA,
+                            PersonPetClassifier.LABEL_PET,
+                        ) and conf > best_conf:
+                            best = result
+                            best_conf = conf
+            finally:
+                capture.release()
+        if best is not None:
+            return best
+        cover = event_dir / "cover.jpg"
+        if cover.is_file():
+            frame = cv2.imread(str(cover))
+            if frame is not None:
+                return self.classifier.classify(frame)
+        return None
+
+    def _maybe_classify_closed_event(
+        self, event_id: str, classification: dict | None
+    ) -> tuple[dict | None, str]:
+        """Classifica a chiusura scansionando la clip (non solo il primo frame)."""
+        classification = dict(classification) if classification else {}
+        if classification.get("detected_label") in (
+            PersonPetClassifier.LABEL_PERSONA,
+            PersonPetClassifier.LABEL_PET,
+        ):
+            return classification, self._resolve_event_label(classification)
+
+        store = self._get_event_store()
+        store.ensure_preview_image(event_id)
+        event_dir = store.find_event_dir(event_id)
+        if event_dir is None or not self.classifier.enabled or not self.classifier.ready:
+            return classification, self._resolve_event_label(classification)
+
+        result = self._classify_best_from_event(event_dir)
+        if not result:
+            return classification, self._resolve_event_label(classification)
+        logger.info(
+            "Classificazione evento %s: label=%s conf=%s status=%s",
+            event_id,
+            result.get("detected_label"),
+            result.get("confidence"),
+            result.get("classification_status"),
+        )
+        store.save_event_meta(event_id, {"classification": result})
+        return result, self._resolve_event_label(result)
+
     def _finalize_closed_event_notification(
         self,
         event_id: str | None,
@@ -1208,7 +1323,16 @@ class MotionDetector:
         if not event_id:
             return None
         store = self._get_event_store()
+        store.ensure_preview_image(event_id)
+        classification, label = self._maybe_classify_closed_event(event_id, classification)
+        should_notify = self._should_notify_for(classification or {})
         resolved_id = store.rename_event_with_label(event_id, label)
+        logger.info(
+            "Evento finalizzato: %s label=%s notify=%s",
+            resolved_id,
+            label,
+            should_notify,
+        )
         self._emit_automation(resolved_id, label, video_path)
         if not should_notify or self.notifier is None:
             return resolved_id
@@ -1220,6 +1344,9 @@ class MotionDetector:
     def _emit_automation(self, event_id: str | None, label: str, video_path: Path | None) -> None:
         automation = getattr(self, "automation", None)
         if automation is None or not event_id:
+            return
+        # Già scattata durante l'evento (percorso a bassa latenza): non rifare.
+        if self._event_base_id(event_id) in self._automation_fired:
             return
         try:
             ctx = EventContext(
@@ -1252,25 +1379,31 @@ class MotionDetector:
 
         if self._prefer_video_notify() and clip.is_file():
             try:
-                self.notifier.notify_event_video(
+                if self.notifier.notify_event_video(
                     event_id=resolved_id,
                     class_label=class_label,
                     video_path=str(clip),
                     on_delivered=lambda eid=resolved_id: self._mark_notified(eid),
-                )
-                return
+                ):
+                    self._mark_notified(resolved_id)
+                    self._note_classified_notification(class_label)
+                    self._note_notification_sent()
+                    return
             except Exception:
                 logger.exception("Invio video Telegram fallito")
 
         cover = base_dir / "cover.jpg"
         image_path = str(cover) if cover.exists() else None
         try:
-            self.notifier.notify_event(
+            if self.notifier.notify_event(
                 event_id=resolved_id,
                 class_label=class_label,
                 image_path=image_path,
                 on_delivered=lambda eid=resolved_id: self._mark_notified(eid),
-            )
+            ):
+                self._mark_notified(resolved_id)
+                self._note_classified_notification(class_label)
+                self._note_notification_sent()
         except Exception:
             logger.exception("Invio notifica evento fallito")
 
@@ -1313,6 +1446,10 @@ class MotionDetector:
         """
         classification = classification or {}
         if not self._classification_allows_notify(classification.get("classification_status")):
+            return False
+        if self._is_within_notify_burst():
+            return False
+        if self._is_tail_motion_notification(classification):
             return False
         detected = classification.get("detected_label")
         classifier = getattr(self, "classifier", None)
@@ -1363,21 +1500,57 @@ class MotionDetector:
             return frame
         return frame[y1:y2, x1:x2]
 
+    @staticmethod
+    def _event_base_id(event_id: str | None) -> str:
+        """Id evento senza il suffisso categoria (``__persona``), stabile tra rename."""
+        if not event_id:
+            return ""
+        base, _, _ = event_id.partition(MotionEventStore.LABEL_SEPARATOR)
+        return base
+
+    def _fire_live_automation(self, event_id: str, detected_label: str) -> None:
+        """Fa scattare l'automazione durante l'evento (una sola volta per evento)."""
+        automation = getattr(self, "automation", None)
+        if automation is None:
+            return
+        base_id = self._event_base_id(event_id)
+        if base_id in self._automation_fired:
+            return
+        self._automation_fired.add(base_id)
+        try:
+            automation.emit(EventContext(event_id=event_id, category=detected_label))
+            logger.info("Automazione live: %s (%s)", event_id, detected_label)
+        except Exception:
+            logger.exception("Automazione live fallita per evento %s", event_id)
+
     def _classify_event_frame(self, event_id: str, frame) -> None:
+        # Classifica i frame salvati durante l'evento e, appena trova un soggetto,
+        # accende subito l'automazione. Riprova sui frame successivi finché ottiene
+        # solo 'no_detection' (la persona spesso entra dopo i primi frame), con un
+        # tetto di tentativi per non classificare all'infinito un puro movimento.
         if event_id in self._classified_events:
             return
         if self.classifier.sample_policy != "event_cover":
             return
-        store = self._get_event_store()
-        # Dedup persisted on disk so a restart mid-event does not re-classify.
-        if store.event_has_classification(event_id):
-            self._classified_events.add(event_id)
-            return
         result = self.classifier.classify(self._crop_to_motion(frame))
         if result is None:
             return
-        store.save_event_meta(event_id, {"classification": result})
-        self._classified_events.add(event_id)
+        detected = result.get("detected_label")
+        is_subject = detected in (PersonPetClassifier.LABEL_PERSONA, PersonPetClassifier.LABEL_PET)
+        store = self._get_event_store()
+        attempts = self._live_classify_attempts.get(event_id, 0) + 1
+        self._live_classify_attempts[event_id] = attempts
+        # Persisti il primo esito (così meta esiste sempre); riscrivi solo per
+        # "promuovere" un esito non-soggetto a soggetto, evitando write ridondanti.
+        if attempts == 1 or is_subject:
+            store.save_event_meta(event_id, {"classification": result})
+        if is_subject:
+            # Soggetto riconosciuto: blocca la classificazione e accendi subito.
+            self._classified_events.add(event_id)
+            self._fire_live_automation(event_id, detected)
+            return
+        if attempts >= self._LIVE_CLASSIFY_MAX:
+            self._classified_events.add(event_id)
         # Alerts are sent only after the event closes so Telegram and the UI archive
         # stay aligned (.closed marker exists before we notify).
 
@@ -1444,12 +1617,22 @@ class MotionDetector:
         early_id, early_dir = store.open_event(early_ts)
         if early_id:
             self.last_event_id = early_id
+            logger.info("Evento movimento aperto: %s", early_id)
         self._start_event_recording(early_dir)
+
+    def _task_open_and_save_frame(self, frame, timestamp: str) -> None:
+        """Apre l'evento e salva il primo frame confermato nello stesso task."""
+        self._task_open_event(timestamp)
+        self._task_save_frame(frame, timestamp)
 
     def _task_save_frame(self, frame, timestamp: str) -> None:
         self.last_capture_path = self._save_motion_frame(frame, timestamp)
 
     def _task_close_event(self, closed_event_id: str | None) -> None:
+        if not closed_event_id or closed_event_id in self._finalized_events:
+            return
+        self._finalized_events.add(closed_event_id)
+        logger.info("Evento movimento in chiusura: %s", closed_event_id)
         closed_classification = self._read_event_classification(closed_event_id)
         store = self._get_event_store()
         store.close_current_event()
@@ -1535,11 +1718,6 @@ class MotionDetector:
                     elif motion_now:
                         self.trigger_streak += 1
                         self.clear_streak = 0
-                        if self.trigger_streak == 1:
-                            # Apre l'evento MP4 al primo frame di movimento (con preroll),
-                            # non solo dopo trigger_frames: cattura gesti che salgono piano.
-                            early_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-                            deferred.append((True, lambda ts=early_ts: self._task_open_event(ts)))
                         if self.trigger_streak >= self.config["trigger_frames"]:
                             self.motion_detected = True
                             self.last_motion_at = now
@@ -1548,9 +1726,25 @@ class MotionDetector:
                             self.last_motion_at_display = now_dt.strftime("%Y-%m-%d %H:%M:%S")
                             ts = now_dt.strftime("%Y%m%d_%H%M%S")
                             self.last_capture_saved_at = now
-                            deferred.append(
-                                (False, lambda f=frame, t=ts: self._task_save_frame(f, t))
+                            first_confirmed = (
+                                self.trigger_streak == self.config["trigger_frames"]
                             )
+                            if first_confirmed:
+                                deferred.append(
+                                    (
+                                        True,
+                                        lambda f=frame, t=ts: self._task_open_and_save_frame(
+                                            f, t
+                                        ),
+                                    )
+                                )
+                            else:
+                                deferred.append(
+                                    (
+                                        False,
+                                        lambda f=frame, t=ts: self._task_save_frame(f, t),
+                                    )
+                                )
                     else:
                         self.trigger_streak = 0
                         self.clear_streak += 1
@@ -1567,9 +1761,14 @@ class MotionDetector:
                             self.last_motion_at is None
                             or now - self.last_motion_at >= self.config["cooldown"]
                         )
-                        if enough_quiet and out_of_cooldown:
-                            self.motion_detected = False
+                        has_open_event = self.last_event_id is not None and (
+                            self.motion_detected
+                            or self._get_event_store().current_event_dir is not None
+                        )
+                        if enough_quiet and out_of_cooldown and has_open_event:
                             closed_event_id = self.last_event_id
+                            self.last_event_id = None
+                            self.motion_detected = False
                             deferred.append(
                                 (True, lambda eid=closed_event_id: self._task_close_event(eid))
                             )
@@ -1783,6 +1982,11 @@ class MotionDetector:
             self.motion_detected = False
             self._classified_events.clear()
             self._notified_events.clear()
+            self._finalized_events.clear()
+            self._automation_fired.clear()
+            self._live_classify_attempts.clear()
+            self._last_classified_notify_at = None
+            self._last_notify_at = None
             return removed
 
     def purge_old_events(self) -> int:

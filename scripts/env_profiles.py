@@ -10,26 +10,27 @@ import re
 import sys
 from pathlib import Path
 
-# Tuning consigliato per mini PC Windows: meno carico CPU, meno falsi positivi,
-# clip più leggere. Richiede ffmpeg in PATH per la riproduzione nel browser.
+# Tuning consigliato per mini PC Windows: valori validati sul campo (rilevamento
+# persona affidabile + accensione automazione a bassa latenza). Allineato alla
+# configurazione testata. Richiede ffmpeg in PATH per la riproduzione nel browser.
 MINI_PC_WINDOWS: dict[str, str] = {
     "TAPO_STREAM_PATH": "stream2",
-    "MOTION_THRESHOLD": "42",
-    "MOTION_MIN_AREA": "1200",
+    "MOTION_THRESHOLD": "30",
+    "MOTION_MIN_AREA": "2500",
     "MOTION_BLUR_SIZE": "7",
-    "MOTION_FRAME_INTERVAL": "0.2",
+    "MOTION_FRAME_INTERVAL": "0.25",
     "MOTION_CAPTURE_INTERVAL": "0.35",
-    "MOTION_WARMUP_FRAMES": "20",
-    "MOTION_TRIGGER_FRAMES": "2",
+    "MOTION_WARMUP_FRAMES": "35",
+    "MOTION_TRIGGER_FRAMES": "4",
     "MOTION_CLEAR_FRAMES": "10",
     "MOTION_SCALE_WIDTH": "420",
     "MOTION_EVENT_GAP": "5.0",
     "MOTION_EVENT_MAX_DURATION": "30.0",
-    "MOTION_GLOBAL_CHANGE_RATIO": "0.4",
+    "MOTION_GLOBAL_CHANGE_RATIO": "0.5",
     "MOTION_MOG2_HISTORY": "500",
     "MOTION_MORPH_KERNEL": "3",
-    "MOTION_MORPH_DILATE_ITER": "2",
-    "RTSP_BACKLOG_SKIP_FRAMES": "0",
+    "MOTION_MORPH_DILATE_ITER": "1",
+    "RTSP_BACKLOG_SKIP_FRAMES": "1",
     "RECORD_ENABLED": "true",
     "RECORD_FPS": "8",
     "RECORD_MAX_WIDTH": "854",
@@ -38,8 +39,10 @@ MINI_PC_WINDOWS: dict[str, str] = {
     "RECORD_POSTROLL_SEC": "2.0",
     "CLASSIFICATION_ENABLED": "true",
     "CLASSIFICATION_BACKEND": "detection",
-    "CLASSIFICATION_MIN_CONFIDENCE": "0.58",
-    "CLASSIFICATION_CROP_TO_MOTION": "false",
+    "CLASSIFICATION_MIN_CONFIDENCE": "0.5",
+    "CLASSIFICATION_CROP_TO_MOTION": "true",
+    # event_cover è richiesto dall'accensione automazione live durante l'evento.
+    "CLASSIFICATION_SAMPLE_POLICY": "event_cover",
     "CLASSIFICATION_PET_PRIORITY_MARGIN": "0.12",
     "NOTIFY_MIN_INTERVAL_SEC": "6",
     "NOTIFY_TELEGRAM_MAX_VIDEO_MB": "20",

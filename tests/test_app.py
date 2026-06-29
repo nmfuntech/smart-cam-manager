@@ -129,6 +129,9 @@ class ClassificationNotifyGateTests(unittest.TestCase):
             def find_event_dir(self, event_id):
                 return None
 
+            def ensure_preview_image(self, event_id):
+                return False
+
         class FakeClassifier:
             enabled = True
             sample_policy = "event_cover"
@@ -156,6 +159,11 @@ class ClassificationNotifyGateTests(unittest.TestCase):
         detector.classifier = FakeClassifier()
         detector._classified_events = set()
         detector._notified_events = set()
+        detector._finalized_events = set()
+        detector._automation_fired = set()
+        detector._live_classify_attempts = {}
+        detector._LIVE_CLASSIFY_MAX = 12
+        detector._last_classified_notify_at = None
         detector.notifier = object()
         detector.notified = []
         detector._notify_event = lambda event_id, result: detector.notified.append(event_id)
@@ -232,6 +240,113 @@ class ClassificationNotifyGateTests(unittest.TestCase):
             should_notify=True,
         )
         self.assertEqual(detector.notified, ["ev1__movimento"])
+
+    def test_live_automation_fires_during_event_on_person(self):
+        detector = self._detector("ok", detected_label="persona")
+
+        class FakeAutomation:
+            def __init__(self):
+                self.emitted = []
+
+            def emit(self, ctx):
+                self.emitted.append(ctx.category)
+
+        automation = FakeAutomation()
+        detector.automation = automation
+        detector._automation_fired = set()
+        detector._live_classify_attempts = {}
+
+        detector._classify_event_frame("ev1", object())
+        detector._classify_event_frame("ev1", object())  # second frame: must not re-fire
+
+        self.assertEqual(automation.emitted, ["persona"])
+
+    def test_emit_automation_skipped_after_live_fire(self):
+        detector = self._detector("ok", detected_label="persona")
+
+        class FakeAutomation:
+            def __init__(self):
+                self.emitted = []
+
+            def emit(self, ctx):
+                self.emitted.append(ctx.category)
+
+        automation = FakeAutomation()
+        detector.automation = automation
+        detector._automation_fired = {"ev1"}
+        detector._emit_automation("ev1__persona", "persona", None)
+        self.assertEqual(automation.emitted, [])
+
+    def test_tail_motion_suppressed_after_persona_alert(self):
+        detector = self._detector("ok")
+        detector.config["notify_tail_suppress_sec"] = 30
+        detector._note_classified_notification("persona")
+        self.assertFalse(
+            detector._should_notify_for(
+                {"classification_status": "no_detection", "class_label": "unknown"}
+            )
+        )
+
+    def test_task_close_event_finalizes_once(self):
+        tmpdir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmpdir)
+        detector = self._detector("ok")
+        detector.config["save_dir"] = tmpdir
+        detector.event_store = self.app_module.MotionEventStore(
+            {"save_dir": tmpdir, "save_frames": True, "event_gap": 5.0}
+        )
+        detector._finalized_events = set()
+        detector.recorder = None
+        counts = []
+        detector._finalize_closed_event_notification = lambda *a, **k: counts.append(1)
+        detector._task_close_event("ev1")
+        detector._task_close_event("ev1")
+        self.assertEqual(len(counts), 1)
+
+    def test_classify_best_from_event_finds_late_person_in_clip(self):
+        import cv2
+        import numpy as np
+
+        tmpdir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmpdir)
+        event_dir = Path(tmpdir) / "motion_event_test"
+        event_dir.mkdir()
+        clip = event_dir / "event.mp4"
+        writer = cv2.VideoWriter(
+            str(clip), cv2.VideoWriter_fourcc(*"mp4v"), 5.0, (320, 240)
+        )
+        for _ in range(10):
+            writer.write(np.zeros((240, 320, 3), dtype=np.uint8))
+        writer.write(np.full((240, 320, 3), 200, dtype=np.uint8))
+        writer.release()
+
+        detector = self._detector("ok")
+        detector.config["save_dir"] = tmpdir
+
+        class ClipClassifier:
+            enabled = True
+            ready = True
+            calls = 0
+
+            def classify(self, frame):
+                self.calls += 1
+                if frame.mean() > 10:
+                    return {
+                        "class_label": "persona",
+                        "detected_label": "persona",
+                        "confidence": 0.9,
+                        "classification_status": "ok",
+                    }
+                return {
+                    "class_label": "unknown",
+                    "classification_status": "no_detection",
+                }
+
+        clip_clf = ClipClassifier()
+        detector.classifier = clip_clf
+        result = detector._classify_best_from_event(event_dir)
+        self.assertEqual(result.get("detected_label"), "persona")
+        self.assertGreater(clip_clf.calls, 10)
 
 
 class ClosedEventNotificationTests(unittest.TestCase):
@@ -476,6 +591,31 @@ class MotionDetectorEventTests(unittest.TestCase):
 
         self.assertEqual(len(events), 1)
         self.assertTrue(events[0]["preview_path"].endswith("cover.jpg"))
+
+    def test_ensure_preview_image_extracts_cover_from_clip(self):
+        import cv2
+        import numpy as np
+
+        event_dir = Path(self.tmpdir) / "motion_event_20260417_120001"
+        event_dir.mkdir(parents=True, exist_ok=True)
+        clip = event_dir / "event.mp4"
+        writer = cv2.VideoWriter(
+            str(clip),
+            cv2.VideoWriter_fourcc(*"mp4v"),
+            5.0,
+            (64, 48),
+        )
+        writer.write(np.zeros((48, 64, 3), dtype=np.uint8))
+        writer.release()
+
+        store = self.app_module.MotionEventStore(
+            {"save_dir": self.tmpdir, "save_frames": True, "event_gap": 5.0}
+        )
+        (event_dir / store.CLOSED_MARKER_NAME).touch()
+        self.assertTrue(store.ensure_preview_image(event_dir.name))
+        events = store.list_events(limit=5)
+        self.assertEqual(len(events), 1)
+        self.assertTrue((event_dir / "cover.jpg").exists())
 
     def test_stale_open_event_is_auto_closed_on_read(self):
         event_dir = Path(self.tmpdir) / "motion_event_20260417_120001"
@@ -740,6 +880,9 @@ class MotionDetectorEventTests(unittest.TestCase):
         detector.classifier = FakeClassifier()
         detector._classified_events = set()
         detector._notified_events = set()
+        detector._automation_fired = set()
+        detector._live_classify_attempts = {}
+        detector._LIVE_CLASSIFY_MAX = 12
         detector.recorder = None
         detector.notifier = None
         detector.last_event_id = None

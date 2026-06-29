@@ -214,7 +214,7 @@ def prompt_service_mode() -> str:
     )
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Wizard configurazione BLACKFRAME su Windows")
     parser.add_argument("--root", default=".", help="Cartella progetto")
     parser.add_argument("--env-file", default=".env")
@@ -222,7 +222,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--non-interactive", action="store_true", help="Solo template + profilo")
     parser.add_argument("--service-mode", choices=("nssm", "task", "manual"), default="")
     parser.add_argument("--write-example-only", action="store_true")
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
