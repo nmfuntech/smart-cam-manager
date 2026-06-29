@@ -1561,6 +1561,18 @@ details[open].sidebar-advanced .sidebar-advanced-chevron {
   color: var(--text-muted);
 }
 
+.auto-action-row select,
+.auto-action-row input[type="text"] {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(6, 18, 32, 0.82);
+  color: var(--text);
+  padding: 8px 10px;
+  font: inherit;
+  font-size: 0.82rem;
+}
+
 .auto-action-del {
   background: none;
   border: none;
