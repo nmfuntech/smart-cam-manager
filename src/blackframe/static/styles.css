@@ -1523,3 +1523,56 @@ details[open].sidebar-advanced .sidebar-advanced-chevron {
   flex: 1;
   color: var(--accent);
 }
+
+/* ─── Automazione: tab bar ───────────────────────────────────────────────── */
+.auto-tab-bar {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 18px;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 12px;
+}
+
+.auto-tab.is-active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* ─── Automazione: action row nel form regola ────────────────────────────── */
+.auto-action-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr auto;
+  gap: 8px;
+  align-items: end;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel-soft);
+  margin-bottom: 8px;
+}
+
+.auto-action-row label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.72rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.auto-action-del {
+  background: none;
+  border: none;
+  color: #ff89ad;
+  cursor: pointer;
+  font-size: 1.1rem;
+  padding: 4px 6px;
+  border-radius: 8px;
+  line-height: 1;
+  align-self: flex-end;
+}
+
+.auto-action-del:hover {
+  background: rgba(255, 92, 138, 0.12);
+}

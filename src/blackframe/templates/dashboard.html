@@ -23,6 +23,7 @@
       <nav class="app-header-nav">
         <a class="ghost-button compact-button" href="/">Viewer</a>
         <a class="ghost-button compact-button" href="/cameras">Camere</a>
+        <a class="ghost-button compact-button" href="/automazione">Automazione</a>
         <form method="post" action="{{ url_for('auth.logout') }}">
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
           <button class="ghost-button compact-button" type="submit">Esci</button>

@@ -1263,10 +1263,14 @@ class MotionDetector:
                     if result and result.get("classification_status") == "ok":
                         label = result.get("detected_label")
                         conf = float(result.get("confidence") or 0)
-                        if label in (
-                            PersonPetClassifier.LABEL_PERSONA,
-                            PersonPetClassifier.LABEL_PET,
-                        ) and conf > best_conf:
+                        if (
+                            label
+                            in (
+                                PersonPetClassifier.LABEL_PERSONA,
+                                PersonPetClassifier.LABEL_PET,
+                            )
+                            and conf > best_conf
+                        ):
                             best = result
                             best_conf = conf
             finally:
@@ -1726,16 +1730,12 @@ class MotionDetector:
                             self.last_motion_at_display = now_dt.strftime("%Y-%m-%d %H:%M:%S")
                             ts = now_dt.strftime("%Y%m%d_%H%M%S")
                             self.last_capture_saved_at = now
-                            first_confirmed = (
-                                self.trigger_streak == self.config["trigger_frames"]
-                            )
+                            first_confirmed = self.trigger_streak == self.config["trigger_frames"]
                             if first_confirmed:
                                 deferred.append(
                                     (
                                         True,
-                                        lambda f=frame, t=ts: self._task_open_and_save_frame(
-                                            f, t
-                                        ),
+                                        lambda f=frame, t=ts: self._task_open_and_save_frame(f, t),
                                     )
                                 )
                             else:
@@ -2065,6 +2065,8 @@ class AppServices:
     monitors: dict = field(default_factory=dict)
     continuous: ContinuousRecorder | None = None
     telegram_commands: TelegramCommandBot | None = None
+    automation_engine: AutomationEngine | None = None
+    automation_registry: DeviceRegistry | None = None
 
     def camera_and_motion(self, profile_id: str):
         """Resolve the (camera, motion) pair for a profile: active main pair or a monitor."""
@@ -2104,6 +2106,39 @@ class AppServices:
             runtime.camera.apply_runtime_config(updates)
             runtime.motion.apply_runtime_config(updates)
             # monitored cameras have no PTZ controller
+
+    def reload_automation(self) -> None:
+        """Ricostruisce DeviceRegistry + AutomationEngine e li ri-aggancia a tutti i MotionDetector.
+
+        Thread-safe: _automation_reload_lock serializza ricostruzioni concorrenti.
+        L'assegnazione su MotionDetector è atomica in CPython (GIL).
+        Il vecchio ActionDispatcher daemon drains silenziosamente senza stop esplicito.
+        """
+        with _automation_reload_lock:
+            try:
+                registry = _build_registry()
+                engine = _build_automation()
+                self.automation_registry = registry
+                self.automation_engine = engine
+                self.motion.automation = engine
+                for runtime in self.monitors.values():
+                    runtime.motion.automation = engine
+                logger.info(
+                    "Automazione ricaricata: %s · %d regole · %d device",
+                    "attiva" if engine is not None else "disabilitata",
+                    len(engine.rules) if engine is not None else 0,
+                    len(registry.device_names()),
+                )
+            except Exception:
+                logger.exception("Ricaricamento automazione fallito")
+
+
+def _build_registry() -> DeviceRegistry:
+    devices_path = os.getenv("AUTOMATION_DEVICES_PATH", "data/tuya_devices.json")
+    return DeviceRegistry(store_path=devices_path)
+
+
+_automation_reload_lock = threading.Lock()
 
 
 def _build_automation() -> AutomationEngine | None:
@@ -2153,6 +2188,7 @@ def build_services() -> AppServices:
     notifier = TelegramNotifier()
     recorder = EventRecorder(camera, motion_config)
     continuous = ContinuousRecorder(camera, motion_config, camera_id=active_profile_id or "default")
+    automation_registry = _build_registry()
     automation = _build_automation()
     motion = MotionDetector(
         camera, motion_config, notifier=notifier, recorder=recorder, automation=automation
@@ -2191,6 +2227,8 @@ def build_services() -> AppServices:
         runtime_config=runtime_config,
         monitors=monitors,
         continuous=continuous,
+        automation_engine=automation,
+        automation_registry=automation_registry,
     )
     services.telegram_commands = TelegramCommandBot(services)
     services.telegram_commands.start()
