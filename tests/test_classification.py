@@ -1,4 +1,5 @@
 import unittest
+from unittest import mock
 
 import numpy as np
 
@@ -6,7 +7,47 @@ from classification import (
     ClassificationResult,
     MobileNetSsdDetectorBackend,
     PersonPetClassifier,
+    _endpoint_targets_metadata,
 )
+
+
+def _fake_getaddrinfo(*ips):
+    """Costruisce un finto getaddrinfo che risolve a una lista di IP fissi."""
+
+    def _resolver(host, port, *args, **kwargs):
+        return [(2, 1, 6, "", (ip, 0)) for ip in ips]
+
+    return _resolver
+
+
+class CloudEndpointSsrfGuardTests(unittest.TestCase):
+    def test_blocks_link_local_metadata(self):
+        with mock.patch("socket.getaddrinfo", _fake_getaddrinfo("169.254.169.254")):
+            self.assertTrue(_endpoint_targets_metadata("http://metadata.example/latest"))
+
+    def test_blocks_ipv4_mapped_link_local(self):
+        with mock.patch("socket.getaddrinfo", _fake_getaddrinfo("::ffff:169.254.169.254")):
+            self.assertTrue(_endpoint_targets_metadata("http://sneaky.example/"))
+
+    def test_blocks_when_any_resolved_ip_is_link_local(self):
+        with mock.patch("socket.getaddrinfo", _fake_getaddrinfo("93.184.216.34", "169.254.0.1")):
+            self.assertTrue(_endpoint_targets_metadata("http://rebind.example/"))
+
+    def test_allows_public_and_private(self):
+        with mock.patch("socket.getaddrinfo", _fake_getaddrinfo("93.184.216.34")):
+            self.assertFalse(_endpoint_targets_metadata("https://api.example.com/classify"))
+        with mock.patch("socket.getaddrinfo", _fake_getaddrinfo("192.168.1.50")):
+            self.assertFalse(_endpoint_targets_metadata("http://192.168.1.50:8080/"))
+
+    def test_fail_closed_on_resolve_error(self):
+        def _boom(*a, **k):
+            raise OSError("dns down")
+
+        with mock.patch("socket.getaddrinfo", _boom):
+            self.assertTrue(_endpoint_targets_metadata("http://unresolvable.example/"))
+
+    def test_blocks_missing_host(self):
+        self.assertTrue(_endpoint_targets_metadata("not-a-url"))
 
 
 class _FakeNet:

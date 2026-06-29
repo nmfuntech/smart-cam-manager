@@ -223,9 +223,7 @@ class MobileNetSsdDetectorBackend:
         except ValueError:
             env_margin = self.DEFAULT_PERSON_OVER_PET_MARGIN
         self.pet_priority_margin = (
-            float(pet_priority_margin)
-            if pet_priority_margin is not None
-            else env_margin
+            float(pet_priority_margin) if pet_priority_margin is not None else env_margin
         )
         self.model_name = f"mobilenet-ssd:{Path(model_path).name}"
         self.net = None
@@ -281,7 +279,9 @@ class MobileNetSsdDetectorBackend:
 
         person_score = candidates.get("person", 0.0)
         pet_labels = [label for label in ("cat", "dog") if label in candidates]
-        best_pet_label = max(pet_labels, key=lambda label: candidates[label]) if pet_labels else None
+        best_pet_label = (
+            max(pet_labels, key=lambda label: candidates[label]) if pet_labels else None
+        )
         best_pet_score = candidates[best_pet_label] if best_pet_label else 0.0
 
         if best_pet_label and person_score > 0.0:
@@ -308,12 +308,29 @@ class MobileNetSsdDetectorBackend:
         )
 
 
-def _endpoint_targets_metadata(endpoint: str) -> bool:
-    """True if the endpoint host resolves to a link-local / cloud-metadata address.
+def _is_blocked_address(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """True per gli indirizzi che un classificatore legittimo non userebbe mai.
 
-    Public endpoints and RFC1918 LAN targets (a self-hosted classifier is a valid
-    use) are allowed; 169.254.0.0/16 (incl. 169.254.169.254) and fe80::/10 — never
-    a legitimate ML service — are blocked as an SSRF guard.
+    Blocca link-local (169.254.0.0/16 incl. 169.254.169.254, e fe80::/10) — il
+    classico bersaglio dei metadata cloud — più gli indirizzi non instradabili
+    (unspecified/multicast). Le reti private RFC1918 e il loopback restano
+    ammessi: un classificatore self-hosted in LAN o su localhost è un uso valido.
+    """
+    # Normalizza l'eventuale forma IPv4-mapped (::ffff:a.b.c.d) all'IPv4 reale,
+    # così un bypass via mapping non aggira il controllo link-local.
+    mapped = getattr(addr, "ipv4_mapped", None)
+    if mapped is not None:
+        addr = mapped
+    return addr.is_link_local or addr.is_unspecified or addr.is_multicast
+
+
+def _endpoint_targets_metadata(endpoint: str) -> bool:
+    """True se l'endpoint va bloccato come potenziale bersaglio SSRF.
+
+    Fail-closed: se l'host non è presente o non è risolvibile, blocca (meglio
+    saltare una classificazione che lasciare aperta una richiesta verso un host
+    non verificabile). Controlla TUTTI gli indirizzi risolti: se anche uno solo è
+    bloccato (es. un nome che risolve a 169.254.169.254 via DNS rebinding), nega.
     """
     host = urlparse(endpoint).hostname
     if not host:
@@ -321,15 +338,19 @@ def _endpoint_targets_metadata(endpoint: str) -> bool:
     try:
         infos = socket.getaddrinfo(host, None)
     except OSError:
-        return False
+        # Fail-closed: host non risolvibile -> non procedere.
+        return True
+    saw_addr = False
     for info in infos:
         try:
             addr = ipaddress.ip_address(info[4][0])
         except ValueError:
             continue
-        if addr.is_link_local:
+        saw_addr = True
+        if _is_blocked_address(addr):
             return True
-    return False
+    # Nessun indirizzo valido estratto -> fail-closed.
+    return not saw_addr
 
 
 class CloudBackend:
