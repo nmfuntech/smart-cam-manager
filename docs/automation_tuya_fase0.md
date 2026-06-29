@@ -11,8 +11,8 @@ locale usa per controllarlo senza cloud:
 | `ip` | indirizzo del device in LAN | scan tinytuya |
 | `version` | versione protocollo Tuya (3.1/3.3/3.4/3.5) | scan tinytuya |
 
-Alla fine li inserisci nel registry cifrato del progetto (ultimo step) e li
-collaudi con lo script PoC.
+Alla fine li inserisci nel registry cifrato del progetto (Step 7, import
+automatico da `devices.json`) e, se vuoi, li collaudi uno per uno con lo script PoC.
 
 > **Perché serve un account cloud Tuya solo per il controllo locale?** La
 > `local_key` viene generata da Tuya e non è leggibile dal device. L'unico modo
@@ -27,6 +27,11 @@ collaudi con lo script PoC.
 - Il PC su cui giri il wizard/scan è sulla **stessa LAN/subnet** dei device
   (stesso Wi-Fi/rete; niente isolamento "guest" o VLAN separate).
 - `tinytuya` installato (già in `pyproject.toml`): `poetry install`.
+
+> **Comandi copiabili:** tutti i comandi `poetry run …` sotto sono su **una riga
+> sola** (niente `\` a fine riga: in PowerShell dà errore). Funzionano uguale su
+> Windows, macOS e Linux. Solo copia file e cancellazione wizard differiscono per
+> shell — vedi Step 7a e la nota sui file in chiaro.
 
 ---
 
@@ -100,8 +105,7 @@ Se un device **non compare**: vedi Troubleshooting.
 Verifica che i dati controllino davvero la lampada (accende/spegne):
 
 ```bash
-poetry run python scripts/tuya_poc.py \
-    --device-id <ID> --ip <IP> --local-key '<KEY>' --version <VER> --cycle
+poetry run python scripts/tuya_poc.py --device-id <ID> --ip <IP> --local-key '<KEY>' --version <VER> --cycle
 ```
 
 > ⚠️ **DP dell'interruttore (`--switch-dp`).** Le **prese** Tuya accendono/spengono
@@ -112,8 +116,7 @@ poetry run python scripts/tuya_poc.py \
 >
 > ```bash
 > # lampada RGBCW
-> poetry run python scripts/tuya_poc.py \
->     --device-id <ID> --ip <IP> --local-key '<KEY>' --version <VER> --switch-dp 20 --cycle
+> poetry run python scripts/tuya_poc.py --device-id <ID> --ip <IP> --local-key '<KEY>' --version <VER> --switch-dp 20 --cycle
 > ```
 >
 > Nota sul quoting: metti la `local_key` tra **apici singoli** `'...'`; se contiene
@@ -126,38 +129,100 @@ test convalida proprio il percorso che useremo.
 
 ## Step 7 — Inserisci i device nel registry cifrato del progetto
 
-Quando un device passa il PoC, salvalo nel registry (le `local_key` vengono
-cifrate at-rest in `data/tuya_devices.json`):
+Dopo wizard + scan, `devices.json` contiene già `id`, `key`, `ip` e `version` per
+ogni device raggiungibile in LAN. Lo script di import li copia nel registry cifrato
+(`data/tuya_devices.json`); le `local_key` restano cifrate at-rest (prefisso `enc::`).
+
+### 7a — Mappa i nomi Smart Life → nomi logici
+
+I nomi nell'app (es. `Presa - Caffè`) vanno tradotti in identificatori per
+`rules.yaml` (es. `presa_caffe`: solo minuscole, cifre, underscore).
+
+Copia l'esempio e adattalo:
 
 ```bash
-poetry run python -c "
-from automation.registry import DeviceRegistry
-r = DeviceRegistry()
-print(r.save_device({
-    'name': 'luce_ingresso',      # nome logico: lo userai in rules.yaml
-    'driver': 'tuya_lan',
-    'device_id': '<ID>',
-    'ip': '<IP>',
-    'local_key': '<KEY>',
-    'version': 3.3,
-    'switch_dp': 20,              # 20 = lampade RGBCW; ometti/1 per le prese
-}))
-"
+# macOS / Linux
+cp config/automation/tuya_device_names.example.yaml config/automation/tuya_device_names.yaml
 ```
 
-Ripeti per ogni lampada/presa, cambiando `name`. Verifica:
+```powershell
+# Windows (PowerShell) — oppure: cp … (cp è alias di Copy-Item)
+Copy-Item config/automation/tuya_device_names.example.yaml config/automation/tuya_device_names.yaml
+```
+
+Modifica `config/automation/tuya_device_names.yaml` con i tuoi device. Per vedere i
+nomi esatti in Smart Life:
 
 ```bash
-poetry run python -c "from automation.registry import DeviceRegistry; print(DeviceRegistry().list_devices())"
+poetry run python -m tinytuya list
+```
+
+### 7b — Import automatico (consigliato)
+
+Anteprima (non scrive nulla):
+
+```bash
+poetry run python scripts/tuya_import_registry.py --map config/automation/tuya_device_names.yaml --dry-run
+```
+
+Import reale (upsert: aggiorna device già presenti, aggiunge i nuovi):
+
+```bash
+poetry run python scripts/tuya_import_registry.py --map config/automation/tuya_device_names.yaml
+```
+
+Oppure **scan + import** in un solo comando (utile quando cambiano IP o aggiungi
+device):
+
+```bash
+poetry run python scripts/tuya_import_registry.py --scan --map config/automation/tuya_device_names.yaml
+```
+
+Lo script:
+- legge `devices.json` (e `snapshot.json` per dedurre `switch_dp`: `20` lampade
+  RGBCW, `1` prese);
+- **salta** i device senza IP (offline / non scansionati);
+- salva cifrato via `DeviceRegistry`.
+
+Import parziale (solo alcuni device):
+
+```bash
+poetry run python scripts/tuya_import_registry.py --only presa_auto --only presa_dj --map config/automation/tuya_device_names.yaml
+```
+
+Verifica:
+
+```bash
+poetry run python -c "from dotenv import load_dotenv; load_dotenv(); from blackframe.automation.registry import DeviceRegistry; print(DeviceRegistry().list_devices())"
 ```
 
 (le `local_key` appaiono come `***`: è corretto, sono cifrate su disco).
 
+> ⚠️ Carica sempre `.env` (o riavvia l'app) prima di toccare il registry: la
+> chiave di cifratura deve combaciare con quella usata al salvataggio.
+
 Infine **cancella** i file in chiaro generati dal wizard:
 
 ```bash
+# macOS / Linux
 rm -f devices.json tuyadevices.json snapshot.json
 ```
+
+```powershell
+# Windows (PowerShell)
+Remove-Item devices.json, tuyadevices.json, snapshot.json -ErrorAction SilentlyContinue
+```
+
+### 7c — Import manuale (alternativa)
+
+Per un singolo device (dopo PoC), preferisci l'import automatico con `--only`.
+In alternativa, da terminale:
+
+```bash
+poetry run python -c "from dotenv import load_dotenv; load_dotenv(); from blackframe.automation.registry import DeviceRegistry as R; print(R().save_device({'name':'luce_ingresso','driver':'tuya_lan','device_id':'<ID>','ip':'<IP>','local_key':'<KEY>','version':3.3,'switch_dp':20}))"
+```
+
+(`switch_dp`: `20` lampade RGBCW, `1` prese.)
 
 ---
 
@@ -169,8 +234,11 @@ rm -f devices.json tuyadevices.json snapshot.json
 - **PoC dà errore di connessione/decrypt**: `--version` sbagliata (riprova col
   valore esatto dello scan) o `local_key` non aggiornata (ri-esegui il wizard).
 - **`local_key` cambiata all'improvviso**: ruota ogni volta che togli/ri-accoppi
-  il device o ri-linki l'app account. Ri-esegui wizard e aggiorna il registry
-  (basta ri-lanciare `save_device` con la nuova key).
+  il device o ri-linki l'app account. Ri-esegui wizard + scan, poi rilancia
+  `scripts/tuya_import_registry.py` (upsert automatico).
+- **Registry vuoto o "non decifrabile"**: hai lanciato comandi senza caricare
+  `.env` (chiave di cifratura diversa). Usa `load_dotenv()` negli script o
+  riavvia l'app; in caso estremo ripopola con import da `devices.json`.
 - **Errore di permesso nel wizard**: mancano le API dello Step 2, o il Data
   Center non combacia con la regione dell'account Smart Life.
 - **IP che cambia nel tempo**: assegna ai device un **IP statico** o una

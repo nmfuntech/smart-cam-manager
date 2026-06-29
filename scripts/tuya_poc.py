@@ -7,8 +7,7 @@ device sulla rete locale. Riusa automation.devices.TuyaLanDevice, così collaudi
 esattamente il codice che userà l'automazione, non un percorso alternativo.
 
 Esempi:
-    poetry run python scripts/tuya_poc.py \\
-        --device-id bfa1b2c3... --ip 192.168.1.10 --local-key abcd1234 --version 3.4 --cycle
+    poetry run python scripts/tuya_poc.py --device-id bfa1b2c3... --ip 192.168.1.10 --local-key abcd1234 --version 3.4 --cycle
 
     # solo accendere / solo spegnere
     poetry run python scripts/tuya_poc.py ... --on

@@ -1,0 +1,14 @@
+# Mappa nomi Smart Life → nomi logici usati in rules.yaml e nel registry.
+# Copia in tuya_device_names.yaml e adatta (il file .yaml locale non va in git se preferisci).
+#
+#   cp config/automation/tuya_device_names.example.yaml config/automation/tuya_device_names.yaml
+#
+# Import:
+#   poetry run python scripts/tuya_import_registry.py --map config/automation/tuya_device_names.yaml
+
+"Presa - Caffè": presa_caffe
+"Presa - Auto": presa_auto
+"Presa - Dj": presa_dj
+"Presa - Dev": presa_dev
+"1-Alantop Smart Desk Lamp - RGBCW": lampada_soggiorno
+"2-Alantop Smart Desk Lamp - RGBCW 2": lampada_ingresso
