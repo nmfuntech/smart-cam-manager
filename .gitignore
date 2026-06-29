@@ -14,6 +14,19 @@ data/.test-camera-profiles.key
 # Other runtime state in data/ (guest chat IDs, PTZ presets) is private too.
 data/telegram_guests.json
 data/presets.json
+# Smart-home automation: registry device cifrato + keyfile Fernet dedicato.
+data/tuya_devices.json
+data/.tuya_devices.key
+data/.tuya_devices*.key
+data/tuya_devices.json.unreadable.*.bak
+
+# Tuya wizard/scan outputs — contengono local_key e/o credenziali cloud IN CHIARO.
+# Mai versionarli (vedi docs/automation_tuya_fase0.md, Step 7: cancellarli dopo l'uso).
+tinytuya.json
+devices.json
+tuyadevices.json
+snapshot.json
+tuya-raw.json
 
 # Local tooling
 .claude/

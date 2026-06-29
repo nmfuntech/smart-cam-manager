@@ -182,6 +182,7 @@ class DeviceRegistry:
             "local_key": str(payload.get("local_key") or "").strip(),
             "access_secret": str(payload.get("access_secret") or "").strip(),
             "version": float(payload.get("version") or 3.3),
+            "switch_dp": int(payload.get("switch_dp") or 1),
         }
         if driver == "tuya_lan" and not (device["device_id"] and device["ip"]):
             raise DeviceError(f"Device Tuya '{name}': device_id e ip obbligatori")

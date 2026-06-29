@@ -167,6 +167,13 @@ class RuntimeConfigManager:
             "CONTINUOUS_RECORD_DIR": ConfigField(
                 "CONTINUOUS_RECORD_DIR", "str", internal_only=True
             ),
+            "AUTOMATION_ENABLED": ConfigField("AUTOMATION_ENABLED", "bool"),
+            "AUTOMATION_RULES_PATH": ConfigField(
+                "AUTOMATION_RULES_PATH", "str", internal_only=True
+            ),
+            "AUTOMATION_DEVICES_PATH": ConfigField(
+                "AUTOMATION_DEVICES_PATH", "str", internal_only=True
+            ),
         }
 
     def get_public_config(self) -> dict:

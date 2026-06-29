@@ -13,6 +13,7 @@ from dotenv import load_dotenv
 from flask import Flask
 
 from auth import auth_bp, configure_auth
+from automation import ActionDispatcher, AutomationEngine, DeviceRegistry, EventContext, load_rules
 from classification import PersonPetClassifier
 from continuous_recording import ContinuousRecorder
 from motion_events import MotionEventStore
@@ -907,13 +908,21 @@ class PTZController:
 
 
 class MotionDetector:
-    def __init__(self, camera_stream: CameraStream, config: dict, notifier=None, recorder=None):
+    def __init__(
+        self,
+        camera_stream: CameraStream,
+        config: dict,
+        notifier=None,
+        recorder=None,
+        automation=None,
+    ):
         self.camera_stream = camera_stream
         self.config = config
         self.event_store = MotionEventStore(config)
         self.classifier = PersonPetClassifier.from_config(config)
         self.notifier = notifier
         self.recorder = recorder
+        self.automation = automation
         self._classified_events: set[str] = set()
         self._notified_events: set[str] = set()
         self._stopped = threading.Event()
@@ -1136,12 +1145,27 @@ class MotionDetector:
             return None
         store = self._get_event_store()
         resolved_id = store.rename_event_with_label(event_id, label)
+        self._emit_automation(resolved_id, label, video_path)
         if not should_notify or self.notifier is None:
             return resolved_id
         if not self._should_notify_for(classification):
             return resolved_id
         self._deliver_event_notification(resolved_id, classification, video_path)
         return resolved_id
+
+    def _emit_automation(self, event_id: str | None, label: str, video_path: Path | None) -> None:
+        automation = getattr(self, "automation", None)
+        if automation is None or not event_id:
+            return
+        try:
+            ctx = EventContext(
+                event_id=event_id,
+                category=label,
+                video_path=str(video_path) if video_path else None,
+            )
+            automation.emit(ctx)
+        except Exception:
+            logger.exception("Automation emit fallito per evento %s", event_id)
 
     def _deliver_event_notification(
         self,
@@ -1772,6 +1796,32 @@ class AppServices:
             # monitored cameras have no PTZ controller
 
 
+def _build_automation() -> AutomationEngine | None:
+    """Costruisce AutomationEngine + ActionDispatcher se AUTOMATION_ENABLED=true.
+
+    Ritorna None se disabilitato o se il caricamento fallisce: il chiamante non
+    deve mai crashare per un errore di configurazione dell'automazione.
+    """
+    if os.getenv("AUTOMATION_ENABLED", "false").lower() != "true":
+        return None
+    try:
+        rules_path = os.getenv("AUTOMATION_RULES_PATH", "automation/rules.yaml")
+        devices_path = os.getenv("AUTOMATION_DEVICES_PATH", "data/tuya_devices.json")
+        registry = DeviceRegistry(store_path=devices_path)
+        rules = load_rules(rules_path, known_devices=set(registry.device_names()))
+        dispatcher = ActionDispatcher(registry)
+        engine = AutomationEngine(rules, dispatcher=dispatcher)
+        logger.info(
+            "Automazione abilitata: %d regola/e, %d device",
+            len(rules),
+            len(registry.device_names()),
+        )
+        return engine
+    except Exception:
+        logger.exception("Avvio automazione fallito — layer disabilitato")
+        return None
+
+
 def build_services() -> AppServices:
     harden_captures_permissions()
     runtime_config = RuntimeConfigManager()
@@ -1793,7 +1843,10 @@ def build_services() -> AppServices:
     notifier = TelegramNotifier()
     recorder = EventRecorder(camera, motion_config)
     continuous = ContinuousRecorder(camera, motion_config, camera_id=active_profile_id or "default")
-    motion = MotionDetector(camera, motion_config, notifier=notifier, recorder=recorder)
+    automation = _build_automation()
+    motion = MotionDetector(
+        camera, motion_config, notifier=notifier, recorder=recorder, automation=automation
+    )
     RetentionJanitor(motion)
     continuous.start()
     features = FeatureServices(

@@ -87,6 +87,19 @@ class BuildDeviceTests(unittest.TestCase):
             build_device({"name": "luce", "driver": "tuya_lan", "device_id": "abc"})
 
 
+class _FakeTuyaClient:
+    """Client tinytuya finto: registra il DP passato a turn_on/turn_off."""
+
+    def __init__(self):
+        self.calls: list[tuple[str, int]] = []
+
+    def turn_on(self, switch=1, nowait=False):
+        self.calls.append(("turn_on", switch))
+
+    def turn_off(self, switch=1, nowait=False):
+        self.calls.append(("turn_off", switch))
+
+
 class TuyaLanDeviceLazyImportTests(unittest.TestCase):
     """Il driver non deve importare tinytuya finché non lo si usa davvero."""
 
@@ -94,6 +107,41 @@ class TuyaLanDeviceLazyImportTests(unittest.TestCase):
         # La costruzione non tocca tinytuya: nessun errore anche senza la dep.
         device = TuyaLanDevice("luce", "abc", "192.168.1.10", "key")
         self.assertEqual(device.name, "luce")
+
+
+class TuyaLanDeviceSwitchDpTests(unittest.TestCase):
+    """``switch_dp`` instrada on/off sul datapoint giusto (1 prese, 20 lampade)."""
+
+    def _device_with_fake_client(self, switch_dp):
+        device = TuyaLanDevice("d", "abc", "192.168.1.10", "key", switch_dp=switch_dp)
+        fake = _FakeTuyaClient()
+        device._client = fake  # bypassa _get_client (niente tinytuya)
+        return device, fake
+
+    def test_default_switch_dp_is_one(self):
+        device, fake = self._device_with_fake_client(switch_dp=1)
+        device.turn_on()
+        device.turn_off()
+        self.assertEqual(fake.calls, [("turn_on", 1), ("turn_off", 1)])
+
+    def test_lamp_uses_dp_twenty(self):
+        device, fake = self._device_with_fake_client(switch_dp=20)
+        device.turn_on()
+        device.turn_off()
+        self.assertEqual(fake.calls, [("turn_on", 20), ("turn_off", 20)])
+
+    def test_build_device_passes_switch_dp(self):
+        device = build_device(
+            {
+                "name": "lampada",
+                "driver": "tuya_lan",
+                "device_id": "abc",
+                "ip": "192.168.1.10",
+                "local_key": "k",
+                "switch_dp": 20,
+            }
+        )
+        self.assertEqual(device._switch_dp, 20)
 
 
 class DeviceRegistryTests(unittest.TestCase):
@@ -127,6 +175,23 @@ class DeviceRegistryTests(unittest.TestCase):
         self.assertEqual(config["device_id"], "dev123")
         self.assertEqual(config["local_key"], "local-secret")
         self.assertEqual(config["version"], 3.4)
+
+    def test_switch_dp_roundtrips(self):
+        self.registry.save_device(
+            {
+                "name": "lampada",
+                "driver": "tuya_lan",
+                "device_id": "dev123",
+                "ip": "192.168.1.10",
+                "local_key": "k",
+                "switch_dp": 20,
+            }
+        )
+        self.assertEqual(self.registry.get_config("lampada")["switch_dp"], 20)
+
+    def test_switch_dp_defaults_to_one(self):
+        self._save_lamp()
+        self.assertEqual(self.registry.get_config("luce_ingresso")["switch_dp"], 1)
 
     def test_secret_encrypted_at_rest(self):
         self._save_lamp(local_key="top-secret")

@@ -58,6 +58,7 @@ class TuyaLanDevice:
         local_key: str,
         version: float = 3.3,
         socket_timeout: float = DEFAULT_SOCKET_TIMEOUT,
+        switch_dp: int = 1,
     ) -> None:
         if not device_id or not ip or not local_key:
             raise DeviceError(f"Device Tuya '{name}' incompleto: servono device_id, ip e local_key")
@@ -67,6 +68,11 @@ class TuyaLanDevice:
         self._local_key = local_key
         self._version = float(version or 3.3)
         self._socket_timeout = float(socket_timeout)
+        # DP (datapoint) dell'interruttore on/off. Le prese Tuya usano il DP 1
+        # (default OutletDevice); le lampade RGBCW Alantop usano il DP 20
+        # (``switch_led``). Configurabile per device così ``turn_on``/``turn_off``
+        # funzionano per entrambi senza cambiare le regole.
+        self._switch_dp = int(switch_dp or 1)
         self._client = None
 
     def _get_client(self):
@@ -91,11 +97,11 @@ class TuyaLanDevice:
             raise DeviceError(f"Device Tuya '{name}': {action} fallita ({response.get('Error')})")
 
     def turn_on(self) -> None:
-        response = self._get_client().turn_on()
+        response = self._get_client().turn_on(switch=self._switch_dp)
         self._check_response(response, self.name, "turn_on")
 
     def turn_off(self) -> None:
-        response = self._get_client().turn_off()
+        response = self._get_client().turn_off(switch=self._switch_dp)
         self._check_response(response, self.name, "turn_off")
 
     def set_state(self, state: dict) -> None:
@@ -160,6 +166,7 @@ def build_device(config: dict) -> SmartDevice:
             ip=str(config.get("ip") or ""),
             local_key=str(config.get("local_key") or ""),
             version=float(config.get("version") or 3.3),
+            switch_dp=int(config.get("switch_dp") or 1),
         )
     if driver == DRIVER_MOCK:
         return MockDevice(name, fail=bool(config.get("fail", False)))
