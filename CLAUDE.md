@@ -54,7 +54,7 @@ All configuration is via environment variables. Required at startup: `APP_ADMIN_
 - `MOTION_BLUR_SIZE` is silently incremented to the next odd number if even — don't treat the env value as canonical.
 - `save_frame()` returns `(None, None)` when `save_frames=false`; callers must check.
 - Recordings: OpenCV often lacks an H.264 encoder and writes mp4v (not browser-playable). `finalize_recording(transcode=True)` re-encodes event & on-demand clips to H.264 via ffmpeg; continuous segments stay mp4v. Needs `ffmpeg`/`ffprobe` on PATH.
-- **Windows**: OpenCV's bundled OpenH264 DLL is broken (`Incorrect library version loaded`); recording uses mp4v only and relies on ffmpeg transcode for browser playback. Install ffmpeg with `winget install Gyan.FFmpeg` or `make install-windows`. Run `make check-prerequisites` after install.
+- **Windows**: OpenCV's bundled OpenH264 DLL is broken (`Incorrect library version loaded`); recording uses mp4v only and relies on ffmpeg transcode for browser playback. Install ffmpeg with `winget install Gyan.FFmpeg` or `.\blackframe.ps1 install-windows`. Run `.\blackframe.ps1 check-prerequisites` after install. On Windows use `blackframe.ps1` instead of `make`. Build installer: `.\blackframe.ps1 build-installer` (requires Inno Setup 6).
 - No database — all state is files + in-memory in one process. Gunicorn must stay single-worker (`deploy/gunicorn.conf.py`); extra workers spawn duplicate camera/motion threads and corrupt event dirs.
 
 ## Git

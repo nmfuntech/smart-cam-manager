@@ -5,7 +5,7 @@ ifeq ($(MINIMAL),1)
 SETUP_FLAGS += --minimal
 endif
 
-.PHONY: setup install lock run serve hash-password fetch-model check-prerequisites install-windows install-ubuntu test lint lint-fix audit clean bf help
+.PHONY: setup install lock run serve hash-password fetch-model check-prerequisites install-windows install-ubuntu build-windows-installer test lint lint-fix audit clean bf help
 
 help:
 	@echo "Targets:"
@@ -18,7 +18,8 @@ help:
 	@echo "  make hash-password - generate an APP_ADMIN_PASSWORD_HASH (prompts for password)"
 	@echo "  make fetch-model   - download the MobileNet-SSD detection model into models/"
 	@echo "  make check-prerequisites - verify ffmpeg, models and .env tuning"
-	@echo "  make install-windows - install on Windows mini PC (PowerShell script)"
+	@echo "  make install-windows - wizard installazione Windows mini PC (PowerShell)"
+	@echo "  make build-windows-installer - crea installer Inno Setup (solo Windows)"
 	@echo "  make install-ubuntu - install on Ubuntu (wraps scripts/install_ubuntu.sh)"
 	@echo "  make test          - run unit tests"
 	@echo "  make lint          - run ruff (E/F/I, line-length 100)"
@@ -52,7 +53,13 @@ check-prerequisites:
 	$(PYTHON) scripts/check_prerequisites.py
 
 install-windows:
-	powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install_windows.ps1 -TuneMiniPc
+	powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install_windows.ps1
+
+env-example-windows:
+	$(PYTHON) scripts/env_profiles.py --write-windows-example
+
+build-windows-installer:
+	powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build_windows_installer.ps1
 
 bf:
 	$(PYTHON) scripts/bf.py $(ARGS)

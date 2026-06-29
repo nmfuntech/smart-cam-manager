@@ -11,6 +11,7 @@ from urllib.parse import quote, urlparse
 
 import cv2
 from dotenv import load_dotenv
+from scripts.runtime_paths import configure_runtime_environment
 from flask import Flask
 
 from auth import auth_bp, configure_auth
@@ -32,7 +33,7 @@ from service_layer import (
 )
 from telegram_commands import TelegramCommandBot
 
-load_dotenv()
+configure_runtime_environment()
 logger = logging.getLogger(__name__)
 
 # Privacy-at-rest: surveillance footage is the most sensitive asset here. Force a

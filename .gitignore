@@ -32,6 +32,8 @@ tuya-raw.json
 
 # Local tooling
 .claude/
+build/
+dist/
 
 # IDE/OS
 .DS_Store

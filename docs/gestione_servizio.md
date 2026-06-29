@@ -77,7 +77,18 @@ Su Windows `gunicorn` **non** è disponibile: si usa `waitress` tramite
 `deploy/serve_waitress.py`, registrato come **servizio** con
 [NSSM](https://nssm.cc/) (così parte al boot e si riavvia da solo).
 
-**Preparazione (una tantum):**
+**Installazione guidata (consigliata):**
+
+```powershell
+cd C:\percorso\smart-cam-manager
+Set-ExecutionPolicy -Scope Process Bypass
+.\scripts\install_windows.ps1
+```
+
+Il wizard installa prerequisiti, configura `.env` ottimizzato per mini PC, scarica NSSM
+se mancante e registra il servizio. Alternativa: Task Scheduler o avvio manuale.
+
+**Preparazione manuale (una tantum):**
 ```powershell
 # nella cartella dell'app
 poetry install --with windows

@@ -18,7 +18,11 @@ from werkzeug.security import generate_password_hash
 from scripts.env_profiles import active_platform_profile, format_env_value
 
 DEFAULT_ENV_PATH = Path(".env")
-EXAMPLE_ENV_PATH = Path(".env.example")
+EXAMPLE_ENV_PATH = (
+    Path(".env.windows-minipc.example")
+    if sys.platform == "win32" and Path(".env.windows-minipc.example").exists()
+    else Path(".env.example")
+)
 DEFAULT_CAPTURES_PATH = Path("captures/motion")
 GENERATE_COMMANDS = {"g", "gen", "generate", "/g", "/generate"}
 LOCAL_BIND_HOSTS = {"127.0.0.1", "localhost", "::1"}
@@ -779,12 +783,19 @@ def main() -> int:
             print(f"- {key}: {value}")
     print("")
     print("Prossimi passi:")
-    print("- make install")
-    print("- make fetch-model          # modelli classificazione persona/pet")
+    print("- poetry install  (oppure: .\\blackframe.ps1 install)")
+    print("- poetry run python scripts/fetch_model.py")
     if sys.platform == "win32":
         print("- installa ffmpeg (winget install Gyan.FFmpeg) e riapri il terminale")
+        print("- .\\blackframe.ps1 install-windows   # wizard completo mini PC")
+    else:
+        print("- make install")
+        print("- make fetch-model")
     print("- poetry run python scripts/check_prerequisites.py")
-    print("- make run")
+    if sys.platform == "win32":
+        print("- .\\blackframe.ps1 serve")
+    else:
+        print("- make run")
     print("- apri http://127.0.0.1:8000/login")
     return 0
 

@@ -115,6 +115,69 @@ def apply_profile(path: Path, profile_name: str) -> list[str]:
     return patch_env_file(path, profile)
 
 
+def load_env_values_from_text(text: str) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        match = _ENV_LINE.match(raw_line)
+        if not match:
+            continue
+        key = match.group(2)
+        value = match.group(3).strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+            quote = value[0]
+            value = value[1:-1]
+            if quote == '"':
+                value = bytes(value, "utf-8").decode("unicode_escape")
+        values[key] = value
+    return values
+
+
+def build_example_content(base_path: Path, profile: dict[str, str]) -> str:
+    """Applica un profilo di tuning a .env.example preservando commenti e ordine."""
+    if not base_path.is_file():
+        raise FileNotFoundError(base_path)
+    merged = load_env_values_from_text(base_path.read_text(encoding="utf-8"))
+    merged.update(profile)
+    out: list[str] = []
+    for raw_line in base_path.read_text(encoding="utf-8").splitlines():
+        if not raw_line.strip() or raw_line.strip().startswith("#"):
+            out.append(raw_line)
+            continue
+        match = _ENV_LINE.match(raw_line)
+        if match and match.group(2) in merged:
+            key = match.group(2)
+            out.append(f"{key}={format_env_value(merged[key])}")
+        else:
+            out.append(raw_line)
+    return "\n".join(out).rstrip() + "\n"
+
+
+def write_windows_minipc_example(
+    base_path: Path = Path(".env.example"),
+    output_path: Path = Path(".env.windows-minipc.example"),
+) -> Path:
+    header = [
+        "# Template ottimizzato per mini PC Windows.",
+        "# Copia in .env e completa credenziali/segreti, oppure usa:",
+        "#   .\\scripts\\install_windows.ps1",
+        "# Il wizard applica automaticamente questo profilo di tuning.",
+        "",
+    ]
+    body = build_example_content(base_path, MINI_PC_WINDOWS)
+    # Sostituisce il blocco header iniziale di .env.example con quello Windows.
+    lines = body.splitlines()
+    first_key_idx = next(
+        (idx for idx, line in enumerate(lines) if _ENV_LINE.match(line)),
+        0,
+    )
+    content = "\n".join(header + lines[first_key_idx:]).rstrip() + "\n"
+    output_path.write_text(content, encoding="utf-8")
+    return output_path
+
+
 def main(argv: list[str] | None = None) -> int:
     import argparse
 
@@ -137,7 +200,19 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Elenca i profili disponibili",
     )
+    parser.add_argument(
+        "--write-windows-example",
+        metavar="PATH",
+        nargs="?",
+        const=".env.windows-minipc.example",
+        help="Genera .env.windows-minipc.example da .env.example + profilo mini-pc-windows",
+    )
     args = parser.parse_args(argv)
+
+    if args.write_windows_example is not None:
+        out = write_windows_minipc_example(output_path=Path(args.write_windows_example))
+        print(f"Scritto {out} ({len(MINI_PC_WINDOWS)} chiavi di tuning mini PC).")
+        return 0
 
     if args.list:
         for name in sorted(PROFILES):

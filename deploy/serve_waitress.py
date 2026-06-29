@@ -26,6 +26,11 @@ _ROOT = Path(__file__).resolve().parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
+# Must run before `from app import app` so ProgramData/.env is loaded on installed builds.
+from scripts.runtime_paths import configure_runtime_environment
+
+configure_runtime_environment()
+
 from waitress import serve
 
 from app import app
