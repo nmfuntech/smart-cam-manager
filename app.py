@@ -235,15 +235,27 @@ def get_stream_config() -> dict:
             value = default
         return max(value, minimum)
 
+    snapshot_online_ms = parse_int("STREAM_SNAPSHOT_INTERVAL_ONLINE_MS", 700, 100)
+    # Cadenza di encoding JPEG. Default: la più frequente tra ciò che serve al preroll
+    # (1/record_fps, così la clip resta fluida) e all'anteprima live (snapshot). Encodare
+    # più spesso di così è spreco CPU. Override esplicito con STREAM_ENCODE_INTERVAL_MS;
+    # 0 = encoda ogni frame (comportamento storico).
+    record_fps = parse_float("RECORD_FPS", 10.0, 1.0)
+    encode_interval_ms = min(snapshot_online_ms, max(1, int(1000.0 / record_fps)))
+    override_encode_ms = parse_int("STREAM_ENCODE_INTERVAL_MS", 0, 0)
+    if override_encode_ms > 0:
+        encode_interval_ms = override_encode_ms
+
     return {
         "open_timeout_sec": parse_float("RTSP_OPEN_TIMEOUT_SEC", 8.0, 1.0),
         "reconnect_backoff_max_sec": parse_float("RTSP_RECONNECT_BACKOFF_MAX_SEC", 15.0, 1.0),
-        "snapshot_interval_online_ms": parse_int("STREAM_SNAPSHOT_INTERVAL_ONLINE_MS", 700, 100),
+        "snapshot_interval_online_ms": snapshot_online_ms,
         "snapshot_interval_offline_ms": parse_int("STREAM_SNAPSHOT_INTERVAL_OFFLINE_MS", 2500, 250),
         "backlog_skip_frames": parse_int("RTSP_BACKLOG_SKIP_FRAMES", 1, 0),
         "jpeg_quality": parse_int("STREAM_JPEG_QUALITY", 85, 40),
         "max_width": parse_int("STREAM_MAX_WIDTH", 0, 0),
         "preroll_seconds": parse_float("RECORD_PREROLL_SEC", 2.0, 0.0),
+        "encode_interval_ms": encode_interval_ms,
     }
 
 
@@ -323,9 +335,22 @@ class CameraStream:
         self.jpeg_quality = int(stream_config.get("jpeg_quality", 85))
         self.max_width = int(stream_config.get("max_width", 0))
         self.preroll_seconds = float(stream_config.get("preroll_seconds", 3.0))
+        # Throttle dell'encoding JPEG: il reader legge i raw frame a piena velocità
+        # (latenza bassa + il recorder cattura dai raw), ma encoda il JPEG live solo
+        # a questa cadenza. Default = cadenza del preroll (1/record_fps) limitata
+        # all'intervallo snapshot, così live-view e preroll restano serviti senza
+        # encodare ogni frame della camera (spreco CPU sul mini PC).
+        self.encode_interval_sec = max(
+            0.0, float(stream_config.get("encode_interval_ms", 0)) / 1000.0
+        )
+        self._last_encode_at = 0.0
         self.capture = None
         self.frame = None
         self.frame_sequence = 0
+        # Sequence dei raw frame: incrementa ad ogni frame letto (il recorder vi si
+        # aggancia per catturare a piena cadenza), distinta da frame_sequence che
+        # avanza solo quando si (ri)encoda il JPEG live.
+        self.raw_sequence = 0
         self.raw_frame = None
         self.preroll = deque(maxlen=150)
         self.last_frame_at = None
@@ -449,38 +474,52 @@ class CameraStream:
                     time.sleep(self._consume_backoff())
                     continue
 
-                render_frame = frame
-                if self.max_width > 0:
-                    frame_width = frame.shape[1]
-                    if frame_width > self.max_width:
-                        scale = self.max_width / float(frame_width)
-                        resized_height = int(frame.shape[0] * scale)
-                        render_frame = cv2.resize(
-                            frame,
-                            (self.max_width, resized_height),
-                            interpolation=cv2.INTER_AREA,
-                        )
-
-                ok, buffer = cv2.imencode(
-                    ".jpg",
-                    render_frame,
-                    [int(cv2.IMWRITE_JPEG_QUALITY), self.jpeg_quality],
-                )
-                if not ok:
-                    self._record_read_failure("Encoding JPEG fallito sul frame live")
-                    continue
-
+                now = time.time()
+                # Il raw frame è aggiornato ad ogni iterazione (il recorder cattura da
+                # qui): nessuna copia, ``frame`` è un array nuovo ad ogni read e non
+                # viene mutato in seguito; i getter copiano una sola volta per il
+                # chiamante. Elimina una copia full-frame per iterazione.
                 with self.lock:
-                    self.frame = buffer.tobytes()
-                    self.frame_sequence += 1
-                    self.raw_frame = frame.copy()
-                    self.last_frame_at = time.time()
-                    self.last_success_at = self.last_frame_at
+                    self.raw_frame = frame
+                    self.raw_sequence += 1
+                    self.last_frame_at = now
+                    self.last_success_at = now
                     self.last_error = ""
                     self.last_error_stage = ""
                     self.connection_state = "online"
-                    self.preroll.append((self.last_frame_at, self.frame, self.frame_sequence))
-                    self._trim_preroll(self.last_frame_at)
+
+                # JPEG live + preroll solo a cadenza: encodare ogni frame della camera
+                # è lo spreco CPU principale (i consumer leggono molto più di rado).
+                if (
+                    self.encode_interval_sec <= 0
+                    or (now - self._last_encode_at) >= self.encode_interval_sec
+                ):
+                    render_frame = frame
+                    if self.max_width > 0:
+                        frame_width = frame.shape[1]
+                        if frame_width > self.max_width:
+                            scale = self.max_width / float(frame_width)
+                            resized_height = int(frame.shape[0] * scale)
+                            render_frame = cv2.resize(
+                                frame,
+                                (self.max_width, resized_height),
+                                interpolation=cv2.INTER_AREA,
+                            )
+
+                    ok, buffer = cv2.imencode(
+                        ".jpg",
+                        render_frame,
+                        [int(cv2.IMWRITE_JPEG_QUALITY), self.jpeg_quality],
+                    )
+                    if not ok:
+                        self._record_read_failure("Encoding JPEG fallito sul frame live")
+                        continue
+                    self._last_encode_at = now
+                    with self.lock:
+                        self.frame = buffer.tobytes()
+                        self.frame_sequence += 1
+                        self.preroll.append((now, self.frame, self.frame_sequence))
+                        self._trim_preroll(now)
                 self._reset_backoff()
             except Exception:
                 logger.exception("Errore stream video")
@@ -512,11 +551,16 @@ class CameraStream:
             return self.raw_frame.copy()
 
     def get_raw_frame_packet(self) -> tuple:
-        """Return (raw_frame copy, frame_sequence) or (None, sequence)."""
+        """Return (raw_frame copy, raw_sequence) or (None, sequence).
+
+        Usa ``raw_sequence`` (avanza ad ogni frame letto), non ``frame_sequence``
+        (avanza solo all'encode JPEG), così il recorder cattura a piena cadenza
+        anche quando l'encoding live è throttato.
+        """
         with self.lock:
             if self.raw_frame is None:
-                return None, self.frame_sequence
-            return self.raw_frame.copy(), self.frame_sequence
+                return None, self.raw_sequence
+            return self.raw_frame.copy(), self.raw_sequence
 
     def _trim_preroll(self, now: float) -> None:
         cutoff = now - self.preroll_seconds
@@ -611,6 +655,7 @@ class CameraStream:
             self.capture = None
             self.frame = None
             self.frame_sequence = 0
+            self.raw_sequence = 0
             self.raw_frame = None
             self.connection_state = "connecting"
             self.last_error = "Config stream aggiornata, reconnessione in corso..."

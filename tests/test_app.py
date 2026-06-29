@@ -289,9 +289,7 @@ class ClosedEventNotificationTests(unittest.TestCase):
         )
         self.assertEqual(len(notifier.calls), 1)
         self.assertEqual(notifier.calls[0][0], "photo")
-        self.assertTrue(
-            (Path(self.tmpdir) / "motion_event_20260624_120000__persona").is_dir()
-        )
+        self.assertTrue((Path(self.tmpdir) / "motion_event_20260624_120000__persona").is_dir())
 
     def test_finalize_sends_video_from_renamed_event_dir(self):
         detector, notifier = self._detector(prefer_video=True)
@@ -308,8 +306,10 @@ class ClosedEventNotificationTests(unittest.TestCase):
         self.assertEqual(len(notifier.calls), 1)
         self.assertEqual(notifier.calls[0][0], "video")
         sent_path = notifier.calls[0][1]["video_path"]
-        self.assertTrue(sent_path.endswith("motion_event_20260624_120000__persona\\event.mp4")
-                        or sent_path.endswith("motion_event_20260624_120000__persona/event.mp4"))
+        self.assertTrue(
+            sent_path.endswith("motion_event_20260624_120000__persona\\event.mp4")
+            or sent_path.endswith("motion_event_20260624_120000__persona/event.mp4")
+        )
         self.assertTrue(Path(sent_path).is_file())
 
     def test_mark_notified_resolves_renamed_event_dir(self):
@@ -2298,6 +2298,29 @@ class CameraStreamStateTests(unittest.TestCase):
         self.assertEqual(online["connection_state"], "online")
         self.assertEqual(online["snapshot_interval_ms"], 700)
         self.assertIsNone(online["error"] or None)
+
+    def test_raw_frame_packet_uses_raw_sequence(self):
+        # Il recorder cattura dai raw frame: get_raw_frame_packet deve restituire
+        # raw_sequence (avanza ad ogni frame), non frame_sequence (solo all'encode).
+        camera = self._build_camera_for_status_checks()
+        camera.raw_frame = [1, 2, 3]  # oggetto con .copy(); basta per il test
+        camera.raw_sequence = 42
+        camera.frame_sequence = 7
+        _frame, seq = camera.get_raw_frame_packet()
+        self.assertEqual(seq, 42)
+
+    def test_get_stream_config_encode_interval_matches_record_fps(self):
+        # encode_interval = min(snapshot, 1000/record_fps). Con fps 10 e snapshot 700 -> 100ms.
+        env = {"STREAM_SNAPSHOT_INTERVAL_ONLINE_MS": "700", "RECORD_FPS": "10"}
+        with mock.patch.dict(os.environ, env, clear=False):
+            cfg = self.app_module.get_stream_config()
+        self.assertEqual(cfg["encode_interval_ms"], 100)
+
+    def test_get_stream_config_encode_interval_override(self):
+        env = {"STREAM_ENCODE_INTERVAL_MS": "250", "RECORD_FPS": "10"}
+        with mock.patch.dict(os.environ, env, clear=False):
+            cfg = self.app_module.get_stream_config()
+        self.assertEqual(cfg["encode_interval_ms"], 250)
 
 
 class RuntimeConfigManagerTests(unittest.TestCase):
