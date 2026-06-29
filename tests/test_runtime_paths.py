@@ -8,6 +8,7 @@ from scripts import runtime_paths
 
 
 class RuntimePathsTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == "nt", "Windows-only")
     def test_installed_data_home_with_marker(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp) / "BLACKFRAME"
@@ -16,6 +17,7 @@ class RuntimePathsTests(unittest.TestCase):
             with mock.patch.dict(os.environ, {"PROGRAMDATA": tmp}, clear=False):
                 self.assertEqual(runtime_paths.installed_data_home(), home)
 
+    @unittest.skipUnless(os.name == "nt", "Windows-only")
     def test_installed_data_home_without_marker(self):
         with tempfile.TemporaryDirectory() as tmp:
             with mock.patch.dict(os.environ, {"PROGRAMDATA": tmp}, clear=False):
