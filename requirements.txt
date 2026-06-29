@@ -1,5 +1,0 @@
-opencv-python
-python-dotenv
-Flask
-onvif-zeep
-cryptography

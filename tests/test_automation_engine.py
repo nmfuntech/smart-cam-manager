@@ -5,9 +5,9 @@ import unittest
 from datetime import datetime
 from pathlib import Path
 
-from automation.engine import AutomationEngine
-from automation.events import EventContext
-from automation.rules import (
+from blackframe.automation.engine import AutomationEngine
+from blackframe.automation.events import EventContext
+from blackframe.automation.rules import (
     RuleConfigError,
     load_rules,
     minute_in_window,
@@ -306,7 +306,8 @@ class LoadRulesYamlTests(unittest.TestCase):
         self.assertEqual(load_rules(self.tmpdir / "nope.yaml"), [])
 
     def test_example_file_is_valid(self):
-        example = Path(__file__).resolve().parents[1] / "automation" / "rules.example.yaml"
+        root = Path(__file__).resolve().parents[1]
+        example = root / "config" / "automation" / "rules.example.yaml"
         rules = load_rules(example)
         self.assertTrue(any(r.name == "luce_ingresso_notturna" for r in rules))
 

@@ -10,7 +10,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from automation.events import CATEGORY_EVENT_MAP
+from .events import CATEGORY_EVENT_MAP
 
 # Eventi ammessi nel campo `on` di una regola: gli stessi che l'engine deriva da
 # EventContext.event_name. Tenere questa lista allineata a CATEGORY_EVENT_MAP.

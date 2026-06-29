@@ -521,7 +521,7 @@ main() {
       [[ -f "$PROJECT_DIR/.env" ]] || die ".env mancante: esegui prima --setup-env"
       log "Avvio app. Ctrl+C per fermare."
       cd "$PROJECT_DIR"
-      exec "$POETRY_CMD" run python app.py
+      exec "$POETRY_CMD" run python -m blackframe
     fi
   fi
 

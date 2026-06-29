@@ -11,7 +11,7 @@ from unittest import mock
 
 from cryptography.fernet import Fernet
 
-from runtime_config import RuntimeConfigManager
+from blackframe.runtime_config import RuntimeConfigManager
 
 
 def load_app_module():
@@ -34,7 +34,7 @@ def load_app_module():
     try:
         with mock.patch.dict(os.environ, env, clear=False):
             with mock.patch("threading.Thread.start", lambda self: None):
-                import app
+                import blackframe.app as app
 
                 return importlib.reload(app)
     finally:
@@ -1970,7 +1970,7 @@ class AppFactoryTests(unittest.TestCase):
 class SecurityHardeningTests(unittest.TestCase):
     def setUp(self):
         self.app_module = load_app_module()
-        import auth
+        import blackframe.auth as auth
 
         auth.rate_limiter._events.clear()
 
@@ -2085,7 +2085,7 @@ class SecurityHardeningTests(unittest.TestCase):
             clear=False,
         ):
             os.environ.pop("APP_TRUST_PROXY", None)
-            import auth
+            import blackframe.auth as auth
 
             auth.rate_limiter._events.clear()
             app = self._build_app()
@@ -2118,7 +2118,7 @@ class SecurityHardeningTests(unittest.TestCase):
 
     def test_rate_limiter_evicts_keys_above_cap(self):
         # A flood of distinct keys must not grow the dict without bound.
-        import auth
+        import blackframe.auth as auth
 
         limiter = auth.RateLimiter()
         with mock.patch.object(auth.RateLimiter, "_MAX_KEYS", 5):
@@ -2574,7 +2574,7 @@ class TelegramConfigEndpointTests(unittest.TestCase):
     def test_discover_uses_body_token(self):
         client, csrf = self._build_client([])
         with mock.patch(
-            "routes.motion.discover_telegram_chats",
+            "blackframe.routes.motion.discover_telegram_chats",
             return_value=(True, [{"chat_id": 7, "label": "Me (private)"}], None),
         ) as discover:
             response = client.post(
@@ -2658,7 +2658,7 @@ class NetworkAndCredentialHardeningTests(unittest.TestCase):
         self.assertNotIn("p@:/ss", url)
 
     def test_cloud_endpoint_metadata_guard(self):
-        import classification
+        import blackframe.classification as classification
 
         # IP literals: no DNS needed, works offline.
         self.assertTrue(classification._endpoint_targets_metadata("http://169.254.169.254/latest/"))
@@ -2680,7 +2680,7 @@ class NetworkAndCredentialHardeningTests(unittest.TestCase):
         self.assertGreater(app.config["PERMANENT_SESSION_LIFETIME"].total_seconds(), 0)
 
     def test_forwarded_for_garbage_does_not_bypass_rate_limit(self):
-        import auth
+        import blackframe.auth as auth
 
         with mock.patch.dict(
             os.environ,

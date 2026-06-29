@@ -13,7 +13,7 @@ from pathlib import Path
 
 import cv2
 
-from recording import (
+from blackframe.recording import (
     _video_duration_sec,
     finalize_recording,
     open_mp4_writer,

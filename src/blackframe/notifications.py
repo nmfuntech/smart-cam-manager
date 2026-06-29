@@ -18,7 +18,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from service_layer import _write_private_text
+from blackframe.service_layer import _write_private_text
 
 logger = logging.getLogger(__name__)
 

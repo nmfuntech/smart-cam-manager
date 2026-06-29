@@ -8,7 +8,7 @@ camera/motion/recorder threads and corrupt shared event directories.
 Concurrency for the (mostly I/O-bound: MJPEG streaming, snapshots) HTTP handlers
 is provided by threads, not workers.
 
-Start with:  poetry run gunicorn -c deploy/gunicorn.conf.py app:app
+Start with:  poetry run gunicorn -c deploy/gunicorn.conf.py blackframe.app:app
 """
 
 import os

@@ -21,9 +21,9 @@ from collections import defaultdict, deque
 from pathlib import Path
 from typing import Any
 
-from notifications import TELEGRAM_API_BASE, telegram_api_call
-from recording import record_clip
-from service_layer import _write_private_text
+from blackframe.notifications import TELEGRAM_API_BASE, telegram_api_call
+from blackframe.recording import record_clip
+from blackframe.service_layer import _write_private_text
 
 # Clip on-demand: durata di default e limite massimo (secondi).
 CLIP_DEFAULT_SEC = 10

@@ -21,12 +21,8 @@ Trova ip/version con:           python -m tinytuya scan
 import argparse
 import sys
 import time
-from pathlib import Path
 
-# Permette di lanciare lo script senza installare il pacchetto (PYTHONPATH=root).
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
-from automation.devices import DeviceError, TuyaLanDevice  # noqa: E402
+from blackframe.automation.devices import DeviceError, TuyaLanDevice
 
 
 def parse_args(argv=None) -> argparse.Namespace:

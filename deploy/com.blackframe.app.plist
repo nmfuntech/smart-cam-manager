@@ -25,7 +25,7 @@
         <string>/opt/blackframe/.venv/bin/gunicorn</string>
         <string>-c</string>
         <string>deploy/gunicorn.conf.py</string>
-        <string>app:app</string>
+        <string>blackframe.app:app</string>
     </array>
 
     <!-- Run as a dedicated non-admin user, not root. -->

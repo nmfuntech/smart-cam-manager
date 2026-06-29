@@ -23,7 +23,7 @@ import os
 import sys
 from pathlib import Path
 
-from notifications import discover_telegram_chats, send_telegram_test
+from blackframe.notifications import discover_telegram_chats, send_telegram_test
 
 DEFAULT_ENV_PATH = Path(".env")
 

@@ -38,10 +38,10 @@ lock:
 	poetry lock
 
 run:
-	$(PYTHON) app.py
+	$(PYTHON) -m blackframe
 
 serve:
-	poetry run gunicorn -c deploy/gunicorn.conf.py app:app
+	poetry run gunicorn -c deploy/gunicorn.conf.py blackframe.app:app
 
 hash-password:
 	@$(PYTHON) -c "from getpass import getpass; from werkzeug.security import generate_password_hash; pw=getpass('Password admin: '); print('\nAggiungi al .env:\nAPP_ADMIN_PASSWORD_HASH='+generate_password_hash(pw))"

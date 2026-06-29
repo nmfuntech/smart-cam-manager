@@ -9,10 +9,10 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from motion_events import MotionEventStore
-from notifications import TelegramNotifier, _DeliveryJob
-from recording import EventRecorder
-from telegram_commands import TelegramCommandBot
+from blackframe.motion_events import MotionEventStore
+from blackframe.notifications import TelegramNotifier, _DeliveryJob
+from blackframe.recording import EventRecorder
+from blackframe.telegram_commands import TelegramCommandBot
 
 
 def make_store(save_dir, **overrides):
@@ -188,7 +188,7 @@ class TelegramNotifierTests(unittest.TestCase):
             return True
 
         notifier._send = _send
-        with mock.patch("notifications._RETRY_BACKOFF_BASE_SEC", 0.05):
+        with mock.patch("blackframe.notifications._RETRY_BACKOFF_BASE_SEC", 0.05):
             self.assertTrue(notifier.notify_event("motion_event_retry", class_label="persona"))
             self._wait_deliveries(1, timeout=3.0)
         self.assertEqual(len(self.sent), 1)
@@ -198,7 +198,7 @@ class TelegramNotifierTests(unittest.TestCase):
         notifier = self._notifier(NOTIFY_MAX_ATTEMPTS="2")
         calls = {"n": 0}
         notifier._send = lambda *a, **k: calls.__setitem__("n", calls["n"] + 1) or False
-        with mock.patch("notifications._RETRY_BACKOFF_BASE_SEC", 0.05):
+        with mock.patch("blackframe.notifications._RETRY_BACKOFF_BASE_SEC", 0.05):
             notifier.notify_event("motion_event_drop", class_label="persona")
             deadline = time.time() + 3.0
             while calls["n"] < 2 and time.time() < deadline:
@@ -243,9 +243,9 @@ class TelegramNotifierTests(unittest.TestCase):
 
     def test_mute_expires(self):
         notifier = self._notifier()
-        with mock.patch("notifications.time.monotonic", return_value=1000.0):
+        with mock.patch("blackframe.notifications.time.monotonic", return_value=1000.0):
             notifier.mute(60)
-        with mock.patch("notifications.time.monotonic", return_value=1061.0):
+        with mock.patch("blackframe.notifications.time.monotonic", return_value=1061.0):
             self.assertTrue(notifier.notify_event("motion_event_1", class_label="persona"))
 
     def test_caption_includes_person_emoji(self):
@@ -522,7 +522,7 @@ class TelegramCommandBotTests(unittest.TestCase):
             Path(path).write_bytes(b"video-bytes")
             return Path(path)
 
-        with mock.patch("telegram_commands.record_clip", fake_record):
+        with mock.patch("blackframe.telegram_commands.record_clip", fake_record):
             bot._record_and_send_clip("123", 10)
 
         self.assertEqual(len(self.videos), 1)
@@ -531,7 +531,7 @@ class TelegramCommandBotTests(unittest.TestCase):
     def test_record_and_send_clip_reports_failure(self):
         bot, _ = self._bot()
 
-        with mock.patch("telegram_commands.record_clip", lambda *a, **k: None):
+        with mock.patch("blackframe.telegram_commands.record_clip", lambda *a, **k: None):
             bot._record_and_send_clip("123", 10)
 
         self.assertEqual(self.videos, [])
@@ -702,7 +702,7 @@ class RecordingConfigTests(unittest.TestCase):
         self.assertTrue(recorder.enabled)
 
     def test_subsample_timed_packets_targets_record_fps(self):
-        from recording import subsample_timed_packets
+        from blackframe.recording import subsample_timed_packets
 
         # 6 frames in 0.5s -> 6 buckets at 10 fps (one every 0.1s).
         packets = [(index * 0.1, b"jpeg", index + 1) for index in range(6)]
@@ -714,7 +714,7 @@ class RecordingConfigTests(unittest.TestCase):
     def test_write_frames_at_fps_skips_duplicate_sequences(self):
         import numpy as np
 
-        from recording import _write_frames_at_fps
+        from blackframe.recording import _write_frames_at_fps
 
         class SeqCamera:
             def __init__(self):
@@ -748,7 +748,7 @@ class RecordingConfigTests(unittest.TestCase):
             started_at=__import__("time").time(),
         )
         writer.release()
-        from recording import _video_duration_sec
+        from blackframe.recording import _video_duration_sec
 
         duration = _video_duration_sec(path) or 0.0
         # 5 unique frames/sec for 0.5s -> ~2-3 frames, not 25 duplicates of the same frame.
@@ -773,15 +773,15 @@ def _write_mp4v_clip(path: Path, frames: int = 6, size=(64, 48), fps: float = 10
 
 class OpenMp4WriterTests(unittest.TestCase):
     def test_windows_skips_avc1(self):
-        from recording import _writer_fourcc_tags
+        from blackframe.recording import _writer_fourcc_tags
 
-        with mock.patch("recording.sys.platform", "win32"):
+        with mock.patch("blackframe.recording.sys.platform", "win32"):
             self.assertEqual(_writer_fourcc_tags(), ("mp4v",))
 
     def test_non_windows_tries_avc1_first(self):
-        from recording import _writer_fourcc_tags
+        from blackframe.recording import _writer_fourcc_tags
 
-        with mock.patch("recording.sys.platform", "linux"):
+        with mock.patch("blackframe.recording.sys.platform", "linux"):
             self.assertEqual(_writer_fourcc_tags(), ("avc1", "mp4v"))
 
 
@@ -794,7 +794,7 @@ class FinalizeRecordingTests(unittest.TestCase):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def test_transcode_true_rewrites_mp4v_to_h264(self):
-        from recording import _video_codec, finalize_recording
+        from blackframe.recording import _video_codec, finalize_recording
 
         path = self.tmpdir / "clip.mp4"
         if not _write_mp4v_clip(path):
@@ -804,7 +804,7 @@ class FinalizeRecordingTests(unittest.TestCase):
         self.assertEqual(_video_codec(path), "h264")
 
     def test_transcode_false_keeps_codec(self):
-        from recording import _video_codec, finalize_recording
+        from blackframe.recording import _video_codec, finalize_recording
 
         path = self.tmpdir / "segment.mp4"
         if not _write_mp4v_clip(path):
@@ -841,7 +841,7 @@ class BitrateEstimateTests(unittest.TestCase):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def test_fallback_uses_constant_when_no_samples(self):
-        from continuous_recording import MP4V_BITS_PER_PIXEL, estimate_bitrate_bps
+        from blackframe.continuous_recording import MP4V_BITS_PER_PIXEL, estimate_bitrate_bps
 
         bitrate, calibrated = estimate_bitrate_bps(640, 360, 10, sample_dir=self.tmpdir)
         self.assertFalse(calibrated)
@@ -851,7 +851,7 @@ class BitrateEstimateTests(unittest.TestCase):
         shutil.which("ffmpeg") and shutil.which("ffprobe"), "ffmpeg/ffprobe richiesti"
     )
     def test_calibrates_from_real_segments(self):
-        from continuous_recording import estimate_bitrate_bps
+        from blackframe.continuous_recording import estimate_bitrate_bps
 
         segment = self.tmpdir / "segment_20260417_120000.mp4"
         if not _write_mp4v_clip(segment, frames=20):
@@ -863,7 +863,7 @@ class BitrateEstimateTests(unittest.TestCase):
 
 class WifiServiceTests(unittest.TestCase):
     def setUp(self):
-        from service_layer import WifiService
+        from blackframe.service_layer import WifiService
 
         self.wifi = WifiService()
 
@@ -895,7 +895,7 @@ class WifiServiceTests(unittest.TestCase):
 
 class MotionRouteIdTests(unittest.TestCase):
     def test_event_id_pattern_accepts_category_suffix(self):
-        from routes.motion import EVENT_ID_PATTERN
+        from blackframe.routes.motion import EVENT_ID_PATTERN
 
         self.assertTrue(EVENT_ID_PATTERN.fullmatch("motion_event_20260623_230013__persona"))
         self.assertTrue(EVENT_ID_PATTERN.fullmatch("motion_event_20260623_230013"))

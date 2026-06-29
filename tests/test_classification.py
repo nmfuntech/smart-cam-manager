@@ -3,7 +3,7 @@ from unittest import mock
 
 import numpy as np
 
-from classification import (
+from blackframe.classification import (
     ClassificationResult,
     MobileNetSsdDetectorBackend,
     PersonPetClassifier,

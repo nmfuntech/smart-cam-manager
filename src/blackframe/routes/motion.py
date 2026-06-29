@@ -6,10 +6,10 @@ from pathlib import Path
 
 from flask import Blueprint, Response, abort, current_app, jsonify, request, send_file
 
-from auth import ensure_csrf_token, rate_limit, require_auth, require_csrf
-from continuous_recording import estimate_bitrate_bps
-from motion_events import MotionEventStore
-from notifications import discover_telegram_chats, send_telegram_test
+from blackframe.auth import ensure_csrf_token, rate_limit, require_auth, require_csrf
+from blackframe.continuous_recording import estimate_bitrate_bps
+from blackframe.motion_events import MotionEventStore
+from blackframe.notifications import discover_telegram_chats, send_telegram_test
 
 motion_bp = Blueprint("motion", __name__)
 # A Telegram bot token is "<bot_id>:<secret>". Validate the shape before it is

@@ -21,7 +21,7 @@ import threading
 import time
 from dataclasses import dataclass
 
-from automation.engine import PlannedAction
+from .engine import PlannedAction
 
 logger = logging.getLogger(__name__)
 

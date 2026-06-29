@@ -12,8 +12,8 @@ import time
 from dataclasses import dataclass
 from datetime import datetime
 
-from automation.events import EventContext
-from automation.rules import Action, Rule, minute_in_window
+from .events import EventContext
+from .rules import Action, Rule, minute_in_window
 
 logger = logging.getLogger(__name__)
 

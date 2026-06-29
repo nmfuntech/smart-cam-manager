@@ -1,6 +1,6 @@
 from flask import Blueprint, current_app, jsonify, render_template, request
 
-from auth import rate_limit, require_auth, require_csrf
+from blackframe.auth import rate_limit, require_auth, require_csrf
 
 cameras_bp = Blueprint("cameras", __name__)
 

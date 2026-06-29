@@ -1,5 +1,5 @@
 # Esempio di regole di automazione BLACKFRAME.
-# Copia in automation/rules.yaml (o nel path AUTOMATION_RULES_PATH) e adatta.
+# Copia in config/automation/rules.yaml (o nel path AUTOMATION_RULES_PATH) e adatta.
 # I nomi 'device' devono corrispondere a quelli salvati nel registry (data/tuya_devices.json).
 #
 # Campi regola:

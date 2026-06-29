@@ -11,12 +11,13 @@ import json
 import logging
 from pathlib import Path
 
-from automation.devices import DeviceError, SmartDevice, build_device
-from service_layer import (
+from blackframe.service_layer import (
     ProfileSecretCipher,
     _set_private_permissions,
     _write_private_text,
 )
+
+from .devices import DeviceError, SmartDevice, build_device
 
 logger = logging.getLogger(__name__)
 

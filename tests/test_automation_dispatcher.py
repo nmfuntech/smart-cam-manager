@@ -3,10 +3,10 @@
 import time
 import unittest
 
-from automation.devices import DeviceError, MockDevice
-from automation.dispatcher import ActionDispatcher
-from automation.engine import PlannedAction
-from automation.rules import Action
+from blackframe.automation.devices import DeviceError, MockDevice
+from blackframe.automation.dispatcher import ActionDispatcher
+from blackframe.automation.engine import PlannedAction
+from blackframe.automation.rules import Action
 
 
 def _make_job(device: str, action: str, for_seconds: float = 0.0) -> PlannedAction:

@@ -10,20 +10,24 @@ from pathlib import Path
 from urllib.parse import quote, urlparse
 
 import cv2
-from dotenv import load_dotenv
-from scripts.runtime_paths import configure_runtime_environment
 from flask import Flask
 
-from auth import auth_bp, configure_auth
-from automation import ActionDispatcher, AutomationEngine, DeviceRegistry, EventContext, load_rules
-from classification import PersonPetClassifier
-from continuous_recording import ContinuousRecorder
-from motion_events import MotionEventStore
-from notifications import TelegramNotifier
-from recording import EventRecorder
-from routes import register_blueprints
-from runtime_config import RuntimeConfigManager
-from service_layer import (
+from blackframe.auth import auth_bp, configure_auth
+from blackframe.automation import (
+    ActionDispatcher,
+    AutomationEngine,
+    DeviceRegistry,
+    EventContext,
+    load_rules,
+)
+from blackframe.classification import PersonPetClassifier
+from blackframe.continuous_recording import ContinuousRecorder
+from blackframe.motion_events import MotionEventStore
+from blackframe.notifications import TelegramNotifier
+from blackframe.recording import EventRecorder
+from blackframe.routes import register_blueprints
+from blackframe.runtime_config import RuntimeConfigManager
+from blackframe.service_layer import (
     CameraProfileService,
     FeatureServices,
     NotificationService,
@@ -31,7 +35,8 @@ from service_layer import (
     RecordingService,
     WifiService,
 )
-from telegram_commands import TelegramCommandBot
+from blackframe.telegram_commands import TelegramCommandBot
+from scripts.runtime_paths import configure_runtime_environment
 
 configure_runtime_environment()
 logger = logging.getLogger(__name__)
@@ -1906,7 +1911,7 @@ def _build_automation() -> AutomationEngine | None:
     if os.getenv("AUTOMATION_ENABLED", "false").lower() != "true":
         return None
     try:
-        rules_path = os.getenv("AUTOMATION_RULES_PATH", "automation/rules.yaml")
+        rules_path = os.getenv("AUTOMATION_RULES_PATH", "config/automation/rules.yaml")
         devices_path = os.getenv("AUTOMATION_DEVICES_PATH", "data/tuya_devices.json")
         registry = DeviceRegistry(store_path=devices_path)
         rules = load_rules(rules_path, known_devices=set(registry.device_names()))

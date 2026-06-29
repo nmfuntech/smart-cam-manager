@@ -25,6 +25,10 @@ Lint: `make lint` (ruff, line-length 100, rules E/F/I); `make lint-fix` to autof
 
 ## Architecture
 
+Application code lives in **`src/blackframe/`** (Poetry package). User-editable config (e.g. automation rules YAML) is under **`config/`**. Runtime data: `data/`, `models/`, `captures/`. Tooling: `scripts/`, `deploy/`, `tests/`.
+
+Entrypoints: `make run` / `poetry run python -m blackframe` (dev), `make serve` / `blackframe.app:app` (prod).
+
 Three daemon threads run alongside Flask (all use `threading.Lock`, no `RLock`):
 
 - **CameraStream** — reads RTSP frames with exponential backoff reconnection. Sets global FFMPEG env vars at module load that affect all `cv2.VideoCapture` calls in the process.

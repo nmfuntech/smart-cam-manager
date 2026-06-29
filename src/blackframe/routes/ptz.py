@@ -1,6 +1,6 @@
 from flask import Blueprint, current_app, jsonify
 
-from auth import rate_limit, require_auth, require_csrf
+from blackframe.auth import rate_limit, require_auth, require_csrf
 
 ptz_bp = Blueprint("ptz", __name__)
 

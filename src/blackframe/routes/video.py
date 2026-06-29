@@ -4,7 +4,7 @@ import time
 
 from flask import Blueprint, Response, abort, current_app, redirect, render_template, url_for
 
-from auth import require_auth
+from blackframe.auth import require_auth
 
 video_bp = Blueprint("video", __name__)
 

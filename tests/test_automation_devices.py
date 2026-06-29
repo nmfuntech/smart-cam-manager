@@ -3,15 +3,15 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from automation.devices import (
+from blackframe.automation.devices import (
     DeviceError,
     MockDevice,
     SmartDevice,
     TuyaLanDevice,
     build_device,
 )
-from automation.events import EventContext
-from automation.registry import DeviceRegistry
+from blackframe.automation.events import EventContext
+from blackframe.automation.registry import DeviceRegistry
 
 
 class EventContextTests(unittest.TestCase):
