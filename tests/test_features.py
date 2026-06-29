@@ -10,7 +10,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from motion_events import MotionEventStore
-from notifications import TelegramNotifier
+from notifications import TelegramNotifier, _DeliveryJob
 from recording import EventRecorder
 from telegram_commands import TelegramCommandBot
 
@@ -107,7 +107,9 @@ class TelegramNotifierTests(unittest.TestCase):
         self._patch = mock.patch.dict(os.environ, base, clear=False)
         self._patch.start()
         self.addCleanup(self._patch.stop)
-        notifier = TelegramNotifier()
+        queue_dir = Path(tempfile.mkdtemp(prefix="tg-queue-"))
+        self.addCleanup(shutil.rmtree, queue_dir, ignore_errors=True)
+        notifier = TelegramNotifier(queue_path=queue_dir / ".telegram_queue.json")
         self.sent = []
         self.delivered: list[str] = []
 
@@ -173,6 +175,64 @@ class TelegramNotifierTests(unittest.TestCase):
         )
         self._wait_deliveries(1)
         self.assertEqual(delivered, ["ok"])
+
+    def test_failed_send_is_retried_then_delivered(self):
+        notifier = self._notifier()
+        attempts = {"n": 0}
+
+        def _send(*args, **kwargs):
+            attempts["n"] += 1
+            if attempts["n"] < 2:
+                return False  # primo tentativo: blip di rete
+            self.sent.append(("send", args))
+            return True
+
+        notifier._send = _send
+        with mock.patch("notifications._RETRY_BACKOFF_BASE_SEC", 0.05):
+            self.assertTrue(notifier.notify_event("motion_event_retry", class_label="persona"))
+            self._wait_deliveries(1, timeout=3.0)
+        self.assertEqual(len(self.sent), 1)
+        self.assertGreaterEqual(attempts["n"], 2)
+
+    def test_dropped_after_max_attempts(self):
+        notifier = self._notifier(NOTIFY_MAX_ATTEMPTS="2")
+        calls = {"n": 0}
+        notifier._send = lambda *a, **k: calls.__setitem__("n", calls["n"] + 1) or False
+        with mock.patch("notifications._RETRY_BACKOFF_BASE_SEC", 0.05):
+            notifier.notify_event("motion_event_drop", class_label="persona")
+            deadline = time.time() + 3.0
+            while calls["n"] < 2 and time.time() < deadline:
+                time.sleep(0.05)
+            time.sleep(0.3)  # garantisce che non ci sia un terzo tentativo
+        self.assertEqual(calls["n"], 2)
+        with notifier._lock:
+            self.assertEqual(notifier._pending, [])
+
+    def test_queue_persisted_and_reloaded(self):
+        notifier = self._notifier()
+        job = _DeliveryJob(
+            event_id="motion_event_persist",
+            class_label="persona",
+            image_path=None,
+            video_path=None,
+            token="token",
+            chat_id="123",
+        )
+        with notifier._lock:
+            notifier._pending.append(job)
+            notifier._persist_locked()
+        self.assertTrue(notifier._queue_path.exists())
+        # I segreti non finiscono nel file persistito.
+        self.assertNotIn("token", notifier._queue_path.read_text())
+
+        # Worker disattivato durante la ricostruzione: _pending resta stabile per l'asserzione
+        # (altrimenti il worker potrebbe drenare il job prima del check).
+        with mock.patch.object(TelegramNotifier, "_start_worker", lambda self: None):
+            restored = TelegramNotifier(queue_path=notifier._queue_path)
+        names = [j.event_id for j in restored._pending]
+        self.assertIn("motion_event_persist", names)
+        # token/chat_id riattaccati dall'env, non dal file.
+        self.assertEqual(restored._pending[0].token, "token")
 
     def test_mute_blocks_notifications(self):
         notifier = self._notifier()
@@ -678,7 +738,15 @@ class RecordingConfigTests(unittest.TestCase):
             self.skipTest("VideoWriter non disponibile")
         stop = __import__("threading").Event()
         camera = SeqCamera()
-        _write_frames_at_fps(camera, writer, (64, 48), stop, fps=5.0, max_duration=0.5, started_at=__import__("time").time())
+        _write_frames_at_fps(
+            camera,
+            writer,
+            (64, 48),
+            stop,
+            fps=5.0,
+            max_duration=0.5,
+            started_at=__import__("time").time(),
+        )
         writer.release()
         from recording import _video_duration_sec
 
@@ -829,9 +897,7 @@ class MotionRouteIdTests(unittest.TestCase):
     def test_event_id_pattern_accepts_category_suffix(self):
         from routes.motion import EVENT_ID_PATTERN
 
-        self.assertTrue(
-            EVENT_ID_PATTERN.fullmatch("motion_event_20260623_230013__persona")
-        )
+        self.assertTrue(EVENT_ID_PATTERN.fullmatch("motion_event_20260623_230013__persona"))
         self.assertTrue(EVENT_ID_PATTERN.fullmatch("motion_event_20260623_230013"))
         self.assertFalse(EVENT_ID_PATTERN.fullmatch("motion_event_20260623_230013__hacker"))
 

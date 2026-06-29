@@ -15,14 +15,29 @@ import urllib.parse
 import urllib.request
 import uuid
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
+
+from service_layer import _write_private_text
 
 logger = logging.getLogger(__name__)
 
 TELEGRAM_API_BASE = "https://api.telegram.org"
 # Limite prudente per sendVideo (Telegram accetta ~50MB; oltre ~20MB spesso fallisce).
 DEFAULT_MAX_VIDEO_BYTES = 20 * 1024 * 1024
+
+# Retry: un invio fallito (timeout/blip di rete) viene ri-accodato con backoff
+# esponenziale invece di essere scartato. Senza retry una notifica andava persa
+# per sempre al primo errore di rete — causa principale delle notifiche mancanti.
+DEFAULT_MAX_ATTEMPTS = 4
+_RETRY_BACKOFF_BASE_SEC = 5.0
+_RETRY_BACKOFF_CAP_SEC = 300.0
+
+# Coda persistita su disco (privata, 0600) così un riavvio non perde le notifiche
+# in volo. NON contiene token/chat_id (ri-letti dall'env al caricamento) né la
+# callback on_delivered: il dedup definitivo vive comunque in meta.json.
+_QUEUE_PATH = Path("data/.telegram_queue.json")
+_PERSISTED_FIELDS = ("event_id", "class_label", "image_path", "video_path", "attempts")
 
 
 @dataclass(frozen=True)
@@ -34,6 +49,10 @@ class _DeliveryJob:
     token: str
     chat_id: str
     on_delivered: Callable[[], None] | None = None
+    # Tentativi già consumati per questo job e istante monotòno prima del quale il
+    # worker non deve riprovare (backoff). not_before si azzera al reload.
+    attempts: int = 0
+    not_before: float = 0.0
 
 
 def telegram_api_call(token: str, method: str, params: dict | None = None) -> dict:
@@ -131,12 +150,18 @@ def _build_multipart(
 
 
 class TelegramNotifier:
-    def __init__(self) -> None:
+    def __init__(self, queue_path: Path | None = None) -> None:
         self._lock = threading.Lock()
         self._last_sent_at: float | None = None
         self._muted_until: float | None = None
         self._pending: list[_DeliveryJob] = []
         self._worker_running = False
+        self._queue_path = queue_path or _QUEUE_PATH
+        self._load_queue()
+        # Se ci sono notifiche ripristinate dal disco, avvia subito il worker:
+        # altrimenti resterebbero in coda finché un nuovo evento non lo accende.
+        if self._pending:
+            self._start_worker()
 
     def _max_video_bytes(self) -> int:
         try:
@@ -144,6 +169,12 @@ class TelegramNotifier:
         except ValueError:
             mb = 20.0
         return max(1, int(mb * 1024 * 1024))
+
+    def _max_attempts(self) -> int:
+        try:
+            return max(1, int(_env("NOTIFY_MAX_ATTEMPTS", str(DEFAULT_MAX_ATTEMPTS))))
+        except ValueError:
+            return DEFAULT_MAX_ATTEMPTS
 
     def _start_worker(self) -> None:
         with self._lock:
@@ -156,15 +187,24 @@ class TelegramNotifier:
         self._start_worker()
         with self._lock:
             self._pending.append(job)
+            self._persist_locked()
         return True
+
+    def _pop_ready_job_locked(self, now: float) -> _DeliveryJob | None:
+        """Estrae il primo job maturo (not_before<=now). I job in backoff restano."""
+        for index, job in enumerate(self._pending):
+            if job.not_before <= now:
+                return self._pending.pop(index)
+        return None
 
     def _delivery_worker(self) -> None:
         while True:
             if self._is_muted():
                 time.sleep(1.0)
                 continue
+            now = time.monotonic()
             with self._lock:
-                job = self._pending.pop(0) if self._pending else None
+                job = self._pop_ready_job_locked(now)
             if job is None:
                 time.sleep(0.25)
                 continue
@@ -178,29 +218,107 @@ class TelegramNotifier:
             if self._deliver(job):
                 with self._lock:
                     self._last_sent_at = time.monotonic()
+                    self._persist_locked()
                 if job.on_delivered is not None:
                     try:
                         job.on_delivered()
                     except Exception:
                         logger.exception("Callback post-invio Telegram fallito")
             else:
-                logger.warning("Invio Telegram non riuscito per %s", job.event_id)
+                self._handle_failure(job)
+
+    def _handle_failure(self, job: _DeliveryJob) -> None:
+        """Ri-accoda il job con backoff, o lo scarta definitivamente dopo MAX_ATTEMPTS."""
+        attempts = job.attempts + 1
+        if attempts >= self._max_attempts():
+            logger.error(
+                "Invio Telegram per %s fallito definitivamente dopo %d tentativi",
+                job.event_id,
+                attempts,
+            )
+            with self._lock:
+                self._persist_locked()
+            return
+        backoff = min(_RETRY_BACKOFF_BASE_SEC * (2 ** (attempts - 1)), _RETRY_BACKOFF_CAP_SEC)
+        retried = replace(job, attempts=attempts, not_before=time.monotonic() + backoff)
+        logger.warning(
+            "Invio Telegram per %s non riuscito (tentativo %d), riprovo tra %.0fs",
+            job.event_id,
+            attempts,
+            backoff,
+        )
+        with self._lock:
+            self._pending.append(retried)
+            self._persist_locked()
+
+    # --- persistenza coda ---------------------------------------------------
+
+    def _persist_locked(self) -> None:
+        """Salva la coda (senza segreti) su disco. Chiamare col lock acquisito."""
+        try:
+            payload = [
+                {field: getattr(job, field) for field in _PERSISTED_FIELDS} for job in self._pending
+            ]
+            _write_private_text(self._queue_path, json.dumps(payload))
+        except Exception:
+            logger.exception("Persistenza coda Telegram fallita")
+
+    def _load_queue(self) -> None:
+        """Ricarica la coda da disco all'avvio, riattaccando token/chat_id dall'env."""
+        if not self._queue_path.exists():
+            return
+        token = self._bot_token()
+        chat_id = self._chat_id()
+        if not token or not chat_id:
+            return
+        try:
+            data = json.loads(self._queue_path.read_text())
+        except (json.JSONDecodeError, OSError):
+            logger.warning("Coda Telegram persistita illeggibile, ignorata")
+            return
+        if not isinstance(data, list):
+            return
+        restored = 0
+        for entry in data:
+            if not isinstance(entry, dict) or not entry.get("event_id"):
+                continue
+            self._pending.append(
+                _DeliveryJob(
+                    event_id=str(entry.get("event_id")),
+                    class_label=entry.get("class_label"),
+                    image_path=entry.get("image_path"),
+                    video_path=entry.get("video_path"),
+                    token=token,
+                    chat_id=chat_id,
+                    on_delivered=None,
+                    attempts=int(entry.get("attempts", 0) or 0),
+                    not_before=0.0,
+                )
+            )
+            restored += 1
+        if restored:
+            logger.info("Ripristinate %d notifiche Telegram in coda dal disco", restored)
 
     def _deliver(self, job: _DeliveryJob) -> bool:
         if job.video_path and Path(job.video_path).is_file():
             size = Path(job.video_path).stat().st_size
-            if size <= self._max_video_bytes():
-                if self._send_video(job.token, job.chat_id, job.event_id, job.class_label, job.video_path):
+            too_large = size > self._max_video_bytes()
+            if not too_large:
+                if self._send_video(
+                    job.token, job.chat_id, job.event_id, job.class_label, job.video_path
+                ):
                     return True
+                # Invio video fallito (timeout/rete), non un problema di dimensione:
+                # provo il fallback a foto, ma il job verrà comunque ri-tentato se anche
+                # questo fallisce (il chiamante gestisce il retry).
+                reason = "invio video non riuscito"
+            else:
+                reason = f"clip troppo grande ({size // (1024 * 1024)} MB)"
             cover = Path(job.video_path).parent / "cover.jpg"
             if cover.is_file():
-                logger.info(
-                    "Clip %s troppo grande (%d MB), invio foto di copertina su Telegram",
-                    job.event_id,
-                    size // (1024 * 1024),
-                )
+                logger.info("Telegram %s: %s, invio foto di copertina", job.event_id, reason)
                 return self._send(job.token, job.chat_id, job.event_id, job.class_label, str(cover))
-            logger.warning("Clip %s troppo grande e senza cover.jpg", job.event_id)
+            logger.warning("Telegram %s: %s e nessuna cover.jpg", job.event_id, reason)
             return self._send(job.token, job.chat_id, job.event_id, job.class_label, None)
         return self._send(job.token, job.chat_id, job.event_id, job.class_label, job.image_path)
 
@@ -245,9 +363,9 @@ class TelegramNotifier:
 
     def _min_interval(self) -> float:
         try:
-            return max(0.0, float(_env("NOTIFY_MIN_INTERVAL_SEC", "30")))
+            return max(0.0, float(_env("NOTIFY_MIN_INTERVAL_SEC", "5")))
         except ValueError:
-            return 30.0
+            return 5.0
 
     def notify_event(
         self,
@@ -256,7 +374,7 @@ class TelegramNotifier:
         image_path: str | None = None,
         on_delivered: Callable[[], None] | None = None,
     ) -> bool:
-        """Accoda una notifica Telegram. ``on_delivered`` viene chiamato solo dopo invio riuscito."""
+        """Accoda una notifica. ``on_delivered`` è chiamato solo dopo invio riuscito."""
         if not self.enabled or self._is_muted():
             return False
         token = self._bot_token()
@@ -332,7 +450,7 @@ class TelegramNotifier:
         video_path: str | None = None,
         on_delivered: Callable[[], None] | None = None,
     ) -> bool:
-        """Accoda un video Telegram. ``on_delivered`` viene chiamato solo dopo invio riuscito."""
+        """Accoda un video. ``on_delivered`` è chiamato solo dopo invio riuscito."""
         if not self.enabled or self._is_muted():
             return False
         token = self._bot_token()
