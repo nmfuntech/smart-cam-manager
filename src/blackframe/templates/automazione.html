@@ -43,14 +43,14 @@
           </div>
           <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
             <span class="status-pill" id="auto-status-pill">Verifica...</span>
-            <label class="camera-field toggle-field" style="margin:0">
+            <label class="auto-topbar-toggle" title="Abilita o disabilita l'intero layer di automazione">
               <span>Abilitata</span>
               <input type="checkbox" id="auto-toggle" />
             </label>
           </div>
         </div>
 
-        <p class="runtime-feedback" id="auto-feedback">-</p>
+        <p class="runtime-feedback" id="auto-feedback"></p>
 
         <!-- Tab bar -->
         <div class="auto-tab-bar">
@@ -95,52 +95,52 @@
           <button class="tg-dialog-close" id="btn-device-close" type="button">✕</button>
         </div>
 
-        <label class="camera-field">
+        <label class="camera-field" title="Identificatore univoco usato nelle regole. Solo lettere minuscole, cifre e underscore.">
           <span>Nome</span>
           <input id="dev-name" type="text" placeholder="es. luce_scrivania_1" pattern="[a-z0-9_]+" required />
         </label>
-        <p class="tg-hint">Solo lettere minuscole, cifre e underscore.</p>
+        <p class="tg-hint">Solo lettere minuscole, cifre e underscore. Es: luce_scrivania_1, presa_caffe.</p>
 
-        <label class="camera-field">
+        <label class="camera-field" title="tuya_lan = controllo diretto via rete locale (consigliato). mock = dispositivo finto per test senza hardware.">
           <span>Driver</span>
           <select id="dev-driver">
-            <option value="tuya_lan">tuya_lan</option>
-            <option value="mock">mock</option>
+            <option value="tuya_lan">tuya_lan — controllo LAN locale</option>
+            <option value="mock">mock — dispositivo di test</option>
           </select>
         </label>
 
-        <label class="camera-field">
-          <span>Device ID (Tuya)</span>
-          <input id="dev-device-id" type="text" placeholder="bf42e5370b8519cbcdvbwd" />
+        <label class="camera-field" title="ID univoco del dispositivo Tuya. Ottenuto dal wizard tinytuya (campo &quot;id&quot; in devices.json).">
+          <span>Device ID</span>
+          <input id="dev-device-id" type="text" placeholder="es. bf42e5370b8519cbcdvbwd" />
         </label>
 
-        <label class="camera-field">
+        <label class="camera-field" title="Indirizzo IP del dispositivo nella rete locale. Deve essere raggiungibile dal server (stessa LAN o subnet).">
           <span>IP locale</span>
-          <input id="dev-ip" type="text" placeholder="192.168.1.179" />
+          <input id="dev-ip" type="text" placeholder="es. 192.168.1.179" />
         </label>
 
-        <label class="camera-field">
+        <label class="camera-field" title="Chiave di cifratura per il protocollo Tuya LAN. Ottenuta dal wizard tinytuya (campo &quot;key&quot;). Cifrata a riposo.">
           <span>Local Key</span>
           <input id="dev-local-key" type="password" placeholder="Lascia vuoto per conservare il valore salvato" autocomplete="off" />
         </label>
 
-        <label class="camera-field">
+        <label class="camera-field" title="Versione del protocollo Tuya LAN. Usa 3.3 per dispositivi recenti (2019+), 3.1 per dispositivi più vecchi.">
           <span>Versione protocollo</span>
           <input id="dev-version" type="number" value="3.3" step="0.1" min="3.1" />
         </label>
 
-        <label class="camera-field">
+        <label class="camera-field" title="Datapoint che controlla accensione/spegnimento. Valore 1 per prese smart e outlet. Valore 20 per lampade RGBCW (es. Alantop). Verificabile con tinytuya status.">
           <span>Switch DP</span>
           <input id="dev-switch-dp" type="number" value="1" min="1" />
         </label>
-        <p class="tg-hint">1 = presa/outlet · 20 = lampada RGBCW</p>
+        <p class="tg-hint">DP 1 = presa/outlet standard · DP 20 = lampada RGBCW Tuya</p>
 
-        <label class="camera-field">
-          <span>Access Secret</span>
+        <label class="camera-field" title="Riservato per futura integrazione cloud Tuya. Lascia vuoto per il controllo LAN.">
+          <span>Access Secret <span style="font-size:.7em;opacity:.5">(opzionale)</span></span>
           <input id="dev-access-secret" type="password" placeholder="Lascia vuoto per conservare il valore salvato" autocomplete="off" />
         </label>
 
-        <p class="runtime-feedback" id="device-feedback">-</p>
+        <p class="runtime-feedback" id="device-feedback"></p>
 
         <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:4px">
           <button class="ghost-button compact-button" id="btn-device-cancel" type="button">Annulla</button>
@@ -157,40 +157,40 @@
           <button class="tg-dialog-close" id="btn-rule-close" type="button">✕</button>
         </div>
 
-        <label class="camera-field">
+        <label class="camera-field" title="Nome univoco della regola. Usato per identificarla e aggiornarla. Solo lettere minuscole, cifre e underscore.">
           <span>Nome regola</span>
           <input id="rule-name" type="text" placeholder="es. luci_su_persona" pattern="[a-z0-9_]+" required />
         </label>
-        <p class="tg-hint">Solo lettere minuscole, cifre e underscore.</p>
+        <p class="tg-hint">Solo lettere minuscole, cifre e underscore. Es: luci_su_persona, prese_notte.</p>
 
-        <label class="camera-field">
+        <label class="camera-field" title="Evento della camera che fa scattare questa regola.">
           <span>Evento trigger</span>
           <select id="rule-on">
-            <option value="person_detected">person_detected — persona rilevata</option>
-            <option value="animal_detected">animal_detected — animale rilevato</option>
-            <option value="motion_detected">motion_detected — qualsiasi movimento</option>
+            <option value="person_detected">Persona rilevata (person_detected)</option>
+            <option value="animal_detected">Animale rilevato (animal_detected)</option>
+            <option value="motion_detected">Qualsiasi movimento (motion_detected)</option>
           </select>
         </label>
 
-        <label class="camera-field">
-          <span>Cooldown</span>
-          <input id="rule-cooldown" type="text" placeholder="es. 120s, 5m — vuoto = nessuno" />
+        <label class="camera-field" title="Tempo minimo tra due attivazioni consecutive della stessa regola. Evita che si attivi in loop. Es: 60s, 5m, 1h. Vuoto = nessun cooldown.">
+          <span>Cooldown <span style="font-size:.7em;opacity:.5">(opzionale)</span></span>
+          <input id="rule-cooldown" type="text" placeholder="es. 120s, 5m, 1h — vuoto = nessuno" />
         </label>
 
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
-          <label class="camera-field">
-            <span>Orario da</span>
+          <label class="camera-field" title="Ora di inizio della finestra in cui la regola è attiva (formato HH:MM, 24h).">
+            <span>Attiva dalle</span>
             <input id="rule-from" type="text" placeholder="es. 20:00" />
           </label>
-          <label class="camera-field">
-            <span>Orario a</span>
+          <label class="camera-field" title="Ora di fine della finestra. Supporta overnight: 20:00→07:00 = solo nelle ore notturne.">
+            <span>Fino alle</span>
             <input id="rule-to" type="text" placeholder="es. 07:00" />
           </label>
         </div>
-        <p class="tg-hint">Finestra oraria opzionale. Supporta overnight (es. 20:00→07:00).</p>
+        <p class="tg-hint">Finestra oraria opzionale. Entrambi i campi devono essere compilati. Supporta overnight (es. 20:00→07:00).</p>
 
-        <label class="camera-field">
-          <span>Sorgente camera (facoltativo)</span>
+        <label class="camera-field" title="Limita la regola a una specifica camera. Usa l'ID profilo visibile in /cameras. Vuoto = si applica a tutte le camere.">
+          <span>Camera specifica <span style="font-size:.7em;opacity:.5">(opzionale)</span></span>
           <input id="rule-source" type="text" placeholder="ID profilo camera — vuoto = qualsiasi" />
         </label>
 
@@ -199,9 +199,9 @@
           <button class="ghost-button compact-button" id="btn-add-action" type="button">+ Azione</button>
         </div>
         <div id="rule-actions-list"></div>
-        <p class="tg-hint">Aggiungi almeno un'azione. Il campo "per" è la durata auto-spegnimento (es. 30s, 5m).</p>
+        <p class="tg-hint">Aggiungi almeno un'azione. Auto-spegnimento: il device si spegne automaticamente dopo la durata indicata (es. 30s, 5m).</p>
 
-        <p class="runtime-feedback" id="rule-feedback">-</p>
+        <p class="runtime-feedback" id="rule-feedback"></p>
 
         <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:4px">
           <button class="ghost-button compact-button" id="btn-rule-cancel" type="button">Annulla</button>

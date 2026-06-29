@@ -1576,3 +1576,24 @@ details[open].sidebar-advanced .sidebar-advanced-chevron {
 .auto-action-del:hover {
   background: rgba(255, 92, 138, 0.12);
 }
+
+/* ─── Automazione: toggle topbar (no uppercase) ──────────────────────────── */
+.auto-topbar-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-size: 0.78rem;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
+
+.auto-topbar-toggle span {
+  text-transform: none;
+}
+
+/* ─── Feedback vuoto invisibile ma preserva spazio ──────────────────────── */
+.runtime-feedback:empty {
+  visibility: hidden;
+  min-height: 1.2em;
+}

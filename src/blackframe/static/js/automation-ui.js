@@ -241,6 +241,8 @@ export function createAutomationController(elements) {
     }
   }
 
+  const ACTION_LABEL = { turn_on: "accendi", turn_off: "spegni" };
+
   function renderRuleList(list) {
     ruleList.innerHTML = "";
     const empty = document.getElementById("rule-empty");
@@ -248,8 +250,11 @@ export function createAutomationController(elements) {
 
     list.forEach((rule) => {
       const actions = (rule.do || [])
-        .map((a) => `${escHtml(a.device)} → ${escHtml(a.action)}${a.for ? ` (${escHtml(a.for)})` : ""}`)
-        .join(", ");
+        .map((a) => {
+          const label = ACTION_LABEL[a.action] || a.action;
+          return `${escHtml(a.device)} → ${label}${a.for ? ` per ${escHtml(a.for)}` : ""}`;
+        })
+        .join(" · ");
       const window = rule.between ? ` · ${rule.between[0]}→${rule.between[1]}` : "";
       const cooldown = rule.cooldown ? ` · cooldown ${escHtml(String(rule.cooldown))}` : "";
 
@@ -301,7 +306,7 @@ export function createAutomationController(elements) {
     const actions = rule?.do?.length ? rule.do : [null];
     actions.forEach((a) => addActionRow(a));
 
-    setRuleFeedback("-");
+    setRuleFeedback("");
     ruleDialog.showModal();
   }
 
@@ -321,14 +326,14 @@ export function createAutomationController(elements) {
           ${deviceOptions}
         </select>
       </label>
-      <label>
+      <label title="Azione da eseguire sul dispositivo quando la regola scatta.">
         Azione
         <select class="ar-action">
-          <option value="turn_on"${action?.action === "turn_on" || !action?.action ? " selected" : ""}>turn_on</option>
-          <option value="turn_off"${action?.action === "turn_off" ? " selected" : ""}>turn_off</option>
+          <option value="turn_on"${action?.action === "turn_on" || !action?.action ? " selected" : ""}>Accendi (turn_on)</option>
+          <option value="turn_off"${action?.action === "turn_off" ? " selected" : ""}>Spegni (turn_off)</option>
         </select>
       </label>
-      <label>
+      <label title="Durata dopo cui il dispositivo si spegne automaticamente. Es: 30s, 5m, 1h. Lascia vuoto per nessun auto-spegnimento.">
         Auto-spegnimento
         <input class="ar-for" type="text" placeholder="es. 30s, 5m" value="${escHtml(action?.for ?? "")}" />
       </label>
