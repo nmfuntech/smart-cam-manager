@@ -143,6 +143,18 @@ Da un altro dispositivo: **http://192.168.x.x:8000**
 
 Assegna un IP fisso (DHCP reservation sul router) per evitare che cambi dopo reboot.
 
+Per l'UI web in LAN vedi anche [`accesso_lan_minipc.md`](accesso_lan_minipc.md).
+
+---
+
+## Sviluppo remoto con Cursor via SSH
+
+Per editare il progetto sul mini PC da Mac o da un altro computer (cartella
+`C:\Users\nikom\smart-cam-manager`, terminale PowerShell remoto, git, Poetry, NSSM)
+usa Cursor con l'estensione **Remote SSH**.
+
+Guida passo-passo: [`docs/sviluppo_remoto_cursor_ssh.md`](sviluppo_remoto_cursor_ssh.md)
+
 ---
 
 ## Opzioni avanzate del wizard
@@ -265,3 +277,5 @@ poetry run python scripts\windows_service.py install-task
 | Health check | `poetry run python scripts\windows_service.py health` |
 | Log | `blackframe.log` nella root progetto |
 | Gestione servizio | `docs/gestione_servizio.md` |
+| Cursor remoto (SSH) | `docs/sviluppo_remoto_cursor_ssh.md` |
+| UI web da LAN | `docs/accesso_lan_minipc.md` |

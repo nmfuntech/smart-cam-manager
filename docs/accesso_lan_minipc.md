@@ -128,6 +128,21 @@ Se la pagina non si apre nonostante l'app sia in esecuzione:
 
 ---
 
+## 7. Sviluppo remoto con Cursor (SSH)
+
+Per **modificare codice, `.env`, log e servizio** sul minipc da un Mac o da un altro PC
+— senza sederti davanti al mini PC — usa Cursor con **Remote SSH**.
+
+Guida completa (OpenSSH su Windows, chiavi SSH, apertura cartella
+`C:\Users\nikom\smart-cam-manager`, flusso git/Poetry/NSSM):
+
+→ **[`docs/sviluppo_remoto_cursor_ssh.md`](sviluppo_remoto_cursor_ssh.md)**
+
+SSH (porta **22**) e UI web (porta **8000**) sono canali separati: con Cursor lavori
+sul filesystem del minipc; con il browser usi l'interfaccia BLACKFRAME.
+
+---
+
 ## Troubleshooting rapido
 
 | Sintomo | Causa | Rimedio |
