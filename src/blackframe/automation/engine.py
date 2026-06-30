@@ -67,9 +67,32 @@ class AutomationEngine:
                     logger.exception("Submit azione al dispatcher fallito (%s)", item.rule_name)
         return planned
 
+    def run_rule(self, name: str, *, execute: bool = True) -> list[PlannedAction] | None:
+        """Esegue/anteprima una singola regola per nome, ignorando match, finestra
+        oraria e cooldown: è un test esplicito voluto dall'utente, non un evento.
+
+        Restituisce le azioni pianificate (per mostrarle in anteprima) o ``None``
+        se la regola non esiste. Con ``execute=True`` e dispatcher presente le
+        sottomette sulla via reale (incluso l'auto-off ``for_seconds``).
+        Valuta anche le regole disabilitate: il test è manuale e voluto.
+        """
+        rule = next((r for r in self.rules if r.name == name), None)
+        if rule is None:
+            return None
+        planned = [PlannedAction(rule_name=rule.name, action=action) for action in rule.actions]
+        if execute and self._dispatcher is not None:
+            for item in planned:
+                try:
+                    self._dispatcher.submit(item)
+                except Exception:
+                    logger.exception("Submit azione al dispatcher fallito (%s)", item.rule_name)
+        return planned
+
     # --- matching -----------------------------------------------------------
 
     def _matches(self, rule: Rule, ctx: EventContext) -> bool:
+        if not rule.enabled:
+            return False
         if rule.event != ctx.event_name:
             return False
         if rule.source is not None and rule.source != ctx.source:

@@ -10,6 +10,7 @@ import hmac
 import json
 import logging
 import os
+import re
 import tempfile
 import threading
 import time
@@ -21,9 +22,14 @@ from collections import defaultdict, deque
 from pathlib import Path
 from typing import Any
 
+from blackframe.automation import DeviceError
+from blackframe.automation.rules_store import load_rules_raw, set_rule_enabled
 from blackframe.notifications import TELEGRAM_API_BASE, telegram_api_call
 from blackframe.recording import record_clip
 from blackframe.service_layer import _write_private_text
+
+# Nome logico device/regola: stessa regola del web layer (rules.yaml / registry).
+_AUTOMATION_NAME_RE = re.compile(r"^[a-z0-9_]+$")
 
 # Clip on-demand: durata di default e limite massimo (secondi).
 CLIP_DEFAULT_SEC = 10
@@ -86,6 +92,18 @@ HELP_SECTIONS = [
             ("ptz_down", "Muovi in basso"),
             ("ptz_stop", "Ferma PTZ"),
             ("ptz_home", "PTZ home"),
+        ],
+    ),
+    (
+        "🏠 Domotica",
+        [
+            ("devices", "Elenca dispositivi"),
+            ("device_on", "Accendi dispositivo: <nome>"),
+            ("device_off", "Spegni dispositivo: <nome>"),
+            ("rules", "Elenca regole"),
+            ("rule_run", "Esegui regola ora: <nome>"),
+            ("rule_on", "Abilita regola: <nome>"),
+            ("rule_off", "Disabilita regola: <nome>"),
         ],
     ),
 ]
@@ -590,6 +608,20 @@ class TelegramCommandBot:
             return self._ptz_stop()
         if command in {"/ptz_home", "/home"}:
             return self._ptz_home()
+        if command == "/devices":
+            return self._devices_text()
+        if command == "/device_on":
+            return self._device_action(args, "turn_on")
+        if command == "/device_off":
+            return self._device_action(args, "turn_off")
+        if command == "/rules":
+            return self._rules_text()
+        if command == "/rule_run":
+            return self._rule_run(args)
+        if command == "/rule_on":
+            return self._set_rule_enabled(args, True)
+        if command == "/rule_off":
+            return self._set_rule_enabled(args, False)
         if command == "/invite":
             return self._invite_info(chat_id)
         if command == "/guests":
@@ -736,6 +768,75 @@ class TelegramCommandBot:
             return "Notifiche non disponibili."
         notifier.mute(0)
         return "Notifiche riprese."
+
+    # --- Domotica (device + regole) -----------------------------------------
+
+    @staticmethod
+    def _automation_name(args: list[str]) -> str | None:
+        if not args:
+            return None
+        name = args[0].strip()
+        return name if _AUTOMATION_NAME_RE.fullmatch(name) else None
+
+    def _devices_text(self) -> str:
+        registry = getattr(self.services, "automation_registry", None)
+        if registry is None:
+            return "Automazione non disponibile."
+        names = registry.device_names()
+        if not names:
+            return "Nessun dispositivo configurato."
+        return "🏠 Dispositivi:\n" + "\n".join(f"- {name}" for name in names)
+
+    def _device_action(self, args: list[str], action: str) -> str:
+        registry = getattr(self.services, "automation_registry", None)
+        if registry is None:
+            return "Automazione non disponibile."
+        name = self._automation_name(args)
+        if name is None:
+            verb = "device_on" if action == "turn_on" else "device_off"
+            return f"Uso: /{verb} <nome>"
+        try:
+            getattr(registry.get(name), action)()
+        except DeviceError as exc:
+            return f"Errore dispositivo '{name}': {exc}"
+        return f"Dispositivo '{name}' {'acceso' if action == 'turn_on' else 'spento'}."
+
+    def _rules_text(self) -> str:
+        rules = load_rules_raw()
+        if not rules:
+            return "Nessuna regola configurata."
+        lines = ["📜 Regole:"]
+        for rule in rules:
+            if not isinstance(rule, dict):
+                continue
+            name = rule.get("name") or "?"
+            event = rule.get("on") or "?"
+            state = "on" if rule.get("enabled", True) else "off"
+            lines.append(f"- {name} · {event} · {state}")
+        return "\n".join(lines)
+
+    def _rule_run(self, args: list[str]) -> str:
+        name = self._automation_name(args)
+        if name is None:
+            return "Uso: /rule_run <nome>"
+        engine = getattr(self.services, "automation_engine", None)
+        if engine is None:
+            return "Automazione disabilitata: abilitala per eseguire le regole."
+        planned = engine.run_rule(name, execute=True)
+        if planned is None:
+            return f"Regola '{name}' non trovata."
+        return f"Regola '{name}' eseguita ({len(planned)} azioni)."
+
+    def _set_rule_enabled(self, args: list[str], enabled: bool) -> str:
+        name = self._automation_name(args)
+        if name is None:
+            return f"Uso: /rule_{'on' if enabled else 'off'} <nome>"
+        if not set_rule_enabled(name, enabled):
+            return f"Regola '{name}' non trovata."
+        reload_automation = getattr(self.services, "reload_automation", None)
+        if callable(reload_automation):
+            reload_automation()
+        return f"Regola '{name}' {'abilitata' if enabled else 'disabilitata'}."
 
     def _events_text(self) -> str:
         events = self.services.motion.list_events(limit=5)

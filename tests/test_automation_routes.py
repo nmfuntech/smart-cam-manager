@@ -537,5 +537,250 @@ class AutomationToggleTests(AutomationRouteTestBase):
         self.assertTrue(resp.get_json()["ok"])
 
 
+# ── Device test / rename / scan / import-tuya ──────────────────────────────
+
+
+class _RecordingDispatcher:
+    def __init__(self):
+        self.submitted = []
+
+    def submit(self, planned):
+        self.submitted.append(planned)
+
+
+class AutomationDeviceTestRenameTests(AutomationRouteTestBase):
+    def _save_mock(self, name="luce_mock"):
+        return self._post_json(
+            "/api/automazione/devices",
+            {"name": name, "driver": "mock"},
+            "tok",
+        )
+
+    def test_test_device_turn_on(self):
+        self._save_mock()
+        resp = self._post_json(
+            "/api/automazione/devices/luce_mock/test", {"action": "turn_on"}, "tok"
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.get_json()["ok"])
+
+    def test_test_device_rejects_bad_action(self):
+        self._save_mock()
+        resp = self._post_json(
+            "/api/automazione/devices/luce_mock/test", {"action": "explode"}, "tok"
+        )
+        self.assertEqual(resp.status_code, 400)
+
+    def test_test_device_unknown_returns_502(self):
+        resp = self._post_json(
+            "/api/automazione/devices/inesistente/test", {"action": "turn_on"}, "tok"
+        )
+        self.assertEqual(resp.status_code, 502)
+
+    def test_rename_device_updates_rule_references(self):
+        self._save_mock("luce_a")
+        self._post_json(
+            "/api/automazione/rules",
+            {
+                "name": "r_rename",
+                "on": "person_detected",
+                "do": [{"device": "luce_a", "action": "turn_on"}],
+            },
+            "tok",
+        )
+        resp = self._post_json(
+            "/api/automazione/devices/luce_a/rename", {"new_name": "luce_b"}, "tok"
+        )
+        self.assertEqual(resp.status_code, 200)
+        authenticate_client(self.client, "tok")
+        devices = self.client.get("/api/automazione/devices").get_json()["devices"]
+        self.assertEqual([d["name"] for d in devices], ["luce_b"])
+        rules = self.client.get("/api/automazione/rules").get_json()["rules"]
+        self.assertEqual(rules[0]["do"][0]["device"], "luce_b")
+
+    def test_rename_collision_returns_400(self):
+        self._save_mock("luce_a")
+        self._save_mock("luce_b")
+        resp = self._post_json(
+            "/api/automazione/devices/luce_a/rename", {"new_name": "luce_b"}, "tok"
+        )
+        self.assertEqual(resp.status_code, 400)
+
+    def test_scan_devices_preview(self):
+        fake = [{"name": "Lampada", "id": "dev1", "ip": "10.0.0.5", "version": 3.3, "key": "k123"}]
+        with mock.patch("blackframe.routes.automation.scan_lan_devices", return_value=fake):
+            resp = self._post_json("/api/automazione/devices/scan", {}, "tok")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        self.assertEqual(data["found"], 1)
+        self.assertEqual(data["devices"][0]["name"], "lampada")
+        self.assertEqual(data["devices"][0]["local_key"], "***")
+
+    def test_scan_devices_tinytuya_missing_returns_501(self):
+        with mock.patch(
+            "blackframe.routes.automation.scan_lan_devices",
+            side_effect=ImportError("tinytuya non installato"),
+        ):
+            resp = self._post_json("/api/automazione/devices/scan", {}, "tok")
+        self.assertEqual(resp.status_code, 501)
+
+    def test_import_tuya_preview_and_commit(self):
+        import io
+
+        devices_json = json.dumps(
+            [{"name": "Presa Cucina", "id": "dev9", "ip": "10.0.0.9", "key": "secret9"}]
+        ).encode()
+        authenticate_client(self.client, "tok")
+        # preview
+        resp = self.client.post(
+            "/api/automazione/devices/import-tuya",
+            data={"devices": (io.BytesIO(devices_json), "devices.json")},
+            headers={"X-CSRF-Token": "tok"},
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        self.assertFalse(data["committed"])
+        self.assertEqual(data["devices"][0]["name"], "presa_cucina")
+        self.assertEqual(data["devices"][0]["local_key"], "***")
+        # commit
+        resp = self.client.post(
+            "/api/automazione/devices/import-tuya",
+            data={"devices": (io.BytesIO(devices_json), "devices.json"), "commit": "1"},
+            headers={"X-CSRF-Token": "tok"},
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.get_json()["committed"])
+        registry = DeviceRegistry(store_path=self.devices_path)
+        self.assertEqual(registry.get_config("presa_cucina")["local_key"], "secret9")
+
+    def test_import_tuya_missing_file_returns_400(self):
+        authenticate_client(self.client, "tok")
+        resp = self.client.post(
+            "/api/automazione/devices/import-tuya",
+            data={},
+            headers={"X-CSRF-Token": "tok"},
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(resp.status_code, 400)
+
+
+# ── Rule test / enabled ────────────────────────────────────────────────────
+
+
+class AutomationRuleTestEnabledTests(AutomationRouteTestBase):
+    def _inject_engine(self, raw_rules):
+        from blackframe.automation.engine import AutomationEngine
+        from blackframe.automation.rules import parse_rules
+
+        dispatcher = _RecordingDispatcher()
+        engine = AutomationEngine(parse_rules(raw_rules), dispatcher=dispatcher)
+        services = self.app.config["services"]
+        services.automation_engine = engine
+        return dispatcher
+
+    def _rule(self, name="r1"):
+        return {
+            "name": name,
+            "on": "person_detected",
+            "do": [{"device": "luce", "action": "turn_on"}],
+        }
+
+    def test_test_rule_without_engine_returns_409(self):
+        resp = self._post_json("/api/automazione/rules/r1/test", {"execute": True}, "tok")
+        self.assertEqual(resp.status_code, 409)
+
+    def test_test_rule_preview_does_not_dispatch(self):
+        dispatcher = self._inject_engine([self._rule("r1")])
+        resp = self._post_json("/api/automazione/rules/r1/test", {"execute": False}, "tok")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        self.assertFalse(data["executed"])
+        self.assertEqual(data["actions"][0]["device"], "luce")
+        self.assertEqual(dispatcher.submitted, [])
+
+    def test_test_rule_execute_dispatches(self):
+        dispatcher = self._inject_engine([self._rule("r1")])
+        resp = self._post_json("/api/automazione/rules/r1/test", {"execute": True}, "tok")
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.get_json()["executed"])
+        self.assertEqual(len(dispatcher.submitted), 1)
+
+    def test_test_rule_unknown_returns_404(self):
+        self._inject_engine([self._rule("r1")])
+        resp = self._post_json("/api/automazione/rules/altra/test", {"execute": False}, "tok")
+        self.assertEqual(resp.status_code, 404)
+
+    def test_set_rule_enabled_toggles(self):
+        # Need a device + rule on disk
+        self._post_json("/api/automazione/devices", {"name": "luce", "driver": "mock"}, "tok")
+        self._post_json("/api/automazione/rules", self._rule("r1"), "tok")
+        resp = self._patch_json("/api/automazione/rules/r1/enabled", {"enabled": False}, "tok")
+        self.assertEqual(resp.status_code, 200)
+        self.assertFalse(resp.get_json()["enabled"])
+        authenticate_client(self.client, "tok")
+        rules = self.client.get("/api/automazione/rules").get_json()["rules"]
+        self.assertFalse(rules[0]["enabled"])
+
+    def test_set_rule_enabled_unknown_returns_404(self):
+        resp = self._patch_json("/api/automazione/rules/nope/enabled", {"enabled": True}, "tok")
+        self.assertEqual(resp.status_code, 404)
+
+
+# ── Import / Export ────────────────────────────────────────────────────────
+
+
+class AutomationImportExportTests(AutomationRouteTestBase):
+    def test_export_returns_bundle(self):
+        self._post_json("/api/automazione/devices", {"name": "luce", "driver": "mock"}, "tok")
+        authenticate_client(self.client, "tok")
+        resp = self.client.get("/api/automazione/export")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("attachment", resp.headers.get("Content-Disposition", ""))
+        bundle = json.loads(resp.data)
+        self.assertEqual(bundle["devices"][0]["name"], "luce")
+        self.assertIn("rules", bundle)
+
+    def test_import_bundle_restores_devices_and_rules(self):
+        bundle = {
+            "version": 1,
+            "devices": [{"name": "luce", "driver": "mock", "local_key": "***"}],
+            "rules": [
+                {
+                    "name": "r1",
+                    "on": "person_detected",
+                    "do": [{"device": "luce", "action": "turn_on"}],
+                }
+            ],
+        }
+        resp = self._post_json("/api/automazione/import", bundle, "tok")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        self.assertEqual(data["devices_imported"], 1)
+        self.assertEqual(data["rules_imported"], 1)
+        self.assertEqual(data["errors"], [])
+
+    def test_import_invalid_bundle_returns_400(self):
+        resp = self._post_json("/api/automazione/import", [], "tok")
+        self.assertEqual(resp.status_code, 400)
+
+
+class AutomationPageRenderTests(AutomationRouteTestBase):
+    def test_page_renders_with_new_controls(self):
+        authenticate_client(self.client, "tok")
+        resp = self.client.get("/automazione")
+        self.assertEqual(resp.status_code, 200)
+        html = resp.get_data(as_text=True)
+        for marker in (
+            'id="btn-wizard"',
+            'id="btn-export"',
+            'id="btn-import"',
+            'id="auto-rename-dialog"',
+            'id="auto-wizard-dialog"',
+        ):
+            self.assertIn(marker, html)
+
+
 if __name__ == "__main__":
     unittest.main()

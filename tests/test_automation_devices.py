@@ -247,6 +247,31 @@ class DeviceRegistryTests(unittest.TestCase):
         self.assertEqual(self.registry.device_names(), [])
         self.assertFalse(self.registry.delete_device("luce_ingresso"))
 
+    def test_rename_preserves_secret(self):
+        self._save_lamp(local_key="keep-secret")
+        result = self.registry.rename_device("luce_ingresso", "luce_salotto")
+        self.assertEqual(result["name"], "luce_salotto")
+        self.assertEqual(result["local_key"], "***")
+        self.assertEqual(self.registry.device_names(), ["luce_salotto"])
+        self.assertEqual(self.registry.get_config("luce_salotto")["local_key"], "keep-secret")
+        self.assertIsNone(self.registry.get_config("luce_ingresso"))
+
+    def test_rename_unknown_raises(self):
+        with self.assertRaises(DeviceError):
+            self.registry.rename_device("inesistente", "nuovo")
+
+    def test_rename_collision_raises(self):
+        self._save_lamp(name="luce_a")
+        self._save_lamp(name="luce_b")
+        with self.assertRaises(DeviceError):
+            self.registry.rename_device("luce_a", "luce_b")
+
+    def test_rename_invalidates_cache(self):
+        self._save_lamp()
+        old = self.registry.get("luce_ingresso")
+        self.registry.rename_device("luce_ingresso", "luce_nuova")
+        self.assertIsNot(self.registry.get("luce_nuova"), old)
+
     def test_missing_store_returns_empty(self):
         self.assertEqual(self.registry.device_names(), [])
         self.assertEqual(self.registry.list_devices(), [])

@@ -43,6 +43,9 @@
           </div>
           <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
             <span class="status-pill" id="auto-status-pill">Verifica...</span>
+            <button class="ghost-button compact-button" id="btn-export" type="button" title="Scarica un file JSON con dispositivi (segreti oscurati) e regole">Esporta</button>
+            <button class="ghost-button compact-button" id="btn-import" type="button" title="Carica un file JSON di configurazione esportato">Importa</button>
+            <input type="file" id="import-file" accept="application/json,.json" hidden />
             <label class="auto-topbar-toggle" title="Abilita o disabilita l'intero layer di automazione">
               <span>Abilitata</span>
               <input type="checkbox" id="auto-toggle" />
@@ -62,7 +65,10 @@
         <div id="panel-devices">
           <div class="camera-config-head">
             <h2>Dispositivi</h2>
-            <button class="ghost-button compact-button" id="btn-add-device">+ Aggiungi</button>
+            <div style="display:flex;gap:8px">
+              <button class="ghost-button compact-button" id="btn-wizard" title="Scopri dispositivi Tuya sulla rete o importa da file tinytuya">Wizard</button>
+              <button class="ghost-button compact-button" id="btn-add-device">+ Aggiungi</button>
+            </div>
           </div>
           <div class="camera-profile-list" id="device-list">
             <p class="description compact" id="device-empty" style="display:none">
@@ -206,6 +212,67 @@
         <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:4px">
           <button class="ghost-button compact-button" id="btn-rule-cancel" type="button">Annulla</button>
           <button class="ghost-button compact-button" id="btn-rule-save" type="button">Salva regola</button>
+        </div>
+      </div>
+    </dialog>
+
+    <!-- ── Dialog: rinomina dispositivo ─────────────────────── -->
+    <dialog class="tg-dialog" id="auto-rename-dialog">
+      <div class="tg-dialog-form">
+        <div class="tg-dialog-head">
+          <strong>Rinomina dispositivo</strong>
+          <button class="tg-dialog-close" id="btn-rename-close" type="button">✕</button>
+        </div>
+        <p class="tg-hint">I riferimenti nelle regole verranno aggiornati automaticamente.</p>
+        <label class="camera-field">
+          <span>Nome attuale</span>
+          <input id="rename-old" type="text" disabled />
+        </label>
+        <label class="camera-field" title="Solo lettere minuscole, cifre e underscore.">
+          <span>Nuovo nome</span>
+          <input id="rename-new" type="text" placeholder="es. luce_salotto" pattern="[a-z0-9_]+" required />
+        </label>
+        <p class="runtime-feedback" id="rename-feedback"></p>
+        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:4px">
+          <button class="ghost-button compact-button" id="btn-rename-cancel" type="button">Annulla</button>
+          <button class="ghost-button compact-button" id="btn-rename-save" type="button">Rinomina</button>
+        </div>
+      </div>
+    </dialog>
+
+    <!-- ── Dialog: wizard scoperta dispositivi ──────────────── -->
+    <dialog class="tg-dialog" id="auto-wizard-dialog" style="width:min(640px,95vw)">
+      <div class="tg-dialog-form">
+        <div class="tg-dialog-head">
+          <strong>Wizard dispositivi</strong>
+          <button class="tg-dialog-close" id="btn-wizard-close" type="button">✕</button>
+        </div>
+
+        <div class="camera-config-head" style="margin-top:4px">
+          <h3 style="font-size:.85rem;letter-spacing:.08em">SCANSIONE LAN</h3>
+          <button class="ghost-button compact-button" id="btn-wizard-scan" type="button">Scansiona rete</button>
+        </div>
+        <p class="tg-hint">Cerca dispositivi Tuya in broadcast sulla rete locale del server. I dispositivi senza chiave vanno completati dopo il wizard tinytuya.</p>
+
+        <div class="camera-config-head" style="margin-top:12px">
+          <h3 style="font-size:.85rem;letter-spacing:.08em">IMPORTA DA FILE</h3>
+        </div>
+        <label class="camera-field" title="File devices.json prodotto da 'tinytuya wizard'.">
+          <span>devices.json</span>
+          <input id="wizard-devices-file" type="file" accept="application/json,.json" />
+        </label>
+        <label class="camera-field" title="File snapshot.json opzionale per dedurre lo Switch DP (prese vs lampade).">
+          <span>snapshot.json <span style="font-size:.7em;opacity:.5">(opzionale)</span></span>
+          <input id="wizard-snapshot-file" type="file" accept="application/json,.json" />
+        </label>
+        <button class="ghost-button compact-button" id="btn-wizard-upload" type="button">Analizza file</button>
+
+        <p class="runtime-feedback" id="wizard-feedback"></p>
+        <div id="wizard-preview" class="camera-profile-list"></div>
+
+        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:4px">
+          <button class="ghost-button compact-button" id="btn-wizard-cancel" type="button">Chiudi</button>
+          <button class="ghost-button compact-button" id="btn-wizard-commit" type="button" hidden>Salva selezionati</button>
         </div>
       </div>
     </dialog>

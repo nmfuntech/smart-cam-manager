@@ -224,6 +224,26 @@ poetry run python -c "from dotenv import load_dotenv; load_dotenv(); from blackf
 
 (`switch_dp`: `20` lampade RGBCW, `1` prese.)
 
+### 7d — Dalla UI (web)
+
+La pagina **Automazione** (`/automazione`) copre ora l'intero ciclo senza riga di
+comando:
+
+- **Wizard** (tab Dispositivi → *Wizard*): *Scansiona rete* esegue lo scan LAN dal
+  server (broadcast Tuya, durata `TUYA_SCAN_TIMEOUT_SEC`), oppure carica i file
+  `devices.json`/`snapshot.json` del wizard tinytuya per importarli. Lo scan è di
+  sola scoperta: i device con chiave si importano dai file (le `local_key` non
+  transitano dal browser).
+- **Test** per ogni device (⏻ On / ⭘ Off) verifica il funzionamento reale.
+- **Rinomina** aggiorna anche i riferimenti nelle regole.
+- **Esporta/Importa** (in alto): bundle JSON con device (segreti oscurati) e regole.
+
+### Comandi Telegram
+
+Col bot comandi abilitato (`TELEGRAM_COMMANDS_ENABLED=true`): `/devices`,
+`/device_on <nome>`, `/device_off <nome>`, `/rules`, `/rule_run <nome>`,
+`/rule_on <nome>`, `/rule_off <nome>`.
+
 ---
 
 ## Troubleshooting

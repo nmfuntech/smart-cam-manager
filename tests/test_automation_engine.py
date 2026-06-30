@@ -154,6 +154,12 @@ class ParseRulesTests(unittest.TestCase):
         rules = parse_rules([self._rule()], known_devices={"luce", "presa"})
         self.assertEqual(len(rules), 1)
 
+    def test_enabled_defaults_true(self):
+        self.assertTrue(parse_rules([self._rule()])[0].enabled)
+
+    def test_enabled_explicit_false(self):
+        self.assertFalse(parse_rules([self._rule(enabled=False)])[0].enabled)
+
 
 class _FakeClock:
     def __init__(self, start=0.0):
@@ -237,6 +243,54 @@ class EngineMatchTests(unittest.TestCase):
         engine = self._engine([self._person_rule()])
         self.assertEqual(len(engine.emit(EventContext("e", "persona"))), 1)
         self.assertEqual(len(engine.emit(EventContext("e", "persona"))), 1)
+
+    def test_disabled_rule_does_not_match(self):
+        engine = self._engine([self._person_rule(enabled=False)])
+        self.assertEqual(engine.emit(EventContext("e", "persona")), [])
+
+
+class RunRuleTests(unittest.TestCase):
+    def _rule(self, **over):
+        base = {
+            "name": "luce_persona",
+            "on": "person_detected",
+            "do": [
+                {"device": "luce", "action": "turn_on"},
+                {"device": "presa", "action": "turn_off"},
+            ],
+        }
+        base.update(over)
+        return base
+
+    def test_preview_returns_actions_without_dispatch(self):
+        dispatcher = _RecordingDispatcher()
+        engine = AutomationEngine(parse_rules([self._rule()]), dispatcher=dispatcher)
+        planned = engine.run_rule("luce_persona", execute=False)
+        self.assertEqual([p.action.device for p in planned], ["luce", "presa"])
+        self.assertEqual(dispatcher.submitted, [])
+
+    def test_execute_submits_all_actions(self):
+        dispatcher = _RecordingDispatcher()
+        engine = AutomationEngine(parse_rules([self._rule()]), dispatcher=dispatcher)
+        engine.run_rule("luce_persona", execute=True)
+        self.assertEqual(len(dispatcher.submitted), 2)
+
+    def test_ignores_cooldown_and_window(self):
+        # Una regola con cooldown e finestra che ora non sarebbe attiva viene
+        # comunque eseguita: il test è manuale e voluto.
+        engine = AutomationEngine(
+            parse_rules([self._rule(cooldown="1h", between=["00:00", "00:01"])]),
+            dispatcher=_RecordingDispatcher(),
+        )
+        self.assertEqual(len(engine.run_rule("luce_persona", execute=False)), 2)
+
+    def test_runs_disabled_rule(self):
+        engine = AutomationEngine(parse_rules([self._rule(enabled=False)]))
+        self.assertEqual(len(engine.run_rule("luce_persona", execute=False)), 2)
+
+    def test_unknown_rule_returns_none(self):
+        engine = AutomationEngine(parse_rules([self._rule()]))
+        self.assertIsNone(engine.run_rule("inesistente"))
 
 
 class _RecordingDispatcher:
