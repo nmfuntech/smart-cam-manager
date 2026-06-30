@@ -98,6 +98,8 @@ Su Windows OpenCV **non** produce H.264 nativamente (DLL OpenH264 rotta). Senza 
 | `deploy/serve_waitress.py` | Aggiunge la root del repo a `sys.path` (fix `ModuleNotFoundError: app`) |
 | `start_blackframe.bat` | Wrapper avvio + log |
 | `docs/installazione_windows.md` | Guida installazione/operatività Windows ampliata |
+| `docs/sviluppo_remoto_cursor_ssh.md` | Cursor Remote SSH dal Mac/altro PC verso mini PC |
+| `docs/accesso_lan_minipc.md` | UI web in LAN dal browser |
 | `CLAUDE.md` | Documentato gotcha OpenH264 + ffmpeg |
 
 ### 2.2 Pipeline registrazione eventi (`recording.py`, `app.py`, `CameraStream`)

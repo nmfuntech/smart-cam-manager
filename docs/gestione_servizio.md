@@ -123,10 +123,18 @@ NSSM riavvia automaticamente il processo se termina, e l'avvio automatico al boo
 > `docs/installazione_windows.md`). Più semplice, ma senza restart automatico su
 > crash: per un impianto sempre attivo NSSM è preferibile.
 
+Per editare codice, `.env` e log da un Mac o da un altro PC usa Cursor via SSH:
+[`docs/sviluppo_remoto_cursor_ssh.md`](sviluppo_remoto_cursor_ssh.md).
+
 ---
 
 ## Dopo l'installazione
 
 Verifica che risponda: `http://<ip-dispositivo>:<porta>/health` → `{"status":"ok"}`.
-Per l'aggiornamento: ferma il servizio → `git pull && make install` → riavvia il
-servizio. I dati (`.env`, `data/`, `captures/`) non vengono toccati.
+
+**Windows:** ferma il servizio → `git pull` → `poetry install --with windows` →
+riavvia (`nssm restart BLACKFRAME`). Vedi [`installazione_windows.md`](installazione_windows.md#aggiornare-il-progetto).
+
+**Linux/macOS:** ferma il servizio → `git pull && make install` → riavvia.
+
+I dati (`.env`, `data/`, `captures/`) non vengono toccati.

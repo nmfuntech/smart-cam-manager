@@ -1,29 +1,28 @@
 # Accesso all'UI dal minipc sulla rete locale
 
-Guida per far girare BLACKFRAME sul minipc e raggiungere l'interfaccia web da un
+Guida per far girare BLACKFRAME sul **mini PC Windows** e raggiungere l'interfaccia web da un
 altro dispositivo (es. il Mac) sulla **stessa rete locale**.
+
+Per la prima installazione sul mini PC vedi [`installazione_windows.md`](installazione_windows.md).
+Per modificare codice e configurazione da Cursor via SSH vedi
+[`sviluppo_remoto_cursor_ssh.md`](sviluppo_remoto_cursor_ssh.md).
 
 ---
 
 ## 1. Aggiorna il codice sul minipc
 
-Il lavoro più recente (gestione device/regole da UI, comandi Telegram,
-import/export) è sul branch `feat/automation-ui-telegram-iexport`.
+**Windows (PowerShell nella cartella del progetto):**
 
-```bash
-cd <cartella-del-progetto>
+```powershell
+cd C:\Users\nikom\smart-cam-manager
 git fetch
-git checkout feat/automation-ui-telegram-iexport
 git pull
+.\blackframe.ps1 install
 ```
 
 Se hai modifiche locali non committate, mettile da parte prima con `git stash`.
 
-Installa/aggiorna le dipendenze se necessario:
-
-```bash
-make install
-```
+**Linux** (se il minipc non è Windows): `make install` al posto di `.\blackframe.ps1 install`.
 
 ---
 
@@ -68,17 +67,33 @@ TELEGRAM_COMMANDS_ENABLED=true
 
 ## 3. Avvia l'app (una sola istanza)
 
-```bash
-make run
+Su mini PC Windows in produzione l'app gira di solito come **servizio NSSM**
+(`BLACKFRAME`). Dopo modifiche a `.env` o al codice:
+
+```powershell
+nssm restart BLACKFRAME
 ```
 
-> **Importante:** avvia **una sola** istanza. Lanciare contemporaneamente
-> `make run` e `python -m blackframe` crea due processi che duplicano i thread
-> della camera (corrompendo le directory degli eventi) e generano il conflitto
-> Telegram `terminated by other getUpdates request`.
+Verifica stato:
 
-Per un servizio più stabile c'è `make serve` (gunicorn, single worker). Usa le
-stesse variabili `APP_BIND_HOST` / `APP_SESSION_COOKIE_SECURE`.
+```powershell
+nssm status BLACKFRAME
+poetry run python scripts\windows_service.py health
+```
+
+**Test manuale in foreground** (solo se il servizio è fermo — stessa porta):
+
+```powershell
+nssm stop BLACKFRAME
+.\blackframe.ps1 run
+```
+
+> **Importante:** avvia **una sola** istanza. Servizio NSSM **e** `blackframe.ps1 run`
+> insieme creano due processi sulla porta 8000, duplicano i thread camera e generano
+> il conflitto Telegram `terminated by other getUpdates request`.
+
+Su **Linux/macOS** in dev: `make run` o `make serve` (gunicorn). Stesse variabili
+`APP_BIND_HOST` / `APP_SESSION_COOKIE_SECURE`.
 
 All'avvio l'output deve mostrare:
 
@@ -93,13 +108,19 @@ Se invece vedi `http://127.0.0.1:8000`, `APP_BIND_HOST` non è stato letto
 
 ## 4. Trova l'indirizzo IP del minipc
 
-- **Linux:** `hostname -I` oppure `ip addr | grep 192.168`
-- **Windows:** `ipconfig` → riga *IPv4 Address*
+**Windows:**
 
-Esempio di risultato: `192.168.1.120`.
+```powershell
+ipconfig
+```
+
+→ riga *IPv4 Address* (es. `192.168.1.120`).
+
+**Linux:** `hostname -I` oppure `ip addr | grep 192.168`
 
 Suggerimento: assegna al minipc un **IP statico** o una *reservation* DHCP nel
-router, così l'indirizzo non cambia nel tempo.
+router, così l'indirizzo non cambia nel tempo (utile anche per SSH e Cursor —
+vedi [`sviluppo_remoto_cursor_ssh.md`](sviluppo_remoto_cursor_ssh.md)).
 
 ---
 

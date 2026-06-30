@@ -54,6 +54,12 @@ Equivalenti diretti (se preferisci):
   poetry run python scripts\setup_config.py --minimal
   poetry run python deploy\serve_waitress.py
   poetry run python scripts\fetch_model.py
+
+Documentazione:
+  docs\installazione_windows.md       Installazione e wizard mini PC
+  docs\accesso_lan_minipc.md          UI web da browser in LAN
+  docs\sviluppo_remoto_cursor_ssh.md  Cursor Remote SSH (dev da Mac/altro PC)
+  docs\gestione_servizio.md           NSSM, restart, boot
 "@
 }
 

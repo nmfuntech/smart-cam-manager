@@ -31,6 +31,18 @@ computer (Mac, Linux o altro Windows) usando **Cursor** e **Remote SSH**.
 | OpenSSH | Mini PC Windows | **22** |
 | BLACKFRAME (Waitress/NSSM) | Mini PC Windows | **8000** (default) |
 
+### Checklist rapida
+
+| # | Dove | Azione |
+|---|------|--------|
+| 1 | Mini PC (admin) | Installa e avvia OpenSSH Server, firewall TCP 22 |
+| 2 | Mini PC | Annota IP (`ipconfig`) e percorso repo (`git rev-parse --show-toplevel`) |
+| 3 | Mac | `ssh-keygen` + copia chiave in `C:\Users\<user>\.ssh\authorized_keys` |
+| 4 | Mac | Voce `Host blackframe-minipc` in `~/.ssh/config` |
+| 5 | Mac | Cursor → Remote-SSH → Connect → piattaforma **Windows** |
+| 6 | Cursor | Open Folder → es. `C:\Users\nikom\smart-cam-manager` |
+| 7 | Browser Mac | UI: `http://<IP-minipc>:8000` (se `APP_BIND_HOST=0.0.0.0`) |
+
 ---
 
 ## Prerequisiti
