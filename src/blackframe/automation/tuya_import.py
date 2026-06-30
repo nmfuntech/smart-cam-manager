@@ -105,6 +105,42 @@ def infer_switch_dp(dps: dict | None) -> int:
     return 1
 
 
+def scan_lan_devices(scan_time: float = 10.0) -> list[dict]:
+    """Scopre i device Tuya sulla LAN via broadcast (API tinytuya, no subprocess).
+
+    Restituisce voci grezze nello stesso formato di ``devices.json`` (``id``,
+    ``ip``, ``version``, ``name`` e ``key`` se disponibile da un ``devices.json``
+    nella cwd), pronte per ``build_registry_payloads``. I device senza
+    ``local_key`` verranno poi scartati da quella funzione con una motivazione.
+
+    Solleva ``ImportError`` se tinytuya non è installato e ``RuntimeError`` se lo
+    scan fallisce. ``scan_time`` limita la durata del broadcast.
+    """
+    try:
+        import tinytuya  # noqa: PLC0415 — dep opzionale a runtime
+    except ImportError as exc:  # pragma: no cover - dipende dall'ambiente
+        raise ImportError("tinytuya non installato: impossibile eseguire lo scan LAN") from exc
+    try:
+        found = tinytuya.deviceScan(False, scan_time) or {}
+    except Exception as exc:  # pragma: no cover - dipende dalla rete
+        raise RuntimeError(f"Scan LAN fallito: {exc}") from exc
+
+    devices: list[dict] = []
+    for ip, info in found.items():
+        if not isinstance(info, dict):
+            continue
+        devices.append(
+            {
+                "name": info.get("name") or info.get("gwId") or info.get("id"),
+                "id": info.get("gwId") or info.get("id"),
+                "ip": info.get("ip") or ip,
+                "version": info.get("version"),
+                "key": info.get("key"),
+            }
+        )
+    return devices
+
+
 def build_registry_payloads(
     scan_devices: list[dict],
     *,

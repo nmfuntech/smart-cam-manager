@@ -96,6 +96,32 @@ class DeviceRegistry:
         self._cache.pop(device["name"], None)
         return self._sanitize(device)
 
+    def rename_device(self, old_name: str, new_name: str) -> dict:
+        """Rinomina un device preservando i segreti cifrati. Ritorna la vista
+        redatta del device rinominato.
+
+        Solleva ``DeviceError`` se ``old_name`` non esiste o ``new_name`` è già
+        in uso. I segreti sopravvivono perché passano da ``_read_store`` decifrati
+        e vengono ricifrati da ``_write_store``. L'aggiornamento dei riferimenti
+        nelle regole è responsabilità del chiamante (route layer).
+        """
+        new_name = str(new_name or "").strip()
+        if not new_name:
+            raise DeviceError("Nuovo nome device obbligatorio")
+        if new_name == old_name:
+            raise DeviceError("Il nuovo nome coincide con quello attuale")
+        devices = self._read_store()
+        if any(d.get("name") == new_name for d in devices):
+            raise DeviceError(f"Device '{new_name}' esiste già")
+        target = next((d for d in devices if d.get("name") == old_name), None)
+        if target is None:
+            raise DeviceError(f"Device '{old_name}' non presente nel registry")
+        target["name"] = new_name
+        self._write_store(devices)
+        self._cache.pop(old_name, None)
+        self._cache.pop(new_name, None)
+        return self._sanitize(target)
+
     def delete_device(self, name: str) -> bool:
         devices = self._read_store()
         remaining = [d for d in devices if d.get("name") != name]

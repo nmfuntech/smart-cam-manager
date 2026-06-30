@@ -23,6 +23,26 @@ const ctrl = createAutomationController({
   closeRuleBtns: document.querySelectorAll("#btn-rule-close, #btn-rule-cancel"),
   addActionBtn: document.getElementById("btn-add-action"),
   ruleActionsList: document.getElementById("rule-actions-list"),
+  // rename
+  renameDialog: document.getElementById("auto-rename-dialog"),
+  renameFeedback: document.getElementById("rename-feedback"),
+  renameSaveBtn: document.getElementById("btn-rename-save"),
+  closeRenameBtns: document.querySelectorAll("#btn-rename-close, #btn-rename-cancel"),
+  // wizard
+  wizardBtn: document.getElementById("btn-wizard"),
+  wizardDialog: document.getElementById("auto-wizard-dialog"),
+  wizardFeedback: document.getElementById("wizard-feedback"),
+  wizardPreview: document.getElementById("wizard-preview"),
+  wizardScanBtn: document.getElementById("btn-wizard-scan"),
+  wizardUploadBtn: document.getElementById("btn-wizard-upload"),
+  wizardCommitBtn: document.getElementById("btn-wizard-commit"),
+  wizardDevicesFile: document.getElementById("wizard-devices-file"),
+  wizardSnapshotFile: document.getElementById("wizard-snapshot-file"),
+  closeWizardBtns: document.querySelectorAll("#btn-wizard-close, #btn-wizard-cancel"),
+  // import / export
+  exportBtn: document.getElementById("btn-export"),
+  importBtn: document.getElementById("btn-import"),
+  importFile: document.getElementById("import-file"),
 });
 
 ctrl.init();

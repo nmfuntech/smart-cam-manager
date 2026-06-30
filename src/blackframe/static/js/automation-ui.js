@@ -1,4 +1,4 @@
-import { fetchJson } from "./api.js";
+import { fetchBlobUrl, fetchJson } from "./api.js";
 import { setPillState } from "./ui.js";
 
 const JSON_HEADERS = { "Content-Type": "application/json" };
@@ -27,12 +27,33 @@ export function createAutomationController(elements) {
     closeRuleBtns,
     addActionBtn,
     ruleActionsList,
+    // rename
+    renameDialog,
+    renameFeedback,
+    renameSaveBtn,
+    closeRenameBtns,
+    // wizard
+    wizardBtn,
+    wizardDialog,
+    wizardFeedback,
+    wizardPreview,
+    wizardScanBtn,
+    wizardUploadBtn,
+    wizardCommitBtn,
+    wizardDevicesFile,
+    wizardSnapshotFile,
+    closeWizardBtns,
+    // import/export
+    exportBtn,
+    importBtn,
+    importFile,
   } = elements;
 
   // ── State ──────────────────────────────────────────────────
   let devices = [];
   let editingDevice = null; // null = new device
   let editingRule = null; // null = new rule
+  let renamingDevice = null;
 
   // ── Feedback helpers ───────────────────────────────────────
   function setFeedback(text, isError = false) {
@@ -48,6 +69,16 @@ export function createAutomationController(elements) {
   function setRuleFeedback(text, isError = false) {
     ruleFeedback.textContent = text;
     ruleFeedback.style.color = isError ? "#ff89ad" : "";
+  }
+
+  function setRenameFeedback(text, isError = false) {
+    renameFeedback.textContent = text;
+    renameFeedback.style.color = isError ? "#ff89ad" : "";
+  }
+
+  function setWizardFeedback(text, isError = false) {
+    wizardFeedback.textContent = text;
+    wizardFeedback.style.color = isError ? "#ff89ad" : "";
   }
 
   // ── Tabs ───────────────────────────────────────────────────
@@ -137,11 +168,25 @@ export function createAutomationController(elements) {
           </span>
         </div>
         <div class="camera-profile-actions">
+          <button class="ghost-button compact-button btn-test-device" data-name="${escHtml(dev.name)}" data-action="turn_on" title="Accendi per verificare">⏻ On</button>
+          <button class="ghost-button compact-button btn-test-device" data-name="${escHtml(dev.name)}" data-action="turn_off" title="Spegni per verificare">⭘ Off</button>
+          <button class="ghost-button compact-button btn-rename-device" data-name="${escHtml(dev.name)}">Rinomina</button>
           <button class="ghost-button compact-button btn-edit-device" data-name="${escHtml(dev.name)}">Modifica</button>
           <button class="ghost-button compact-button btn-del-device" data-name="${escHtml(dev.name)}" style="color:#ff89ad">Elimina</button>
         </div>
       `;
       deviceList.appendChild(card);
+    });
+
+    deviceList.querySelectorAll(".btn-test-device").forEach((btn) => {
+      btn.addEventListener("click", () => testDevice(btn.dataset.name, btn.dataset.action));
+    });
+
+    deviceList.querySelectorAll(".btn-rename-device").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const dev = devices.find((d) => d.name === btn.dataset.name);
+        if (dev) openRenameModal(dev);
+      });
     });
 
     deviceList.querySelectorAll(".btn-edit-device").forEach((btn) => {
@@ -154,6 +199,58 @@ export function createAutomationController(elements) {
     deviceList.querySelectorAll(".btn-del-device").forEach((btn) => {
       btn.addEventListener("click", () => deleteDevice(btn.dataset.name));
     });
+  }
+
+  // ── Device test + rename ───────────────────────────────────
+  async function testDevice(name, action) {
+    const verb = action === "turn_off" ? "spegnimento" : "accensione";
+    setFeedback(`Test ${verb} "${name}"...`);
+    try {
+      const { response, data } = await fetchJson(
+        `/api/automazione/devices/${encodeURIComponent(name)}/test`,
+        { method: "POST", headers: JSON_HEADERS, body: JSON.stringify({ action }) },
+      );
+      if (!response.ok || !data.ok) {
+        setFeedback(data.error || "Test fallito", true);
+        return;
+      }
+      setFeedback(`"${name}": ${action === "turn_off" ? "spento" : "acceso"} ✓`);
+    } catch {
+      setFeedback("Errore di rete", true);
+    }
+  }
+
+  function openRenameModal(device) {
+    renamingDevice = device;
+    document.getElementById("rename-old").value = device.name;
+    document.getElementById("rename-new").value = "";
+    setRenameFeedback("");
+    renameDialog.showModal();
+  }
+
+  async function renameDevice() {
+    if (!renamingDevice) return;
+    const newName = document.getElementById("rename-new").value.trim();
+    renameSaveBtn.disabled = true;
+    setRenameFeedback("Rinomina...");
+    try {
+      const { response, data } = await fetchJson(
+        `/api/automazione/devices/${encodeURIComponent(renamingDevice.name)}/rename`,
+        { method: "POST", headers: JSON_HEADERS, body: JSON.stringify({ new_name: newName }) },
+      );
+      if (!response.ok || !data.ok) {
+        setRenameFeedback(data.error || "Errore rinomina", true);
+        return;
+      }
+      renameDialog.close();
+      await loadDevices();
+      await loadRules();
+      setFeedback(`Dispositivo rinominato in "${newName}"`);
+    } catch {
+      setRenameFeedback("Errore di rete", true);
+    } finally {
+      renameSaveBtn.disabled = false;
+    }
   }
 
   function openDeviceModal(device = null) {
@@ -257,18 +354,22 @@ export function createAutomationController(elements) {
         .join(" · ");
       const window = rule.between ? ` · ${rule.between[0]}→${rule.between[1]}` : "";
       const cooldown = rule.cooldown ? ` · cooldown ${escHtml(String(rule.cooldown))}` : "";
+      const enabled = rule.enabled !== false;
 
       const card = document.createElement("div");
       card.className = "camera-profile-card";
       card.innerHTML = `
         <div class="camera-profile-info">
-          <strong>${escHtml(rule.name)}</strong>
+          <strong>${escHtml(rule.name)} ${enabled ? "" : "<span style='opacity:.5;font-weight:400'>(disabilitata)</span>"}</strong>
           <span class="camera-profile-meta">
             on: <em>${escHtml(rule.on)}</em>${window}${cooldown}
           </span>
           <span class="camera-profile-meta">${actions || "—"}</span>
         </div>
         <div class="camera-profile-actions">
+          <button class="ghost-button compact-button btn-preview-rule" data-name="${escHtml(rule.name)}" title="Mostra le azioni senza eseguirle">Anteprima</button>
+          <button class="ghost-button compact-button btn-run-rule" data-name="${escHtml(rule.name)}" title="Esegui ora le azioni della regola">Esegui</button>
+          <button class="ghost-button compact-button btn-toggle-rule" data-name="${escHtml(rule.name)}" data-enabled="${enabled}">${enabled ? "Disabilita" : "Abilita"}</button>
           <button class="ghost-button compact-button btn-edit-rule" data-name="${escHtml(rule.name)}">Modifica</button>
           <button class="ghost-button compact-button btn-del-rule" data-name="${escHtml(rule.name)}" style="color:#ff89ad">Elimina</button>
         </div>
@@ -278,6 +379,20 @@ export function createAutomationController(elements) {
 
     // cache for edit modal
     ruleList._rules = list;
+
+    ruleList.querySelectorAll(".btn-preview-rule").forEach((btn) => {
+      btn.addEventListener("click", () => testRule(btn.dataset.name, false));
+    });
+
+    ruleList.querySelectorAll(".btn-run-rule").forEach((btn) => {
+      btn.addEventListener("click", () => testRule(btn.dataset.name, true));
+    });
+
+    ruleList.querySelectorAll(".btn-toggle-rule").forEach((btn) => {
+      btn.addEventListener("click", () =>
+        toggleRule(btn.dataset.name, btn.dataset.enabled !== "true"),
+      );
+    });
 
     ruleList.querySelectorAll(".btn-edit-rule").forEach((btn) => {
       btn.addEventListener("click", () => {
@@ -289,6 +404,49 @@ export function createAutomationController(elements) {
     ruleList.querySelectorAll(".btn-del-rule").forEach((btn) => {
       btn.addEventListener("click", () => deleteRule(btn.dataset.name));
     });
+  }
+
+  // ── Rule test + enable toggle ──────────────────────────────
+  async function testRule(name, execute) {
+    setFeedback(execute ? `Esecuzione "${name}"...` : `Anteprima "${name}"...`);
+    try {
+      const { response, data } = await fetchJson(
+        `/api/automazione/rules/${encodeURIComponent(name)}/test`,
+        { method: "POST", headers: JSON_HEADERS, body: JSON.stringify({ execute }) },
+      );
+      if (!response.ok || !data.ok) {
+        setFeedback(data.error || "Test regola fallito", true);
+        return;
+      }
+      const summary = (data.actions || [])
+        .map((a) => `${a.device}→${ACTION_LABEL[a.action] || a.action}`)
+        .join(", ");
+      setFeedback(
+        execute
+          ? `"${name}" eseguita: ${summary || "nessuna azione"} ✓`
+          : `Anteprima "${name}": ${summary || "nessuna azione"}`,
+      );
+    } catch {
+      setFeedback("Errore di rete", true);
+    }
+  }
+
+  async function toggleRule(name, enabled) {
+    try {
+      const { response, data } = await fetchJson(
+        `/api/automazione/rules/${encodeURIComponent(name)}/enabled`,
+        { method: "PATCH", headers: JSON_HEADERS, body: JSON.stringify({ enabled }) },
+      );
+      if (!response.ok || !data.ok) {
+        setFeedback(data.error || "Errore aggiornamento", true);
+        return;
+      }
+      await loadRules();
+      await loadStatus();
+      setFeedback(`Regola "${name}" ${enabled ? "abilitata" : "disabilitata"}`);
+    } catch {
+      setFeedback("Errore di rete", true);
+    }
   }
 
   function openRuleModal(rule = null) {
@@ -410,6 +568,163 @@ export function createAutomationController(elements) {
     }
   }
 
+  // ── Wizard (scan LAN + import file tinytuya) ───────────────
+  function openWizard() {
+    wizardPreview.innerHTML = "";
+    wizardCommitBtn.hidden = true;
+    if (wizardDevicesFile) wizardDevicesFile.value = "";
+    if (wizardSnapshotFile) wizardSnapshotFile.value = "";
+    setWizardFeedback("");
+    wizardDialog.showModal();
+  }
+
+  function renderWizardPreview(found, skipped) {
+    wizardPreview.innerHTML = "";
+    (found || []).forEach((dev) => {
+      const row = document.createElement("div");
+      row.className = "camera-profile-card";
+      row.innerHTML = `
+        <div class="camera-profile-info">
+          <strong>${escHtml(dev.name)}</strong>
+          <span class="camera-profile-meta">${escHtml(dev.ip || "—")} · DP ${dev.switch_dp ?? 1} · key ${dev.local_key === "***" ? "✓" : "—"}</span>
+        </div>`;
+      wizardPreview.appendChild(row);
+    });
+    (skipped || []).forEach((line) => {
+      const p = document.createElement("p");
+      p.className = "tg-hint";
+      p.textContent = `⚠ ${line}`;
+      wizardPreview.appendChild(p);
+    });
+  }
+
+  async function scanLan() {
+    setWizardFeedback("Scansione rete (può richiedere ~10s)...");
+    wizardCommitBtn.hidden = true; // scan = sola scoperta, niente commit (chiavi server-side)
+    try {
+      const { response, data } = await fetchJson("/api/automazione/devices/scan", {
+        method: "POST",
+        headers: JSON_HEADERS,
+        body: "{}",
+      });
+      if (!response.ok || !data.ok) {
+        setWizardFeedback(data.error || "Scan fallito", true);
+        return;
+      }
+      renderWizardPreview(data.devices, data.skipped);
+      setWizardFeedback(`${data.found} dispositivi trovati. Quelli con chiave: importali da file.`);
+    } catch {
+      setWizardFeedback("Errore di rete", true);
+    }
+  }
+
+  function wizardFormData(commit) {
+    const fd = new FormData();
+    if (wizardDevicesFile?.files?.[0]) fd.append("devices", wizardDevicesFile.files[0]);
+    if (wizardSnapshotFile?.files?.[0]) fd.append("snapshot", wizardSnapshotFile.files[0]);
+    if (commit) fd.append("commit", "1");
+    return fd;
+  }
+
+  async function analyzeFiles() {
+    if (!wizardDevicesFile?.files?.[0]) {
+      setWizardFeedback("Seleziona un file devices.json", true);
+      return;
+    }
+    setWizardFeedback("Analisi file...");
+    try {
+      const { response, data } = await fetchJson("/api/automazione/devices/import-tuya", {
+        method: "POST",
+        body: wizardFormData(false),
+      });
+      if (!response.ok || !data.ok) {
+        setWizardFeedback(data.error || "Analisi fallita", true);
+        return;
+      }
+      renderWizardPreview(data.devices, data.skipped);
+      wizardCommitBtn.hidden = (data.devices || []).length === 0;
+      setWizardFeedback(`${(data.devices || []).length} dispositivi pronti per il salvataggio.`);
+    } catch {
+      setWizardFeedback("Errore di rete", true);
+    }
+  }
+
+  async function commitWizard() {
+    setWizardFeedback("Salvataggio...");
+    wizardCommitBtn.disabled = true;
+    try {
+      const { response, data } = await fetchJson("/api/automazione/devices/import-tuya", {
+        method: "POST",
+        body: wizardFormData(true),
+      });
+      if (!response.ok || !data.ok) {
+        setWizardFeedback(data.error || "Salvataggio fallito", true);
+        return;
+      }
+      wizardDialog.close();
+      await loadDevices();
+      await loadStatus();
+      setFeedback(`${(data.devices || []).length} dispositivi importati`);
+    } catch {
+      setWizardFeedback("Errore di rete", true);
+    } finally {
+      wizardCommitBtn.disabled = false;
+    }
+  }
+
+  // ── Import / Export config ─────────────────────────────────
+  async function exportConfig() {
+    setFeedback("Esportazione...");
+    try {
+      const url = await fetchBlobUrl("/api/automazione/export");
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "blackframe-automazione.json";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      setFeedback("Configurazione esportata");
+    } catch {
+      setFeedback("Esportazione fallita", true);
+    }
+  }
+
+  async function importConfig(file) {
+    if (!file) return;
+    setFeedback("Importazione...");
+    try {
+      const text = await file.text();
+      let bundle;
+      try {
+        bundle = JSON.parse(text);
+      } catch {
+        setFeedback("File JSON non valido", true);
+        return;
+      }
+      const { response, data } = await fetchJson("/api/automazione/import", {
+        method: "POST",
+        headers: JSON_HEADERS,
+        body: JSON.stringify(bundle),
+      });
+      if (!response.ok || !data.ok) {
+        setFeedback(data.error || "Importazione fallita", true);
+        return;
+      }
+      await loadDevices();
+      await loadRules();
+      await loadStatus();
+      const errs = (data.errors || []).length;
+      setFeedback(
+        `Importati ${data.devices_imported} dispositivi, ${data.rules_imported} regole` +
+          (errs ? ` · ${errs} errori (vedi console)` : ""),
+      );
+      if (errs) console.warn("Import errori:", data.errors);
+    } catch {
+      setFeedback("Errore di rete", true);
+    }
+  }
+
   // ── Utility ────────────────────────────────────────────────
   function escHtml(str) {
     return String(str ?? "")
@@ -435,6 +750,26 @@ export function createAutomationController(elements) {
     addActionBtn.addEventListener("click", () => addActionRow(null));
     saveRuleBtn.addEventListener("click", saveRule);
     closeRuleBtns.forEach((btn) => btn.addEventListener("click", () => ruleDialog.close()));
+
+    // rename
+    renameSaveBtn.addEventListener("click", renameDevice);
+    closeRenameBtns.forEach((btn) => btn.addEventListener("click", () => renameDialog.close()));
+
+    // wizard
+    wizardBtn.addEventListener("click", openWizard);
+    wizardScanBtn.addEventListener("click", scanLan);
+    wizardUploadBtn.addEventListener("click", analyzeFiles);
+    wizardCommitBtn.addEventListener("click", commitWizard);
+    closeWizardBtns.forEach((btn) => btn.addEventListener("click", () => wizardDialog.close()));
+
+    // import / export
+    exportBtn.addEventListener("click", exportConfig);
+    importBtn.addEventListener("click", () => importFile.click());
+    importFile.addEventListener("change", (e) => {
+      const file = e.target.files?.[0];
+      importConfig(file);
+      e.target.value = "";
+    });
 
     showTab("devices");
     loadStatus();

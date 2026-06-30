@@ -93,6 +93,7 @@ class Rule:
     window: tuple[int, int] | None = None
     cooldown_seconds: float = 0.0
     devices: frozenset[str] = field(default_factory=frozenset)
+    enabled: bool = True
 
 
 def _parse_action(raw: dict, rule_name: str) -> Action:
@@ -162,6 +163,9 @@ def _parse_rule(raw: dict, known_devices: set[str] | None) -> Rule:
         window=parse_time_window(raw.get("between")),
         cooldown_seconds=parse_duration(raw.get("cooldown")),
         devices=devices,
+        # Regola disabilitata = resta nel file ma l'engine non la valuta. Default
+        # True così le regole esistenti (senza il campo) restano attive.
+        enabled=bool(raw.get("enabled", True)),
     )
 
 

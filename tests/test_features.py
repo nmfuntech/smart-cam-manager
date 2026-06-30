@@ -366,6 +366,30 @@ class TelegramCommandBotTests(unittest.TestCase):
             def muted_remaining(self):
                 return self.muted[-1] if self.muted else 0.0
 
+        from blackframe.automation.devices import DeviceError, MockDevice
+
+        class FakeRegistry:
+            def __init__(self):
+                self.devices = {"luce": MockDevice("luce")}
+
+            def device_names(self):
+                return list(self.devices)
+
+            def get(self, name):
+                if name not in self.devices:
+                    raise DeviceError(f"Device '{name}' assente")
+                return self.devices[name]
+
+        class FakeEngine:
+            def __init__(self):
+                self.ran = []
+
+            def run_rule(self, name, *, execute=True):
+                if name == "ignota":
+                    return None
+                self.ran.append((name, execute))
+                return [object(), object()]
+
         services = SimpleNamespace(
             camera=FakeCamera(),
             ptz=FakePtz(),
@@ -373,7 +397,15 @@ class TelegramCommandBotTests(unittest.TestCase):
             runtime_config=FakeRuntimeConfig(),
             continuous=FakeContinuous(),
             features=SimpleNamespace(telegram=FakeNotifier()),
+            automation_registry=FakeRegistry(),
+            automation_engine=FakeEngine(),
         )
+        services.reloaded = 0
+
+        def _reload():
+            services.reloaded += 1
+
+        services.reload_automation = _reload
 
         def _apply_all(updates):
             services.camera.apply_runtime_config(updates)
@@ -491,6 +523,78 @@ class TelegramCommandBotTests(unittest.TestCase):
         self._handle(bot, "/resume")
 
         self.assertEqual(services.features.telegram.muted, [0])
+
+    # --- Domotica ----------------------------------------------------------
+
+    def test_devices_command_lists(self):
+        bot, _ = self._bot()
+        self._handle(bot, "/devices")
+        self.assertIn("luce", self.messages[0][1])
+
+    def test_device_on_turns_on(self):
+        bot, services = self._bot()
+        self._handle(bot, "/device_on luce")
+        self.assertTrue(services.automation_registry.devices["luce"].is_on)
+        self.assertIn("acceso", self.messages[0][1])
+
+    def test_device_off_unknown_reports_error(self):
+        bot, _ = self._bot()
+        self._handle(bot, "/device_off nope")
+        self.assertIn("Errore dispositivo", self.messages[0][1])
+
+    def test_device_on_missing_arg(self):
+        bot, _ = self._bot()
+        self._handle(bot, "/device_on")
+        self.assertIn("Uso:", self.messages[0][1])
+
+    def test_rule_run_executes(self):
+        bot, services = self._bot()
+        self._handle(bot, "/rule_run luce_notte")
+        self.assertEqual(services.automation_engine.ran, [("luce_notte", True)])
+        self.assertIn("eseguita", self.messages[0][1])
+
+    def test_rule_run_unknown_returns_not_found(self):
+        bot, _ = self._bot()
+        self._handle(bot, "/rule_run ignota")
+        self.assertIn("non trovata", self.messages[0][1])
+
+    def test_rule_run_without_engine_reports_disabled(self):
+        bot, services = self._bot()
+        services.automation_engine = None
+        self._handle(bot, "/rule_run luce_notte")
+        self.assertIn("disabilitata", self.messages[0][1])
+
+    def test_rules_list_and_toggle(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        rules_path = Path(tmp.name) / "rules.yaml"
+        rules_path.write_text(
+            "- name: luce_notte\n  on: person_detected\n"
+            "  do:\n    - device: luce\n      action: turn_on\n"
+        )
+        bot, services = self._bot(AUTOMATION_RULES_PATH=str(rules_path))
+
+        self._handle(bot, "/rules")
+        self.assertIn("luce_notte", self.messages[-1][1])
+        self.assertIn("on", self.messages[-1][1])
+
+        self._handle(bot, "/rule_off luce_notte")
+        self.assertIn("disabilitata", self.messages[-1][1])
+        self.assertEqual(services.reloaded, 1)
+
+        import yaml
+
+        data = yaml.safe_load(rules_path.read_text())
+        self.assertFalse(data[0]["enabled"])
+
+    def test_rule_off_unknown_returns_not_found(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        rules_path = Path(tmp.name) / "rules.yaml"
+        rules_path.write_text("[]\n")
+        bot, _ = self._bot(AUTOMATION_RULES_PATH=str(rules_path))
+        self._handle(bot, "/rule_off nope")
+        self.assertIn("non trovata", self.messages[-1][1])
 
     def test_config_command_reports_states(self):
         bot, _ = self._bot(MOTION_ENABLED="true", NOTIFY_TELEGRAM_ENABLED="false")
