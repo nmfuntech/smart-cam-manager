@@ -12,6 +12,7 @@ from urllib.parse import quote, urlparse
 import cv2
 from flask import Flask
 
+from blackframe.agent import AgentService
 from blackframe.auth import auth_bp, configure_auth
 from blackframe.automation import (
     ActionDispatcher,
@@ -2067,6 +2068,7 @@ class AppServices:
     telegram_commands: TelegramCommandBot | None = None
     automation_engine: AutomationEngine | None = None
     automation_registry: DeviceRegistry | None = None
+    agent: AgentService | None = None
 
     def camera_and_motion(self, profile_id: str):
         """Resolve the (camera, motion) pair for a profile: active main pair or a monitor."""
@@ -2132,6 +2134,13 @@ class AppServices:
             except Exception:
                 logger.exception("Ricaricamento automazione fallito")
 
+    def reload_agent(self) -> None:
+        """Ricostruisce (o disattiva) il layer agentico dopo un toggle
+        ``AGENT_ENABLED`` a runtime. Le eventuali proposte in attesa di
+        conferma vengono perse — accettabile: l'utente può solo riproporle."""
+        self.agent = _build_agent(self)
+        logger.info("Agente ricaricato: %s", "attivo" if self.agent is not None else "disabilitato")
+
 
 def _build_registry() -> DeviceRegistry:
     devices_path = os.getenv("AUTOMATION_DEVICES_PATH", "data/tuya_devices.json")
@@ -2165,6 +2174,19 @@ def _build_automation() -> AutomationEngine | None:
     except Exception:
         logger.exception("Avvio automazione fallito — layer disabilitato")
         return None
+
+
+def _build_agent(services: "AppServices") -> AgentService | None:
+    """Costruisce il layer agentico (NLU via Ollama) se AGENT_ENABLED=true.
+
+    Nessuna connessione di rete al momento della costruzione: il client
+    Ollama parla solo su richiesta esplicita (``propose``). Se la variabile
+    e' assente/false l'agente resta None e Telegram/Web rispondono "non
+    abilitato" senza mai provare a contattare Ollama.
+    """
+    if os.getenv("AGENT_ENABLED", "false").lower() != "true":
+        return None
+    return AgentService(services)
 
 
 def build_services() -> AppServices:
@@ -2232,6 +2254,7 @@ def build_services() -> AppServices:
     )
     services.telegram_commands = TelegramCommandBot(services)
     services.telegram_commands.start()
+    services.agent = _build_agent(services)
     return services
 
 

@@ -10,7 +10,6 @@ import hmac
 import json
 import logging
 import os
-import re
 import tempfile
 import threading
 import time
@@ -22,14 +21,11 @@ from collections import defaultdict, deque
 from pathlib import Path
 from typing import Any
 
-from blackframe.automation import DeviceError
-from blackframe.automation.rules_store import load_rules_raw, set_rule_enabled
+from blackframe.commands import COMMAND_REGISTRY, CommandResult
+from blackframe.commands import execute as registry_execute
 from blackframe.notifications import TELEGRAM_API_BASE, telegram_api_call
 from blackframe.recording import record_clip
 from blackframe.service_layer import _write_private_text
-
-# Nome logico device/regola: stessa regola del web layer (rules.yaml / registry).
-_AUTOMATION_NAME_RE = re.compile(r"^[a-z0-9_]+$")
 
 # Clip on-demand: durata di default e limite massimo (secondi).
 CLIP_DEFAULT_SEC = 10
@@ -151,23 +147,6 @@ INLINE_MENU_ROWS = [
     [("⏹ Stop PTZ", "/ptz_stop"), ("🏠 Home", "/ptz_home")],
     [("🗂 Eventi", "/events"), ("🖼 Ultimo", "/latest")],
 ]
-
-PTZ_COMMANDS = {
-    "/ptz_left": "left",
-    "/ptz_right": "right",
-    "/ptz_up": "up",
-    "/ptz_down": "down",
-}
-
-# Soglia movimento: valore piu basso = piu sensibile. Accetta preset IT ed EN.
-SENSITIVITY_PRESETS = {
-    "alta": 15,
-    "media": 30,
-    "bassa": 50,
-    "high": 15,
-    "medium": 30,
-    "low": 50,
-}
 
 
 def _env(name: str, default: str = "") -> str:
@@ -451,11 +430,69 @@ class TelegramCommandBot:
         text = REPLY_BUTTON_COMMANDS.get(raw_text, raw_text)
         command = self._parse_command(text)
         if not command:
+            if text:
+                self._handle_free_text(chat_id, text)
             return
         args = text.split()[1:]
         response = self._dispatch(command, args, chat_id)
         if response:
             self._send_message(chat_id, response)
+
+    def _handle_free_text(self, chat_id: str, text: str) -> None:
+        """Messaggio senza `/comando`: prova a interpretarlo con l'agente NLU.
+
+        Se il layer agentico non e' abilitato, ignora silenziosamente (stesso
+        comportamento di prima: solo i `/comandi` espliciti erano gestiti).
+        """
+        agent = getattr(self.services, "agent", None)
+        if agent is None:
+            return
+        proposal = agent.propose(text, "telegram", chat_id)
+        if not proposal.ok:
+            self._send_message(chat_id, proposal.error or "Non ho capito, usa /help.")
+            return
+        if proposal.executed:
+            response = self._send_result(chat_id, proposal.result) if proposal.result else None
+            if response:
+                self._send_message(chat_id, f"🤖 {response}")
+            return
+        markup = json.dumps(
+            {
+                "inline_keyboard": [
+                    [
+                        {
+                            "text": "✅ Conferma",
+                            "callback_data": f"/agent_confirm {proposal.pending_id}",
+                        },
+                        {
+                            "text": "❌ Annulla",
+                            "callback_data": f"/agent_cancel {proposal.pending_id}",
+                        },
+                    ]
+                ]
+            }
+        )
+        self._send_message(
+            chat_id,
+            f"🤖 Ho capito: {proposal.description}\nConfermi?",
+            reply_markup=markup,
+        )
+
+    def _agent_confirm(self, args: list[str], chat_id: str) -> str | None:
+        agent = getattr(self.services, "agent", None)
+        if agent is None or not args:
+            return "Richiesta non valida o scaduta."
+        proposal = agent.confirm(args[0], "telegram", chat_id)
+        if not proposal.ok:
+            return proposal.error or "Richiesta non valida o scaduta."
+        response = self._send_result(chat_id, proposal.result) if proposal.result else None
+        return f"🤖 {response}" if response else None
+
+    def _agent_cancel(self, args: list[str], chat_id: str) -> str | None:
+        agent = getattr(self.services, "agent", None)
+        if agent is not None and args:
+            agent.cancel(args[0], "telegram", chat_id)
+        return "Annullato."
 
     def _handle_callback(self, callback: dict) -> None:
         chat = (callback.get("message") or {}).get("chat") or {}
@@ -540,95 +577,38 @@ class TelegramCommandBot:
         if command == "/menu":
             self._send_message(chat_id, "Menu comandi:", reply_markup=_inline_menu_markup())
             return None
-        if command == "/status":
-            return self._status_text()
-        if command == "/config":
-            return self._config_text()
-        if command == "/snapshot":
-            return self._send_snapshot(chat_id)
         if command == "/clip":
             return self._send_clip(args, chat_id)
-        if command == "/latest":
-            return self._send_latest_event(chat_id)
-        if command == "/events":
-            return self._events_text()
-        if command == "/motion_on":
-            return self._update_bool("MOTION_ENABLED", True, "Rilevamento movimento attivato.")
-        if command == "/motion_off":
-            return self._update_bool("MOTION_ENABLED", False, "Rilevamento movimento disattivato.")
-        if command == "/sensitivity":
-            return self._set_sensitivity(args)
-        if command == "/notifications_on":
-            return self._update_bool("NOTIFY_TELEGRAM_ENABLED", True, "Notifiche attivate.")
-        if command == "/notifications_off":
-            return self._update_bool("NOTIFY_TELEGRAM_ENABLED", False, "Notifiche disattivate.")
-        if command == "/mute":
-            return self._mute(args)
-        if command == "/resume":
-            return self._resume()
-        if command == "/classification_on":
-            return self._update_bool("CLASSIFICATION_ENABLED", True, "Riconoscimento attivato.")
-        if command == "/classification_off":
-            return self._update_bool("CLASSIFICATION_ENABLED", False, "Riconoscimento disattivato.")
-        if command == "/detect_person_on":
-            return self._update_bool(
-                "CLASSIFICATION_DETECT_PERSON", True, "Notifica persone attivata."
-            )
-        if command == "/detect_person_off":
-            return self._update_bool(
-                "CLASSIFICATION_DETECT_PERSON", False, "Notifica persone disattivata."
-            )
-        if command == "/detect_pet_on":
-            return self._update_bool(
-                "CLASSIFICATION_DETECT_PET", True, "Notifica animali attivata."
-            )
-        if command == "/detect_pet_off":
-            return self._update_bool(
-                "CLASSIFICATION_DETECT_PET", False, "Notifica animali disattivata."
-            )
-        if command == "/record_on":
-            return self._update_bool("RECORD_ENABLED", True, "Clip video evento attivate.")
-        if command == "/record_off":
-            return self._update_bool("RECORD_ENABLED", False, "Clip video evento disattivate.")
-        if command == "/continuous_on":
-            return self._update_bool(
-                "CONTINUOUS_RECORD_ENABLED",
-                True,
-                "Registrazione continua attivata.",
-            )
-        if command == "/continuous_off":
-            return self._update_bool(
-                "CONTINUOUS_RECORD_ENABLED",
-                False,
-                "Registrazione continua disattivata.",
-            )
-        if command in PTZ_COMMANDS:
-            return self._ptz_move(PTZ_COMMANDS[command])
-        if command == "/ptz_stop":
-            return self._ptz_stop()
-        if command in {"/ptz_home", "/home"}:
-            return self._ptz_home()
-        if command == "/devices":
-            return self._devices_text()
-        if command == "/device_on":
-            return self._device_action(args, "turn_on")
-        if command == "/device_off":
-            return self._device_action(args, "turn_off")
-        if command == "/rules":
-            return self._rules_text()
-        if command == "/rule_run":
-            return self._rule_run(args)
-        if command == "/rule_on":
-            return self._set_rule_enabled(args, True)
-        if command == "/rule_off":
-            return self._set_rule_enabled(args, False)
+        if command == "/agent_confirm":
+            return self._agent_confirm(args, chat_id)
+        if command == "/agent_cancel":
+            return self._agent_cancel(args, chat_id)
         if command == "/invite":
             return self._invite_info(chat_id)
         if command == "/guests":
             return self._guests_text(chat_id)
         if command == "/revoke":
             return self._revoke_guest(args, chat_id)
-        return "Comando non riconosciuto. Usa /help."
+
+        # Tutti gli altri comandi vivono nel command registry condiviso con
+        # l'agente (blackframe.commands): un solo posto dove sono definiti
+        # nome, descrizione e handler, cosi' Telegram e l'NLU restano in sync.
+        name = "ptz_home" if command == "/home" else command[1:]
+        spec = COMMAND_REGISTRY.get(name)
+        if spec is None or spec.handler is None:
+            return "Comando non riconosciuto. Usa /help."
+        arg = args[0] if args else None
+        result = registry_execute(name, arg, self.services)
+        return self._send_result(chat_id, result)
+
+    def _send_result(self, chat_id: str, result: CommandResult) -> str | None:
+        if result.photo is not None:
+            ok, error = self._send_photo_bytes(chat_id, result.photo, result.caption or "")
+            return None if ok else f"Invio foto fallito: {error}"
+        if result.video is not None:
+            ok, error = self._send_video_bytes(chat_id, result.video, result.caption or "")
+            return None if ok else f"Invio video fallito: {error}"
+        return result.text
 
     def _help_text(self, chat_id: str | None = None) -> str:
         lines = ["🎥 Comandi BLACKFRAME"]
@@ -644,222 +624,6 @@ class TelegramCommandBot:
             lines.append("/guests - Lista ospiti autorizzati")
             lines.append("/revoke <chat_id> - Rimuovi ospite")
         return "\n".join(lines)
-
-    def _status_text(self) -> str:
-        motion_svc = self.services.motion
-        config = getattr(motion_svc, "config", {}) or {}
-        classifier = getattr(motion_svc, "classifier", None)
-
-        stream = self.services.camera.get_status()
-        motion = motion_svc.get_status()
-        ptz = self.services.ptz.get_status()
-        continuous = (
-            self.services.continuous.status()
-            if getattr(self.services, "continuous", None) is not None
-            else {"active": False}
-        )
-
-        stream_state = stream.get("connection_state") or (
-            "online" if stream.get("connected") else "offline"
-        )
-        motion_on = bool(motion.get("enabled"))
-        moving = "sì" if motion.get("motion_detected") else "no"
-        ptz_state = "ok" if ptz.get("available") else (ptz.get("error") or "non disponibile")
-
-        lines = [
-            "🎥 BLACKFRAME — Stato",
-            "",
-            f"📹 Stream: {stream_state}",
-            f"👁 Movimento: {'attivo' if motion_on else 'spento'} (in corso: {moving})",
-        ]
-
-        # Classification reflects the live config + classifier so it matches reality.
-        if config.get("classification_enabled"):
-            backend = config.get("classification_backend", "?")
-            line = f"🧠 Classificazione: attiva · {backend}"
-            if classifier is not None and not classifier.ready:
-                line += " ⚠️ modello assente"
-            lines.append(line)
-            if classifier is not None:
-                targets = getattr(classifier, "targets", set())
-                persona = "sì" if classifier.LABEL_PERSONA in targets else "no"
-                animali = "sì" if classifier.LABEL_PET in targets else "no"
-                lines.append(f"      🧍 Persone: {persona}   🐕 Animali: {animali}")
-        else:
-            lines.append("🧠 Classificazione: spenta")
-
-        rec = "sì" if config.get("record_enabled") else "no"
-        cont = "sì" if continuous.get("active") else "no"
-        lines.extend(
-            [
-                f"🔔 Notifiche: {self._notifications_state()}",
-                f"⏺ Registrazione: clip evento {rec} · continua {cont}",
-                f"🕹 PTZ: {ptz_state}",
-                f"🕓 Ultimo evento: {motion.get('last_motion_at') or '-'}",
-            ]
-        )
-        return "\n".join(lines)
-
-    def _notifier(self) -> Any | None:
-        features = getattr(self.services, "features", None)
-        return getattr(features, "telegram", None) if features is not None else None
-
-    def _notifications_state(self) -> str:
-        if not _env_bool("NOTIFY_TELEGRAM_ENABLED", False):
-            return "spente"
-        notifier = self._notifier()
-        remaining = notifier.muted_remaining() if notifier is not None else 0
-        if remaining > 0:
-            return f"in pausa ({int(remaining // 60) + 1} min)"
-        return "attive"
-
-    def _config_text(self) -> str:
-        def flag(name: str, on: str, off: str, default: bool = False) -> str:
-            return on if _env_bool(name, default) else off
-
-        return "\n".join(
-            [
-                "Impostazioni BLACKFRAME",
-                f"Movimento: {flag('MOTION_ENABLED', 'attivo', 'spento', True)}",
-                f"Soglia movimento: {_env_int('MOTION_THRESHOLD', 30, 0)}",
-                f"Notifiche: {self._notifications_state()}",
-                f"Riconoscimento: {flag('CLASSIFICATION_ENABLED', 'attivo', 'spento')}",
-                f"Persone: {flag('CLASSIFICATION_DETECT_PERSON', 'si', 'no', True)}"
-                f" | Animali: {flag('CLASSIFICATION_DETECT_PET', 'si', 'no', True)}",
-                f"Clip evento: {flag('RECORD_ENABLED', 'attive', 'spente')}",
-                f"Reg. continua: {flag('CONTINUOUS_RECORD_ENABLED', 'attiva', 'spenta')}",
-            ]
-        )
-
-    def _set_sensitivity(self, args: list[str]) -> str:
-        if not args:
-            return "Uso: /sensitivity bassa|media|alta"
-        preset = args[0].lower()
-        threshold = SENSITIVITY_PRESETS.get(preset)
-        if threshold is None:
-            return "Preset sconosciuto. Usa: bassa, media o alta."
-        try:
-            self._apply_runtime_updates({"MOTION_THRESHOLD": threshold})
-        except ValueError as exc:
-            return f"Config non valida: {exc}"
-        except Exception:
-            logger.exception("Aggiornamento sensibilita da Telegram fallito")
-            return "Aggiornamento fallito."
-        return f"Sensibilita impostata su {preset} (soglia {threshold})."
-
-    def _mute(self, args: list[str]) -> str:
-        notifier = self._notifier()
-        if notifier is None:
-            return "Notifiche non disponibili."
-        minutes = 15.0
-        if args:
-            try:
-                minutes = float(args[0])
-            except ValueError:
-                return "Uso: /mute <minuti>"
-        if minutes <= 0:
-            return "Indica un numero di minuti positivo."
-        notifier.mute(minutes * 60)
-        return f"Notifiche silenziate per {int(minutes)} min."
-
-    def _resume(self) -> str:
-        notifier = self._notifier()
-        if notifier is None:
-            return "Notifiche non disponibili."
-        notifier.mute(0)
-        return "Notifiche riprese."
-
-    # --- Domotica (device + regole) -----------------------------------------
-
-    @staticmethod
-    def _automation_name(args: list[str]) -> str | None:
-        if not args:
-            return None
-        name = args[0].strip()
-        return name if _AUTOMATION_NAME_RE.fullmatch(name) else None
-
-    def _devices_text(self) -> str:
-        registry = getattr(self.services, "automation_registry", None)
-        if registry is None:
-            return "Automazione non disponibile."
-        names = registry.device_names()
-        if not names:
-            return "Nessun dispositivo configurato."
-        return "🏠 Dispositivi:\n" + "\n".join(f"- {name}" for name in names)
-
-    def _device_action(self, args: list[str], action: str) -> str:
-        registry = getattr(self.services, "automation_registry", None)
-        if registry is None:
-            return "Automazione non disponibile."
-        name = self._automation_name(args)
-        if name is None:
-            verb = "device_on" if action == "turn_on" else "device_off"
-            return f"Uso: /{verb} <nome>"
-        try:
-            getattr(registry.get(name), action)()
-        except DeviceError as exc:
-            return f"Errore dispositivo '{name}': {exc}"
-        return f"Dispositivo '{name}' {'acceso' if action == 'turn_on' else 'spento'}."
-
-    def _rules_text(self) -> str:
-        rules = load_rules_raw()
-        if not rules:
-            return "Nessuna regola configurata."
-        lines = ["📜 Regole:"]
-        for rule in rules:
-            if not isinstance(rule, dict):
-                continue
-            name = rule.get("name") or "?"
-            event = rule.get("on") or "?"
-            state = "on" if rule.get("enabled", True) else "off"
-            lines.append(f"- {name} · {event} · {state}")
-        return "\n".join(lines)
-
-    def _rule_run(self, args: list[str]) -> str:
-        name = self._automation_name(args)
-        if name is None:
-            return "Uso: /rule_run <nome>"
-        engine = getattr(self.services, "automation_engine", None)
-        if engine is None:
-            return "Automazione disabilitata: abilitala per eseguire le regole."
-        planned = engine.run_rule(name, execute=True)
-        if planned is None:
-            return f"Regola '{name}' non trovata."
-        return f"Regola '{name}' eseguita ({len(planned)} azioni)."
-
-    def _set_rule_enabled(self, args: list[str], enabled: bool) -> str:
-        name = self._automation_name(args)
-        if name is None:
-            return f"Uso: /rule_{'on' if enabled else 'off'} <nome>"
-        if not set_rule_enabled(name, enabled):
-            return f"Regola '{name}' non trovata."
-        reload_automation = getattr(self.services, "reload_automation", None)
-        if callable(reload_automation):
-            reload_automation()
-        return f"Regola '{name}' {'abilitata' if enabled else 'disabilitata'}."
-
-    def _events_text(self) -> str:
-        events = self.services.motion.list_events(limit=5)
-        if not events:
-            return "Nessun evento salvato."
-        lines = ["Ultimi eventi:"]
-        for event in events:
-            label = event.get("label") or event.get("id")
-            frames = event.get("frame_count")
-            classification = (event.get("classification") or {}).get("class_label")
-            suffix = f" ({classification})" if classification else ""
-            frame_text = f", {frames} frame" if frames is not None else ""
-            lines.append(f"- {label}{suffix}{frame_text}")
-        return "\n".join(lines)
-
-    def _send_snapshot(self, chat_id: str) -> str | None:
-        frame = self.services.camera.get_frame()
-        if frame is None:
-            return "Nessun frame disponibile."
-        ok, error = self._send_photo_bytes(chat_id, frame, "Snapshot live BLACKFRAME")
-        if not ok:
-            return f"Invio snapshot fallito: {error}"
-        return None
 
     def _send_clip(self, args: list[str], chat_id: str) -> str | None:
         seconds = CLIP_DEFAULT_SEC
@@ -905,41 +669,6 @@ class TelegramCommandBot:
             except OSError:
                 pass
 
-    def _send_latest_event(self, chat_id: str) -> str | None:
-        events = self.services.motion.list_events(limit=1)
-        if not events:
-            return "Nessun evento salvato."
-        event = events[0]
-        preview = Path(str(event.get("preview_path") or ""))
-        if not preview.is_file():
-            return "Anteprima ultimo evento non disponibile."
-        try:
-            photo = preview.read_bytes()
-        except OSError:
-            return "Anteprima ultimo evento non leggibile."
-        caption = f"Ultimo evento: {event.get('label') or event.get('id')}"
-        ok, error = self._send_photo_bytes(chat_id, photo, caption)
-        if not ok:
-            return f"Invio ultimo evento fallito: {error}"
-        return None
-
-    def _update_bool(self, key: str, value: bool, success: str) -> str:
-        try:
-            self._apply_runtime_updates({key: value})
-        except ValueError as exc:
-            return f"Config non valida: {exc}"
-        except Exception:
-            logger.exception("Aggiornamento runtime da Telegram fallito")
-            return "Aggiornamento fallito."
-        return success
-
-    def _apply_runtime_updates(self, updates: dict[str, object]) -> None:
-        self.services.runtime_config.update(updates)
-        # Propagate to the active camera and every monitored camera runtime.
-        self.services.apply_runtime_config_all(updates)
-        if "CONTINUOUS_RECORD_ENABLED" in updates and getattr(self.services, "continuous", None):
-            self.services.continuous.apply_config(self.services.motion.config)
-
     def _invite_info(self, chat_id: str) -> str:
         if not self._is_admin(chat_id):
             return "Comando riservato agli amministratori."
@@ -979,18 +708,6 @@ class TelegramCommandBot:
             self._save_guests(guests)
         logger.info("Ospite Telegram rimosso: %s (%s)", name, target_id)
         return f"Ospite {name} ({target_id}) rimosso."
-
-    def _ptz_move(self, direction: str) -> str:
-        success, error = self.services.ptz.move(direction)
-        return "PTZ mosso." if success else f"PTZ fallito: {error}"
-
-    def _ptz_stop(self) -> str:
-        success, error = self.services.ptz.stop()
-        return "PTZ fermato." if success else f"Stop PTZ fallito: {error}"
-
-    def _ptz_home(self) -> str:
-        success, error = self.services.ptz.home()
-        return "PTZ riportato home." if success else f"PTZ home fallito: {error}"
 
     def _send_message(
         self, chat_id: str, text: str, reply_markup: str | None = None

@@ -1,3 +1,4 @@
+from .agent import agent_bp
 from .automation import automation_bp
 from .cameras import cameras_bp
 from .motion import motion_bp
@@ -11,3 +12,4 @@ def register_blueprints(app):
     app.register_blueprint(ptz_bp)
     app.register_blueprint(cameras_bp)
     app.register_blueprint(automation_bp)
+    app.register_blueprint(agent_bp)

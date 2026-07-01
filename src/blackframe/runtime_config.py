@@ -174,6 +174,7 @@ class RuntimeConfigManager:
             "AUTOMATION_DEVICES_PATH": ConfigField(
                 "AUTOMATION_DEVICES_PATH", "str", internal_only=True
             ),
+            "AGENT_ENABLED": ConfigField("AGENT_ENABLED", "bool"),
         }
 
     def get_public_config(self) -> dict:

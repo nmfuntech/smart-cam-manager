@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="it">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="blackframe-csrf-token" content="{{ csrf_token }}" />
+    <title>BLACKFRAME AGENTE</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500;700&display=swap"
+      rel="stylesheet"
+    />
+    <link
+      rel="stylesheet"
+      href="{{ url_for('static', filename='styles.css', v=static_asset_version) }}"
+    />
+  </head>
+  <body>
+
+    <header class="app-header">
+      <a class="app-header-brand" href="/">BLACKFRAME</a>
+      <nav class="app-header-nav">
+        <a class="ghost-button compact-button" href="/">Viewer</a>
+        <a class="ghost-button compact-button" href="/dashboard">Dashboard</a>
+        <a class="ghost-button compact-button" href="/cameras">Camere</a>
+        <a class="ghost-button compact-button" href="/automazione">Automazione</a>
+        <span class="ghost-button compact-button is-current" aria-current="page">Agente</span>
+        <form method="post" action="{{ url_for('auth.logout') }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+          <button class="ghost-button compact-button" type="submit">Esci</button>
+        </form>
+      </nav>
+    </header>
+
+    <main class="page camera-manager-page viewer-page">
+      <section class="viewer-shell camera-manager-shell">
+
+        <div class="viewer-topbar">
+          <div>
+            <h1 class="camera-manager-title">Agente</h1>
+            <p class="description compact">
+              Scrivi in linguaggio naturale cosa vuoi fare: l'assistente propone un
+              comando tra quelli disponibili e, se cambia qualcosa, chiede conferma
+              prima di eseguirlo.
+            </p>
+          </div>
+          <div class="agent-topbar-controls">
+            <span class="status-pill" id="agent-status-pill">Verifica...</span>
+            <label class="auto-topbar-toggle" title="Abilita o disabilita l'assistente NLU">
+              <span>Assistente</span>
+              <input type="checkbox" id="agent-toggle" aria-label="Abilita assistente" />
+            </label>
+          </div>
+        </div>
+
+        <p class="runtime-feedback" id="agent-feedback"></p>
+
+        <div class="agent-chat-panel">
+          <div id="agent-chat-empty" class="agent-chat-empty">
+            <p class="description compact">Prova uno di questi esempi:</p>
+            <div class="agent-chat-suggestions">
+              <button class="ghost-button compact-button agent-suggestion" type="button" data-text="come sta la camera?">
+                Stato camera
+              </button>
+              <button class="ghost-button compact-button agent-suggestion" type="button" data-text="spegni il rilevamento movimento">
+                Spegni movimento
+              </button>
+              <button class="ghost-button compact-button agent-suggestion" type="button" data-text="accendi le notifiche">
+                Notifiche on
+              </button>
+            </div>
+          </div>
+          <div id="agent-chat-log" class="agent-chat-log" aria-live="polite"></div>
+        </div>
+
+        <form id="agent-form" class="agent-composer">
+          <label class="camera-field agent-composer-field">
+            <span class="visually-hidden">Messaggio per l'assistente</span>
+            <input
+              id="agent-input"
+              type="text"
+              placeholder="es. spegni il rilevamento movimento"
+              maxlength="300"
+              autocomplete="off"
+            />
+          </label>
+          <button class="ghost-button compact-button" id="btn-agent-send" type="submit">Invia</button>
+        </form>
+
+      </section>
+    </main>
+
+    <script
+      type="module"
+      src="{{ url_for('static', filename='js/agente-ui.js', v=static_asset_version) }}"
+    ></script>
+  </body>
+</html>

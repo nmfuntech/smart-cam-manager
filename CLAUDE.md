@@ -45,6 +45,10 @@ Three daemon threads run alongside Flask (all use `threading.Lock`, no `RLock`):
 
 **RuntimeConfigManager** writes validated changes back to `.env`. Sensitive fields are redacted from the public API; `internal_only` fields reject API updates.
 
+**Command registry** (`src/blackframe/commands/registry.py`) is the single source of truth for the ~35 channel-agnostic actions (status, toggles, PTZ, device/rule control...) usable by both Telegram slash commands and the agentic layer: `COMMAND_REGISTRY` maps a name to a `CommandSpec` (description, arg schema, `readonly` flag, handler). `TelegramCommandBot._dispatch` looks up commands here instead of hardcoding per-command branches; only Telegram-only meta commands (`start`/`help`/`menu`/`invite`/`guests`/`revoke`) and the async `clip` recording stay outside the registry.
+
+**Agentic layer** (`src/blackframe/agent/`) lets a small local LLM (Ollama, e.g. `qwen2.5:0.5b` — sized for limited mini-PC hardware) turn free-text messages into one of the registry commands: `AgentService.propose()` calls Ollama in JSON mode, then validates the suggested command name against `COMMAND_REGISTRY` (whitelist — a hallucinated name is always rejected) and the argument against `validate_arg`. Read-only commands execute immediately; state-changing commands create a `PendingIntent` (in-memory, TTL-based) that requires an explicit `confirm`/`cancel` before `registry.execute()` runs — this confirmation gate applies only to agent-suggested commands, never to commands typed directly (`/command` on Telegram, or the existing REST/UI actions). Entry points: free-text messages to the Telegram bot (inline-keyboard confirm) and the `/agente` web chat (`routes/agent.py`). Disabled by default (`AGENT_ENABLED=false`); fails closed if Ollama is unreachable.
+
 ## Language
 
 The UI, error messages, and some variable names are in **Italian**. Keep UI-facing strings in Italian (e.g., `"persona"`, `"animale_domestico"`, `"Errore apertura stream video"`).
