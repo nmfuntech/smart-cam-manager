@@ -1,4 +1,4 @@
-#Requires -RunAsAdministrator
+﻿#Requires -RunAsAdministrator
 <#
 .SYNOPSIS
     Registra Ollama come servizio Windows (NSSM) con avvio automatico al boot.
@@ -31,10 +31,12 @@ function Write-Step([string]$Message) {
     Write-Host ">> $Message" -ForegroundColor Cyan
 }
 
-function Invoke-Nssm([string[]]$Args) {
-    & $NssmPath @Args
+function Invoke-Nssm([string[]]$NssmArgs) {
+    # NB: il parametro NON puo' chiamarsi $Args — collide (case-insensitive)
+    # con la variabile automatica di PowerShell, causando argomenti vuoti.
+    & $NssmPath @NssmArgs
     if ($LASTEXITCODE -ne 0) {
-        throw "nssm $($Args -join ' ') fallito (codice $LASTEXITCODE)"
+        throw "nssm $($NssmArgs -join ' ') fallito (codice $LASTEXITCODE)"
     }
 }
 
