@@ -1,9 +1,12 @@
+import json
 import os
+import time
 import unittest
 from unittest import mock
 
 from blackframe.agent import intent
-from blackframe.agent.catalog import build_catalog_text
+from blackframe.agent.catalog import build_catalog_text, build_response_schema
+from blackframe.agent.context import LastTurn
 from blackframe.agent.service import WEB_EXCLUDED_COMMANDS
 
 
@@ -108,10 +111,94 @@ class InterpretTests(unittest.TestCase):
                 return ["lampada_ingresso"]
 
         services = mock.Mock(automation_registry=FakeRegistry())
-        with mock.patch.object(intent.ollama_client, "chat_json", return_value=None) as chat_json:
-            intent.interpret("accendi la lampada", services=services)
+        # Fast-path disattivato: qui si verifica il prompt inviato all'LLM,
+        # e "accendi la lampada" verrebbe altrimenti risolto senza chiamarlo.
+        with mock.patch.dict(os.environ, {"AGENT_FASTPATH": "false"}):
+            with mock.patch.object(
+                intent.ollama_client, "chat_json", return_value=None
+            ) as chat_json:
+                intent.interpret("accendi la lampada", services=services)
         system_prompt = chat_json.call_args[0][2]
         self.assertIn("lampada_ingresso", system_prompt)
+
+
+class InterpretLlmWiringTests(unittest.TestCase):
+    """Cosa arriva davvero a chat_json: schema, esempi, contesto."""
+
+    def _interpret_and_capture(self, text, env=None, **kwargs):
+        with mock.patch.dict(os.environ, env or {}):
+            with mock.patch.object(
+                intent.ollama_client, "chat_json", return_value=None
+            ) as chat_json:
+                intent.interpret(text, **kwargs)
+        return chat_json.call_args
+
+    def test_sentinel_command_is_rejected(self):
+        with mock.patch.object(
+            intent.ollama_client, "chat_json", return_value={"command": "nessuno", "arg": None}
+        ):
+            result = intent.interpret("che tempo fa domani?")
+        self.assertFalse(result.ok)
+
+    def test_response_schema_enum_contains_only_executable_commands(self):
+        call = self._interpret_and_capture("frase qualunque")
+        schema = call.kwargs["response_schema"]
+        enum = schema["properties"]["command"]["anyOf"][0]["enum"]
+        self.assertIn("status", enum)
+        self.assertIn("nessuno", enum)
+        self.assertNotIn("clip", enum)
+
+    def test_response_schema_respects_exclude(self):
+        call = self._interpret_and_capture("frase qualunque", exclude=WEB_EXCLUDED_COMMANDS)
+        enum = call.kwargs["response_schema"]["properties"]["command"]["anyOf"][0]["enum"]
+        self.assertNotIn("snapshot", enum)
+
+    def test_schema_disabled_via_env(self):
+        call = self._interpret_and_capture("frase qualunque", env={"AGENT_SCHEMA_FORMAT": "false"})
+        self.assertIsNone(call.kwargs["response_schema"])
+
+    def test_examples_prepended_as_chat_history(self):
+        call = self._interpret_and_capture("frase qualunque")
+        history = call.kwargs["history"]
+        self.assertGreater(len(history), 0)
+        self.assertEqual(history[0]["role"], "user")
+        self.assertEqual(history[1]["role"], "assistant")
+
+    def test_examples_disabled_via_env(self):
+        call = self._interpret_and_capture(
+            "frase qualunque", env={"AGENT_PROMPT_EXAMPLES": "false"}
+        )
+        self.assertEqual(call.kwargs["history"], [])
+
+    def test_last_turn_appended_as_message_pair(self):
+        turn = LastTurn(
+            user_text="accendi la lampada dell'ingresso",
+            command="device_on",
+            arg="lampada_ingresso",
+            created_at=time.monotonic(),
+        )
+        call = self._interpret_and_capture("ora spegnila", last_turn=turn)
+        history = call.kwargs["history"]
+        self.assertEqual(history[-2]["role"], "user")
+        self.assertEqual(history[-2]["content"], "accendi la lampada dell'ingresso")
+        self.assertEqual(
+            json.loads(history[-1]["content"]),
+            {"command": "device_on", "arg": "lampada_ingresso"},
+        )
+
+    def test_generation_options_passed(self):
+        call = self._interpret_and_capture("frase qualunque", env={"AGENT_OLLAMA_NUM_CTX": "2048"})
+        options = call.kwargs["options"]
+        self.assertEqual(options["num_ctx"], 2048)
+        self.assertEqual(options["num_predict"], 80)
+        self.assertEqual(options["temperature"], 0.0)
+
+
+class ResponseSchemaTests(unittest.TestCase):
+    def test_schema_shape(self):
+        schema = build_response_schema()
+        self.assertEqual(schema["required"], ["command", "arg"])
+        self.assertEqual(schema["properties"]["arg"]["type"], ["string", "null"])
 
 
 class CatalogTests(unittest.TestCase):

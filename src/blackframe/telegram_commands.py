@@ -452,6 +452,11 @@ class TelegramCommandBot:
             self._send_message(chat_id, proposal.error or "Non ho capito, usa /help.")
             return
         if proposal.executed:
+            # La risposta naturale composta dall'LLM (solo domande readonly)
+            # sostituisce l'output grezzo; foto/video passano da _send_result.
+            if proposal.answer:
+                self._send_message(chat_id, f"🤖 {proposal.answer}")
+                return
             response = self._send_result(chat_id, proposal.result) if proposal.result else None
             if response:
                 self._send_message(chat_id, f"🤖 {response}")

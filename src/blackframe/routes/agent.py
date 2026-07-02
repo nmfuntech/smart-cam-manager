@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from flask import Blueprint, current_app, jsonify, render_template, request, session
 
+from blackframe.agent.service import ProposalResult
 from blackframe.auth import AUTH_SESSION_KEY, rate_limit, require_auth, require_csrf
-from blackframe.commands import CommandResult
 
 agent_bp = Blueprint("agent", __name__)
 
@@ -20,12 +20,15 @@ def _channel_key() -> str:
     return str(session.get(AUTH_SESSION_KEY) or "")
 
 
-def _result_payload(result: CommandResult | None) -> dict:
-    if result is None:
+def _result_payload(proposal: ProposalResult) -> dict:
+    if proposal.result is None and proposal.answer is None:
         return {}
     # snapshot/latest (foto) sono escluse dal catalogo lato web (vedi
     # agent.service.WEB_EXCLUDED_COMMANDS): qui arriva sempre solo testo.
-    return {"result_text": result.text}
+    # La risposta naturale composta dall'LLM, se presente, ha precedenza
+    # sull'output grezzo del comando.
+    raw_text = proposal.result.text if proposal.result else None
+    return {"result_text": proposal.answer or raw_text}
 
 
 @agent_bp.get("/agente")
@@ -85,7 +88,7 @@ def agente_interpret():
             "command": proposal.command,
             "description": proposal.description,
             "pending_id": proposal.pending_id,
-            **_result_payload(proposal.result),
+            **_result_payload(proposal),
         }
     )
 
@@ -114,7 +117,7 @@ def agente_confirm():
             "executed": proposal.executed,
             "command": proposal.command,
             "description": proposal.description,
-            **_result_payload(proposal.result),
+            **_result_payload(proposal),
         }
     )
 

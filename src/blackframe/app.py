@@ -2179,14 +2179,18 @@ def _build_automation() -> AutomationEngine | None:
 def _build_agent(services: "AppServices") -> AgentService | None:
     """Costruisce il layer agentico (NLU via Ollama) se AGENT_ENABLED=true.
 
-    Nessuna connessione di rete al momento della costruzione: il client
-    Ollama parla solo su richiesta esplicita (``propose``). Se la variabile
-    e' assente/false l'agente resta None e Telegram/Web rispondono "non
+    L'unica attivita' di rete alla costruzione e' il warm-up asincrono
+    best-effort (thread daemon, mai bloccante) che precarica il modello in
+    RAM: senza, il primo messaggio utente sul mini PC pagherebbe il
+    caricamento da disco oltre AGENT_TIMEOUT_SEC. Se la variabile e'
+    assente/false l'agente resta None e Telegram/Web rispondono "non
     abilitato" senza mai provare a contattare Ollama.
     """
     if os.getenv("AGENT_ENABLED", "false").lower() != "true":
         return None
-    return AgentService(services)
+    agent = AgentService(services)
+    agent.start_warmup()
+    return agent
 
 
 def build_services() -> AppServices:

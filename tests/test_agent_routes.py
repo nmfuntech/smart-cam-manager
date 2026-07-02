@@ -176,9 +176,17 @@ class AgentInterpretTests(AgentRouteTestBase):
         self.assertEqual(resp.status_code, 503)
 
     def test_readonly_command_executes_immediately(self):
-        with mock.patch(
-            "blackframe.agent.intent.ollama_client.chat_json",
-            return_value={"command": "status", "arg": None},
+        # chat_text -> None: composizione naturale fallita, fail-open
+        # sull'output grezzo del comando.
+        with (
+            mock.patch(
+                "blackframe.agent.intent.ollama_client.chat_json",
+                return_value={"command": "status", "arg": None},
+            ),
+            mock.patch(
+                "blackframe.agent.answer.ollama_client.chat_text",
+                return_value=None,
+            ),
         ):
             resp = self._post_json("/api/agente/interpret", {"text": "come sta la camera?"})
         data = resp.get_json()
@@ -186,6 +194,22 @@ class AgentInterpretTests(AgentRouteTestBase):
         self.assertTrue(data["executed"])
         self.assertIsNone(data.get("pending_id"))
         self.assertIn("BLACKFRAME", data["result_text"])
+
+    def test_readonly_question_returns_composed_answer(self):
+        with (
+            mock.patch(
+                "blackframe.agent.intent.ollama_client.chat_json",
+                return_value={"command": "status", "arg": None},
+            ),
+            mock.patch(
+                "blackframe.agent.answer.ollama_client.chat_text",
+                return_value="La telecamera funziona e il movimento è attivo.",
+            ),
+        ):
+            resp = self._post_json("/api/agente/interpret", {"text": "come sta la camera?"})
+        data = resp.get_json()
+        self.assertTrue(data["ok"])
+        self.assertEqual(data["result_text"], "La telecamera funziona e il movimento è attivo.")
 
     def test_state_change_command_requires_confirmation(self):
         with mock.patch(
