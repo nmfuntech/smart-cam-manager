@@ -4,12 +4,14 @@ Questa è la parte che devi fare tu in autonomia: serve a ottenere, **per ogni
 device** (le 2 lampade Alantop e le prese Nooie), i quattro dati che il driver
 locale usa per controllarlo senza cloud:
 
-| Dato | A cosa serve | Dove lo prendi |
-|---|---|---|
-| `device_id` | identifica il device | wizard tinytuya |
-| `local_key` | chiave per il controllo locale (segreta) | wizard tinytuya |
-| `ip` | indirizzo del device in LAN | scan tinytuya |
-| `version` | versione protocollo Tuya (3.1/3.3/3.4/3.5) | scan tinytuya |
+
+| Dato        | A cosa serve                               | Dove lo prendi  |
+| ----------- | ------------------------------------------ | --------------- |
+| `device_id` | identifica il device                       | wizard tinytuya |
+| `local_key` | chiave per il controllo locale (segreta)   | wizard tinytuya |
+| `ip`        | indirizzo del device in LAN                | scan tinytuya   |
+| `version`   | versione protocollo Tuya (3.1/3.3/3.4/3.5) | scan tinytuya   |
+
 
 Alla fine li inserisci nel registry cifrato del progetto (Step 7, import
 automatico da `devices.json`) e, se vuoi, li collaudi uno per uno con lo script PoC.
@@ -25,7 +27,7 @@ automatico da `devices.json`) e, se vuoi, li collaudi uno per uno con lo script 
 
 - Le lampade/prese sono già configurate e funzionanti nell'app **Smart Life**.
 - Il PC su cui giri il wizard/scan è sulla **stessa LAN/subnet** dei device
-  (stesso Wi-Fi/rete; niente isolamento "guest" o VLAN separate).
+(stesso Wi-Fi/rete; niente isolamento "guest" o VLAN separate).
 - `tinytuya` installato (già in `pyproject.toml`): `poetry install`.
 
 > **Comandi copiabili:** tutti i comandi `poetry run …` sotto sono su **una riga
@@ -37,15 +39,15 @@ automatico da `devices.json`) e, se vuoi, li collaudi uno per uno con lo script 
 
 ## Step 1 — Crea un progetto cloud su Tuya IoT Platform
 
-1. Vai su <https://iot.tuya.com> e registra un account (gratuito).
+1. Vai su [https://iot.tuya.com](https://iot.tuya.com) e registra un account (gratuito).
 2. **Cloud → Development → Create Cloud Project**.
-   - **Industry / Development Method**: lascia i default (Smart Home).
-   - **Data Center**: scegli quello della tua regione. Per l'Italia →
-     **Central Europe Data Center**. ⚠️ Deve combaciare con la regione del tuo
-     account Smart Life, altrimenti il wizard non vedrà i device.
+  - **Industry / Development Method**: lascia i default (Smart Home).
+  - **Data Center**: scegli quello della tua regione. Per l'Italia →
+  **Central Europe Data Center**. ⚠️ Deve combaciare con la regione del tuo
+  account Smart Life, altrimenti il wizard non vedrà i device.
 3. Apri il progetto creato. Nella scheda **Overview** annota:
-   - **Access ID / Client ID**
-   - **Access Secret / Client Secret**
+  - **Access ID / Client ID**
+  - **Access Secret / Client Secret**
 
 ## Step 2 — Abilita le API necessarie
 
@@ -62,9 +64,9 @@ Senza queste, il wizard fallisce con errori di permesso.
 
 1. Nel progetto: **Devices → Link App Account → Add App Account**.
 2. Compare un **QR code**. Apri l'app **Smart Life** sul telefono →
-   **Profilo (Io)** → icona **scansione** in alto a destra → inquadra il QR.
+  **Profilo (Io)** → icona **scansione** in alto a destra → inquadra il QR.
 3. Ora la scheda **Devices → All Devices** elenca le tue lampade/prese. Annota un
-   `device_id` qualsiasi (ti serve come "seme" per il wizard).
+  `device_id` qualsiasi (ti serve come "seme" per il wizard).
 
 ## Step 4 — Estrai device_id e local_key (wizard)
 
@@ -75,14 +77,16 @@ poetry run python -m tinytuya wizard
 ```
 
 Rispondi alle domande:
+
 - **API Key** → l'Access ID dello Step 1
 - **API Secret** → l'Access Secret dello Step 1
 - **Any Device ID** → il `device_id` annotato allo Step 3
 - **Region** → `eu` (Central Europe), oppure `us` / `cn` / `in` secondo il tuo data center
 
 Il wizard scarica **tutti** i device collegati e scrive nella cartella corrente:
-- `devices.json` / `tuyadevices.json` → contengono `id`, **`key`** (= `local_key`)
-  e nome di ogni device.
+
+- `devices.json` / `tuyadevices.json` → contengono `id`, `**key`** (= `local_key`)
+e nome di ogni device.
 
 > ⚠️ `devices.json` contiene le `local_key` in chiaro: **non committarlo**.
 > Tienilo locale e cancellalo dopo aver popolato il registry cifrato (Step 7).
@@ -179,8 +183,9 @@ poetry run python scripts/tuya_import_registry.py --scan --map config/automation
 ```
 
 Lo script:
+
 - legge `devices.json` (e `snapshot.json` per dedurre `switch_dp`: `20` lampade
-  RGBCW, `1` prese);
+RGBCW, `1` prese);
 - **salta** i device senza IP (offline / non scansionati);
 - salva cifrato via `DeviceRegistry`.
 
@@ -230,10 +235,10 @@ La pagina **Automazione** (`/automazione`) copre ora l'intero ciclo senza riga d
 comando:
 
 - **Wizard** (tab Dispositivi → *Wizard*): *Scansiona rete* esegue lo scan LAN dal
-  server (broadcast Tuya, durata `TUYA_SCAN_TIMEOUT_SEC`), oppure carica i file
-  `devices.json`/`snapshot.json` del wizard tinytuya per importarli. Lo scan è di
-  sola scoperta: i device con chiave si importano dai file (le `local_key` non
-  transitano dal browser).
+server (broadcast Tuya, durata `TUYA_SCAN_TIMEOUT_SEC`), oppure carica i file
+`devices.json`/`snapshot.json` del wizard tinytuya per importarli. Lo scan è di
+sola scoperta: i device con chiave si importano dai file (le `local_key` non
+transitano dal browser).
 - **Test** per ogni device (⏻ On / ⭘ Off) verifica il funzionamento reale.
 - **Rinomina** aggiorna anche i riferimenti nelle regole.
 - **Esporta/Importa** (in alto): bundle JSON con device (segreti oscurati) e regole.
@@ -249,20 +254,20 @@ Col bot comandi abilitato (`TELEGRAM_COMMANDS_ENABLED=true`): `/devices`,
 ## Troubleshooting
 
 - **Il device non compare nello scan**: PC e device su reti/VLAN diverse, oppure
-  Wi-Fi con "AP/client isolation" attivo. Mettili sulla stessa rete. Alcune prese
-  vanno su Wi-Fi 2.4 GHz: assicurati che il PC raggiunga quel segmento.
+Wi-Fi con "AP/client isolation" attivo. Mettili sulla stessa rete. Alcune prese
+vanno su Wi-Fi 2.4 GHz: assicurati che il PC raggiunga quel segmento.
 - **PoC dà errore di connessione/decrypt**: `--version` sbagliata (riprova col
-  valore esatto dello scan) o `local_key` non aggiornata (ri-esegui il wizard).
-- **`local_key` cambiata all'improvviso**: ruota ogni volta che togli/ri-accoppi
-  il device o ri-linki l'app account. Ri-esegui wizard + scan, poi rilancia
-  `scripts/tuya_import_registry.py` (upsert automatico).
+valore esatto dello scan) o `local_key` non aggiornata (ri-esegui il wizard).
+- `**local_key` cambiata all'improvviso**: ruota ogni volta che togli/ri-accoppi
+il device o ri-linki l'app account. Ri-esegui wizard + scan, poi rilancia
+`scripts/tuya_import_registry.py` (upsert automatico).
 - **Registry vuoto o "non decifrabile"**: hai lanciato comandi senza caricare
-  `.env` (chiave di cifratura diversa). Usa `load_dotenv()` negli script o
-  riavvia l'app; in caso estremo ripopola con import da `devices.json`.
+`.env` (chiave di cifratura diversa). Usa `load_dotenv()` negli script o
+riavvia l'app; in caso estremo ripopola con import da `devices.json`.
 - **Errore di permesso nel wizard**: mancano le API dello Step 2, o il Data
-  Center non combacia con la regione dell'account Smart Life.
+Center non combacia con la regione dell'account Smart Life.
 - **IP che cambia nel tempo**: assegna ai device un **IP statico** o una
-  *reservation* DHCP nel router, così il registry resta valido.
+*reservation* DHCP nel router, così il registry resta valido.
 
 ---
 

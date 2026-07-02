@@ -20,6 +20,7 @@ from blackframe.automation.rules_store import (
 )
 from blackframe.automation.tuya_import import (
     build_registry_payloads,
+    load_name_map,
     load_snapshot_by_id,
     load_tinytuya_devices,
     scan_lan_devices,
@@ -57,6 +58,32 @@ def _redact_payload(payload: dict) -> dict:
         if redacted.get(field):
             redacted[field] = _REDACTED
     return redacted
+
+
+def _default_name_map() -> dict[str, str]:
+    """Mappa nomi Smart Life → logici (se il file esiste)."""
+    path = os.getenv(
+        "AUTOMATION_TUYA_NAME_MAP", "config/automation/tuya_device_names.yaml"
+    )
+    try:
+        return load_name_map(path)
+    except (FileNotFoundError, ValueError):
+        return {}
+
+
+def _commit_device_payloads(payloads: list[dict], skipped: list[str]) -> tuple[list[dict], list[str]]:
+    """Salva i payload nel registry e ricarica l'automazione."""
+    registry = get_services().automation_registry
+    if registry is None:
+        raise RuntimeError("Registry non disponibile")
+    saved: list[dict] = []
+    for payload in payloads:
+        try:
+            saved.append(registry.save_device(payload))
+        except DeviceError as exc:
+            skipped.append(f"{payload.get('name')}: {exc}")
+    get_services().reload_automation()
+    return saved, skipped
 
 
 def _read_upload(file_storage) -> bytes:
@@ -241,7 +268,9 @@ def automazione_rename_device(name: str):
 @require_csrf(api=True)
 @rate_limit("automation", **_RL)
 def automazione_scan_devices():
-    """Scansiona la LAN per device Tuya e restituisce un'anteprima (non salva)."""
+    """Scansiona la LAN per device Tuya; anteprima o salvataggio diretto nel registry."""
+    body = request.get_json(silent=True) or {}
+    commit = bool(body.get("commit"))
     try:
         scan_time = float(os.getenv("TUYA_SCAN_TIMEOUT_SEC", "10"))
     except ValueError:
@@ -252,12 +281,36 @@ def automazione_scan_devices():
         return jsonify({"ok": False, "error": str(exc)}), 501
     except RuntimeError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 504
-    payloads, skipped = build_registry_payloads(found)
+    name_map = _default_name_map()
+    payloads, skipped = build_registry_payloads(found, name_map=name_map)
+    if not commit:
+        return jsonify(
+            {
+                "ok": True,
+                "committed": False,
+                "found": len(found),
+                "devices": [_redact_payload(p) for p in payloads],
+                "skipped": skipped,
+            }
+        )
+    if not payloads:
+        return jsonify(
+            {
+                "ok": False,
+                "error": "Nessun dispositivo importabile dalla scansione",
+                "skipped": skipped,
+            }
+        ), 400
+    try:
+        saved, skipped = _commit_device_payloads(payloads, skipped)
+    except RuntimeError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 503
     return jsonify(
         {
             "ok": True,
+            "committed": True,
             "found": len(found),
-            "devices": [_redact_payload(p) for p in payloads],
+            "devices": saved,
             "skipped": skipped,
         }
     )
@@ -296,7 +349,10 @@ def automazione_import_tuya():
         except (ValueError, OSError) as exc:
             return jsonify({"ok": False, "error": f"File tinytuya non valido: {exc}"}), 400
 
-    payloads, skipped = build_registry_payloads(scan_devices, snapshot_by_id=snapshot_by_id)
+    name_map = _default_name_map()
+    payloads, skipped = build_registry_payloads(
+        scan_devices, snapshot_by_id=snapshot_by_id, name_map=name_map
+    )
 
     commit = str(request.form.get("commit") or "").strip() in {"1", "true", "yes"}
     if not commit:
@@ -309,16 +365,18 @@ def automazione_import_tuya():
             }
         )
 
-    registry = get_services().automation_registry
-    if registry is None:
-        return jsonify({"ok": False, "error": "Registry non disponibile"}), 503
-    saved = []
-    for payload in payloads:
-        try:
-            saved.append(registry.save_device(payload))
-        except DeviceError as exc:
-            skipped.append(f"{payload.get('name')}: {exc}")
-    get_services().reload_automation()
+    if not payloads:
+        return jsonify(
+            {
+                "ok": False,
+                "error": "Nessun dispositivo importabile dal file",
+                "skipped": skipped,
+            }
+        ), 400
+    try:
+        saved, skipped = _commit_device_payloads(payloads, skipped)
+    except RuntimeError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 503
     return jsonify({"ok": True, "committed": True, "devices": saved, "skipped": skipped})
 
 

@@ -1,1 +1,10 @@
-[]
+- name: luce_notturna
+  'on': person_detected
+  cooldown: '30'
+  between:
+  - 00:00
+  - 07:00
+  do:
+  - device: lampada_ingresso
+    action: turn_on
+    for: 30s

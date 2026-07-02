@@ -612,9 +612,33 @@ class AutomationDeviceTestRenameTests(AutomationRouteTestBase):
             resp = self._post_json("/api/automazione/devices/scan", {}, "tok")
         self.assertEqual(resp.status_code, 200)
         data = resp.get_json()
+        self.assertFalse(data["committed"])
         self.assertEqual(data["found"], 1)
         self.assertEqual(data["devices"][0]["name"], "lampada")
         self.assertEqual(data["devices"][0]["local_key"], "***")
+
+    def test_scan_devices_commit_saves_registry(self):
+        fake = [
+            {
+                "name": "Presa Cucina",
+                "id": "dev9",
+                "ip": "10.0.0.9",
+                "version": 3.3,
+                "key": "secret9",
+            }
+        ]
+        with mock.patch("blackframe.routes.automation.scan_lan_devices", return_value=fake):
+            resp = self._post_json("/api/automazione/devices/scan", {"commit": True}, "tok")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        self.assertTrue(data["committed"])
+        registry = DeviceRegistry(store_path=self.devices_path)
+        self.assertEqual(registry.get_config("presa_cucina")["local_key"], "secret9")
+
+    def test_scan_devices_commit_empty_returns_400(self):
+        with mock.patch("blackframe.routes.automation.scan_lan_devices", return_value=[]):
+            resp = self._post_json("/api/automazione/devices/scan", {"commit": True}, "tok")
+        self.assertEqual(resp.status_code, 400)
 
     def test_scan_devices_tinytuya_missing_returns_501(self):
         with mock.patch(

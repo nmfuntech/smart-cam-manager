@@ -136,6 +136,8 @@ def scan_lan_devices(scan_time: float = 10.0) -> list[dict]:
                 "ip": info.get("ip") or ip,
                 "version": info.get("version"),
                 "key": info.get("key"),
+                # DPS dal broadcast: serve a inferire switch_dp (20 lampade, 1 prese).
+                "dps": info.get("dps"),
             }
         )
     return devices
@@ -177,7 +179,8 @@ def build_registry_payloads(
             continue
 
         snap = snapshot_by_id.get(device_id, {})
-        switch_dp = infer_switch_dp(_normalize_dps(snap.get("dps")))
+        dps = _normalize_dps(snap.get("dps")) or _normalize_dps(entry.get("dps"))
+        switch_dp = infer_switch_dp(dps)
 
         payloads.append(
             {

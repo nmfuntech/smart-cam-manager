@@ -54,6 +54,7 @@ export function createAutomationController(elements) {
   let editingDevice = null; // null = new device
   let editingRule = null; // null = new rule
   let renamingDevice = null;
+  let wizardScanReady = false; // true dopo scan LAN con device importabili
 
   // ── Feedback helpers ───────────────────────────────────────
   function setFeedback(text, isError = false) {
@@ -572,6 +573,7 @@ export function createAutomationController(elements) {
   function openWizard() {
     wizardPreview.innerHTML = "";
     wizardCommitBtn.hidden = true;
+    wizardScanReady = false;
     if (wizardDevicesFile) wizardDevicesFile.value = "";
     if (wizardSnapshotFile) wizardSnapshotFile.value = "";
     setWizardFeedback("");
@@ -600,19 +602,34 @@ export function createAutomationController(elements) {
 
   async function scanLan() {
     setWizardFeedback("Scansione rete (può richiedere ~10s)...");
-    wizardCommitBtn.hidden = true; // scan = sola scoperta, niente commit (chiavi server-side)
+    wizardCommitBtn.hidden = true;
+    wizardScanReady = false;
     try {
       const { response, data } = await fetchJson("/api/automazione/devices/scan", {
         method: "POST",
         headers: JSON_HEADERS,
-        body: "{}",
+        body: JSON.stringify({ commit: false }),
       });
       if (!response.ok || !data.ok) {
         setWizardFeedback(data.error || "Scan fallito", true);
         return;
       }
       renderWizardPreview(data.devices, data.skipped);
-      setWizardFeedback(`${data.found} dispositivi trovati. Quelli con chiave: importali da file.`);
+      const ready = (data.devices || []).length;
+      wizardScanReady = ready > 0;
+      wizardCommitBtn.hidden = ready === 0;
+      if (ready > 0) {
+        setWizardFeedback(
+          `${data.found} trovati, ${ready} pronti. Clicca «Salva selezionati» per importarli.`,
+        );
+      } else if (data.found > 0) {
+        setWizardFeedback(
+          `${data.found} trovati ma senza chiave locale: carica devices.json dal wizard tinytuya.`,
+          true,
+        );
+      } else {
+        setWizardFeedback("Nessun dispositivo Tuya trovato sulla rete del server.", true);
+      }
     } catch {
       setWizardFeedback("Errore di rete", true);
     }
@@ -642,6 +659,7 @@ export function createAutomationController(elements) {
         return;
       }
       renderWizardPreview(data.devices, data.skipped);
+      wizardScanReady = false;
       wizardCommitBtn.hidden = (data.devices || []).length === 0;
       setWizardFeedback(`${(data.devices || []).length} dispositivi pronti per il salvataggio.`);
     } catch {
@@ -650,13 +668,28 @@ export function createAutomationController(elements) {
   }
 
   async function commitWizard() {
-    setWizardFeedback("Salvataggio...");
+    const hasFile = Boolean(wizardDevicesFile?.files?.[0]);
+    if (!hasFile && !wizardScanReady) {
+      setWizardFeedback("Esegui una scansione o carica devices.json", true);
+      return;
+    }
+    setWizardFeedback(hasFile ? "Salvataggio da file..." : "Salvataggio da scansione (~10s)...");
     wizardCommitBtn.disabled = true;
     try {
-      const { response, data } = await fetchJson("/api/automazione/devices/import-tuya", {
-        method: "POST",
-        body: wizardFormData(true),
-      });
+      let response;
+      let data;
+      if (hasFile) {
+        ({ response, data } = await fetchJson("/api/automazione/devices/import-tuya", {
+          method: "POST",
+          body: wizardFormData(true),
+        }));
+      } else {
+        ({ response, data } = await fetchJson("/api/automazione/devices/scan", {
+          method: "POST",
+          headers: JSON_HEADERS,
+          body: JSON.stringify({ commit: true }),
+        }));
+      }
       if (!response.ok || !data.ok) {
         setWizardFeedback(data.error || "Salvataggio fallito", true);
         return;
