@@ -312,9 +312,7 @@ class ClassificationNotifyGateTests(unittest.TestCase):
         event_dir = Path(tmpdir) / "motion_event_test"
         event_dir.mkdir()
         clip = event_dir / "event.mp4"
-        writer = cv2.VideoWriter(
-            str(clip), cv2.VideoWriter_fourcc(*"mp4v"), 5.0, (320, 240)
-        )
+        writer = cv2.VideoWriter(str(clip), cv2.VideoWriter_fourcc(*"mp4v"), 5.0, (320, 240))
         for _ in range(10):
             writer.write(np.zeros((240, 320, 3), dtype=np.uint8))
         writer.write(np.full((240, 320, 3), 200, dtype=np.uint8))
@@ -2858,6 +2856,176 @@ class NetworkAndCredentialHardeningTests(unittest.TestCase):
                 headers={"X-Forwarded-For": "also/garbage"},
             )
         self.assertEqual(blocked.status_code, 429)
+
+
+class AutomationSourceContextTests(unittest.TestCase):
+    """EventContext deve portare source (camera_id) e timestamp: le regole
+    con filtro `source:` altrimenti non scattano mai."""
+
+    def setUp(self):
+        self.app_module = load_app_module()
+
+    def _bare_detector(self, camera_id="cam-1"):
+        detector = self.app_module.MotionDetector.__new__(self.app_module.MotionDetector)
+        detector.camera_id = camera_id
+        detector._automation_fired = set()
+        detector.automation = mock.Mock()
+        return detector
+
+    def test_live_automation_context_carries_source_and_timestamp(self):
+        detector = self._bare_detector()
+        detector._fire_live_automation("motion_event_20260417_120001", "persona")
+        ctx = detector.automation.emit.call_args[0][0]
+        self.assertEqual(ctx.source, "cam-1")
+        self.assertIsNotNone(ctx.timestamp)
+        self.assertEqual(ctx.category, "persona")
+
+    def test_close_automation_context_carries_source_and_timestamp(self):
+        detector = self._bare_detector(camera_id="cam-2")
+        detector._emit_automation("motion_event_20260417_120001", "movimento", None)
+        ctx = detector.automation.emit.call_args[0][0]
+        self.assertEqual(ctx.source, "cam-2")
+        self.assertIsNotNone(ctx.timestamp)
+
+
+class MonitorRuntimeWiringTests(unittest.TestCase):
+    def setUp(self):
+        self.app_module = load_app_module()
+
+    def test_build_camera_runtime_passes_automation_and_camera_id(self):
+        engine = mock.Mock()
+        profile = {"id": "garage"}
+        with (
+            mock.patch.object(self.app_module, "CameraStream") as camera_cls,
+            mock.patch.object(self.app_module, "EventRecorder"),
+            mock.patch.object(self.app_module, "ContinuousRecorder"),
+            mock.patch.object(self.app_module, "MotionDetector") as motion_cls,
+            mock.patch.object(self.app_module, "rtsp_url_from_profile", return_value="rtsp://x"),
+            mock.patch.object(self.app_module, "get_stream_config", return_value={}),
+            mock.patch.object(self.app_module, "motion_config_for_profile", return_value={}),
+        ):
+            runtime = self.app_module.build_camera_runtime(profile, None, engine)
+        self.assertIs(motion_cls.call_args.kwargs["automation"], engine)
+        self.assertEqual(motion_cls.call_args.kwargs["camera_id"], "garage")
+        self.assertEqual(runtime.profile_id, "garage")
+        camera_cls.assert_called_once()
+
+
+class RetentionJanitorSweepTests(unittest.TestCase):
+    def setUp(self):
+        self.app_module = load_app_module()
+
+    def test_sweep_purges_every_detector_and_survives_errors(self):
+        good = mock.Mock()
+        good.config = {"retention_interval_sec": 120}
+        good.camera_id = "attiva"
+        good.purge_old_events.return_value = 2
+        broken = mock.Mock()
+        broken.config = {"retention_interval_sec": 120}
+        broken.camera_id = "monitor"
+        broken.purge_old_events.side_effect = RuntimeError("boom")
+
+        janitor = self.app_module.RetentionJanitor.__new__(self.app_module.RetentionJanitor)
+        janitor._provider = lambda: [good, broken]
+
+        interval = janitor._sweep()
+
+        good.purge_old_events.assert_called_once()
+        broken.purge_old_events.assert_called_once()
+        self.assertEqual(interval, 120.0)
+
+
+class ContinuousConfigPropagationTests(unittest.TestCase):
+    def setUp(self):
+        self.app_module = load_app_module()
+
+    def _services(self):
+        active_continuous = mock.Mock()
+        monitor_continuous = mock.Mock()
+        monitor_continuous.config = {
+            "continuous_record_enabled": False,
+            "save_dir": "captures/motion/garage",
+        }
+        monitor = mock.Mock()
+        monitor.continuous = monitor_continuous
+        services = self.app_module.AppServices(
+            camera=mock.Mock(),
+            ptz=mock.Mock(),
+            motion=mock.Mock(),
+            features=mock.Mock(),
+            runtime_config=mock.Mock(),
+            monitors={"garage": monitor},
+            continuous=active_continuous,
+        )
+        return services, active_continuous, monitor_continuous
+
+    def test_continuous_updates_reach_active_and_monitors(self):
+        services, active, monitor = self._services()
+        with mock.patch.object(
+            self.app_module, "get_motion_config", return_value={"continuous_record_enabled": True}
+        ):
+            services.apply_runtime_config_all({"CONTINUOUS_RECORD_ENABLED": True})
+        active.apply_config.assert_called_once_with({"continuous_record_enabled": True})
+        merged = monitor.apply_config.call_args[0][0]
+        self.assertTrue(merged["continuous_record_enabled"])
+        # La config del monitor deriva dal profilo: save_dir non deve cambiare.
+        self.assertEqual(merged["save_dir"], "captures/motion/garage")
+
+    def test_non_continuous_updates_do_not_touch_recorders(self):
+        services, active, monitor = self._services()
+        services.apply_runtime_config_all({"MOTION_ENABLED": True})
+        active.apply_config.assert_not_called()
+        monitor.apply_config.assert_not_called()
+
+    def test_string_bool_coerced_for_monitors(self):
+        services, _, monitor = self._services()
+        with mock.patch.object(self.app_module, "get_motion_config", return_value={}):
+            services.apply_runtime_config_all({"CONTINUOUS_RECORD_ENABLED": "true"})
+        merged = monitor.apply_config.call_args[0][0]
+        self.assertIs(merged["continuous_record_enabled"], True)
+
+
+class GetEventDirectResolutionTests(unittest.TestCase):
+    def setUp(self):
+        self.app_module = load_app_module()
+        self.tmpdir = tempfile.mkdtemp(prefix="get-event-")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir)
+
+    def _store(self):
+        return self.app_module.MotionEventStore(
+            {"save_dir": self.tmpdir, "event_gap": 3.0, "max_event_duration": 45.0}
+        )
+
+    def _make_event(self, name, closed=True):
+        event_dir = Path(self.tmpdir) / name
+        event_dir.mkdir(parents=True)
+        (event_dir / "cover.jpg").write_bytes(b"jpg")
+        (event_dir / "latest.jpg").write_bytes(b"jpg")
+        (event_dir / f"frame_{name.replace('motion_event_', '')}_001.jpg").write_bytes(b"jpg")
+        if closed:
+            (event_dir / self.app_module.MotionEventStore.CLOSED_MARKER_NAME).write_bytes(b"")
+        return event_dir
+
+    def test_get_event_resolves_without_full_listing(self):
+        self._make_event("motion_event_20260417_120001")
+        self._make_event("motion_event_20260417_120101")
+        self._make_event("motion_event_20260417_120201__persona")
+        store = self._store()
+
+        with mock.patch.object(
+            store, "_iter_saved_events", side_effect=AssertionError("full listing usato")
+        ):
+            event = store.get_event("motion_event_20260417_120101")
+        self.assertIsNotNone(event)
+        self.assertEqual(event["id"], "motion_event_20260417_120101")
+        self.assertIn("frames", event)
+
+    def test_get_event_unknown_id_returns_none(self):
+        self._make_event("motion_event_20260417_120001")
+        store = self._store()
+        self.assertIsNone(store.get_event("motion_event_20990101_000000"))
 
 
 if __name__ == "__main__":

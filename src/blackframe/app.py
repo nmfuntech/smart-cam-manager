@@ -974,6 +974,7 @@ class MotionDetector:
         notifier=None,
         recorder=None,
         automation=None,
+        camera_id: str | None = None,
     ):
         self.camera_stream = camera_stream
         self.config = config
@@ -982,6 +983,9 @@ class MotionDetector:
         self.notifier = notifier
         self.recorder = recorder
         self.automation = automation
+        # Id del profilo camera sorgente: finisce in EventContext.source così le
+        # regole di automazione con filtro `source:` possono scattare per camera.
+        self.camera_id = camera_id
         self._classified_events: set[str] = set()
         self._notified_events: set[str] = set()
         self._finalized_events: set[str] = set()
@@ -1357,6 +1361,9 @@ class MotionDetector:
             ctx = EventContext(
                 event_id=event_id,
                 category=label,
+                # getattr: i test costruiscono detector via __new__ senza __init__.
+                source=getattr(self, "camera_id", None),
+                timestamp=time.time(),
                 video_path=str(video_path) if video_path else None,
             )
             automation.emit(ctx)
@@ -1523,7 +1530,14 @@ class MotionDetector:
             return
         self._automation_fired.add(base_id)
         try:
-            automation.emit(EventContext(event_id=event_id, category=detected_label))
+            automation.emit(
+                EventContext(
+                    event_id=event_id,
+                    category=detected_label,
+                    source=getattr(self, "camera_id", None),
+                    timestamp=time.time(),
+                )
+            )
             logger.info("Automazione live: %s (%s)", event_id, detected_label)
         except Exception:
             logger.exception("Automazione live fallita per evento %s", event_id)
@@ -1999,25 +2013,63 @@ class MotionDetector:
 
 
 class RetentionJanitor:
-    """Daemon thread that periodically deletes old motion events to bound disk usage."""
+    """Daemon thread that periodically deletes old motion events to bound disk usage.
 
-    def __init__(self, motion: MotionDetector):
-        self.motion = motion
+    Riceve un provider (non una lista fissa) così copre anche i monitor avviati
+    dopo il boot via ``start_monitor``: ogni giro rilegge l'elenco corrente dei
+    MotionDetector (camera attiva + monitor) e ripulisce le directory di tutti —
+    prima solo la camera attiva veniva purgata e i monitor crescevano senza limite.
+    """
+
+    def __init__(self, motion_provider: Callable[[], list["MotionDetector"]]):
+        self._provider = motion_provider
         self.thread = threading.Thread(target=self._run, daemon=True)
         self.thread.start()
+
+    def _sweep(self) -> float:
+        """Un giro di retention su tutti i detector; ritorna l'intervallo per il prossimo."""
+        interval = 3600.0
+        for motion in self._provider():
+            interval = float(motion.config.get("retention_interval_sec", 3600) or 3600)
+            try:
+                removed = motion.purge_old_events()
+                if removed:
+                    logger.info(
+                        "Retention (%s): rimossi %s eventi di movimento",
+                        motion.camera_id or "default",
+                        removed,
+                    )
+            except Exception:
+                logger.exception("Errore retention eventi (%s)", motion.camera_id or "default")
+        return interval
 
     def _run(self) -> None:
         # Run once shortly after boot, then on the configured interval.
         time.sleep(10)
         while True:
-            interval = float(self.motion.config.get("retention_interval_sec", 3600) or 3600)
-            try:
-                removed = self.motion.purge_old_events()
-                if removed:
-                    logger.info("Retention: rimossi %s eventi di movimento", removed)
-            except Exception:
-                logger.exception("Errore retention eventi")
+            interval = self._sweep()
             time.sleep(max(interval, 60))
+
+
+# Chiavi env runtime -> chiavi lowercase della config del ContinuousRecorder.
+_CONTINUOUS_KEY_MAP = {
+    "CONTINUOUS_RECORD_ENABLED": "continuous_record_enabled",
+    "CONTINUOUS_RECORD_SEGMENT_MIN": "continuous_record_segment_min",
+    "CONTINUOUS_RECORD_RETAIN_HOURS": "continuous_record_retain_hours",
+}
+
+
+def _coerce_continuous_value(env_key: str, value):
+    """Gli updates del PATCH arrivano raw dal client (bool/num/stringa): la
+    config del recorder vuole tipi nativi."""
+    if env_key == "CONTINUOUS_RECORD_ENABLED":
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "on"}
+        return bool(value)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return value
 
 
 @dataclass
@@ -2040,12 +2092,19 @@ class CameraRuntime:
             self.continuous.stop()
 
 
-def build_camera_runtime(profile: dict, notifier=None) -> CameraRuntime:
+def build_camera_runtime(profile: dict, notifier=None, automation=None) -> CameraRuntime:
     camera = CameraStream(rtsp_url_from_profile(profile), get_stream_config())
     motion_config = motion_config_for_profile(profile)
     recorder = EventRecorder(camera, motion_config)
     continuous = ContinuousRecorder(camera, motion_config, camera_id=profile["id"])
-    motion = MotionDetector(camera, motion_config, notifier=notifier, recorder=recorder)
+    motion = MotionDetector(
+        camera,
+        motion_config,
+        notifier=notifier,
+        recorder=recorder,
+        automation=automation,
+        camera_id=profile["id"],
+    )
     continuous.start()
     return CameraRuntime(
         profile_id=profile["id"],
@@ -2087,7 +2146,9 @@ class AppServices:
         profile = self.features.camera_profiles.get_profile(profile_id)
         if not profile:
             return False
-        self.monitors[profile_id] = build_camera_runtime(profile, self.features.telegram)
+        self.monitors[profile_id] = build_camera_runtime(
+            profile, self.features.telegram, self.automation_engine
+        )
         return True
 
     def stop_monitor(self, profile_id: str) -> None:
@@ -2108,6 +2169,30 @@ class AppServices:
             runtime.camera.apply_runtime_config(updates)
             runtime.motion.apply_runtime_config(updates)
             # monitored cameras have no PTZ controller
+        self._apply_continuous_config(updates)
+
+    def _apply_continuous_config(self, updates: dict) -> None:
+        """Propaga i cambi CONTINUOUS_RECORD_* ai recorder in esecuzione.
+
+        Senza questo, il toggle da UI scrive l'env ma il ContinuousRecorder
+        attivo mantiene la config vecchia fino al riavvio (apply_config avvia/
+        ferma il segment loop da solo)."""
+        if not any(key in _CONTINUOUS_KEY_MAP for key in updates):
+            return
+        if self.continuous is not None:
+            # L'env è già aggiornato da RuntimeConfigManager.update: la config
+            # della camera attiva si può rileggere per intero.
+            self.continuous.apply_config(get_motion_config())
+        for runtime in self.monitors.values():
+            if runtime.continuous is None:
+                continue
+            # La config dei monitor deriva dal profilo (save_dir/camera propri):
+            # merge delle sole chiavi continuous, mai get_motion_config().
+            merged = dict(runtime.continuous.config)
+            for env_key, cfg_key in _CONTINUOUS_KEY_MAP.items():
+                if env_key in updates:
+                    merged[cfg_key] = _coerce_continuous_value(env_key, updates[env_key])
+            runtime.continuous.apply_config(merged)
 
     def reload_automation(self) -> None:
         """Ricostruisce DeviceRegistry + AutomationEngine e li ri-aggancia a tutti i MotionDetector.
@@ -2217,9 +2302,13 @@ def build_services() -> AppServices:
     automation_registry = _build_registry()
     automation = _build_automation()
     motion = MotionDetector(
-        camera, motion_config, notifier=notifier, recorder=recorder, automation=automation
+        camera,
+        motion_config,
+        notifier=notifier,
+        recorder=recorder,
+        automation=automation,
+        camera_id=active_profile_id or "default",
     )
-    RetentionJanitor(motion)
     continuous.start()
     features = FeatureServices(
         presets=PresetService(),
@@ -2241,7 +2330,7 @@ def build_services() -> AppServices:
                 continue
             full_profile = camera_profiles.get_profile(pid)
             if full_profile:
-                monitors[pid] = build_camera_runtime(full_profile, notifier)
+                monitors[pid] = build_camera_runtime(full_profile, notifier, automation)
     except Exception:
         logger.exception("Avvio monitor multi-camera fallito")
 
@@ -2256,6 +2345,8 @@ def build_services() -> AppServices:
         automation_engine=automation,
         automation_registry=automation_registry,
     )
+    # Dopo AppServices così il provider vede anche i monitor avviati a runtime.
+    RetentionJanitor(lambda: [services.motion, *(rt.motion for rt in services.monitors.values())])
     services.telegram_commands = TelegramCommandBot(services)
     services.telegram_commands.start()
     services.agent = _build_agent(services)

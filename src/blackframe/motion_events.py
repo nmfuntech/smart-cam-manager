@@ -70,9 +70,7 @@ class MotionEventStore:
             return None, None
 
         self.current_event_frame_count += 1
-        filepath = (
-            event_dir / f"frame_{timestamp}_{self.current_event_frame_count:03d}.jpg"
-        )
+        filepath = event_dir / f"frame_{timestamp}_{self.current_event_frame_count:03d}.jpg"
         ok = cv2.imwrite(str(filepath), frame)
         if not ok:
             raise RuntimeError("Impossibile salvare il fotogramma di movimento")
@@ -137,8 +135,26 @@ class MotionEventStore:
         )
 
     def get_event(self, event_id: str):
-        for event in self.list_events(limit=500, include_frames=True):
-            if event["id"] == event_id:
+        """Risolve un singolo evento senza ricostruire l'intero archivio.
+
+        Prima costava O(tutti gli eventi x frame) per richiesta: list_events
+        globbava e leggeva meta.json di ogni evento solo per trovarne uno.
+        """
+        event_dir = self.find_event_dir(event_id)
+        if event_dir is not None:
+            if not self._ensure_event_is_closed(event_dir):
+                return None
+            event = self._build_saved_event(event_dir, include_frames=True)
+            if event and event["id"] == event_id:
+                return event
+            return None
+        # Fallback: eventi legacy (jpg sciolti pre-directory) non risolvibili
+        # per directory — raggruppati al volo come in list_events.
+        save_dir = Path(self.config["save_dir"])
+        if not save_dir.exists():
+            return None
+        for event in self._iter_legacy_events(save_dir, include_frames=True):
+            if event and event["id"] == event_id:
                 return event
         return None
 
