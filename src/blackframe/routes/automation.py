@@ -62,16 +62,16 @@ def _redact_payload(payload: dict) -> dict:
 
 def _default_name_map() -> dict[str, str]:
     """Mappa nomi Smart Life → logici (se il file esiste)."""
-    path = os.getenv(
-        "AUTOMATION_TUYA_NAME_MAP", "config/automation/tuya_device_names.yaml"
-    )
+    path = os.getenv("AUTOMATION_TUYA_NAME_MAP", "config/automation/tuya_device_names.yaml")
     try:
         return load_name_map(path)
     except (FileNotFoundError, ValueError):
         return {}
 
 
-def _commit_device_payloads(payloads: list[dict], skipped: list[str]) -> tuple[list[dict], list[str]]:
+def _commit_device_payloads(
+    payloads: list[dict], skipped: list[str]
+) -> tuple[list[dict], list[str]]:
     """Salva i payload nel registry e ricarica l'automazione."""
     registry = get_services().automation_registry
     if registry is None:
