@@ -1,6 +1,7 @@
 import json
 import re
 import shutil
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -24,6 +25,43 @@ class MotionEventStore:
         self.current_event_last_at = None
         self.current_event_started_at = None
         self.current_event_frame_count = 0
+        # Cache dei summary (include_frames=False), chiave nome dir, valore
+        # ((dir_mtime_ns, meta_mtime_ns), summary): il poll dell'archivio UI
+        # rileggeva glob + meta.json di OGNI evento a ogni richiesta. Le
+        # scritture su file esistenti non toccano il dir-mtime, quindi oltre
+        # alla chiave serve l'invalidazione esplicita nei punti di modifica.
+        self._summary_lock = threading.Lock()
+        self._summary_cache: dict[str, tuple[tuple[int, int], dict]] = {}
+
+    def _summary_key(self, event_dir: Path) -> tuple[int, int] | None:
+        try:
+            dir_ns = event_dir.stat().st_mtime_ns
+            meta_path = self._meta_path(event_dir)
+            meta_ns = meta_path.stat().st_mtime_ns if meta_path.exists() else 0
+        except OSError:
+            return None
+        return (dir_ns, meta_ns)
+
+    def _cached_summary(self, event_dir: Path):
+        key = self._summary_key(event_dir)
+        name = event_dir.name
+        if key is not None:
+            with self._summary_lock:
+                cached = self._summary_cache.get(name)
+                if cached is not None and cached[0] == key:
+                    return dict(cached[1])
+        event = self._build_saved_event(event_dir, include_frames=False)
+        if event is not None and key is not None:
+            with self._summary_lock:
+                self._summary_cache[name] = (key, dict(event))
+        return event
+
+    def _invalidate_summary(self, dir_name: str | None = None) -> None:
+        with self._summary_lock:
+            if dir_name is None:
+                self._summary_cache.clear()
+            else:
+                self._summary_cache.pop(dir_name, None)
 
     def _prepare_event(self, timestamp: str) -> tuple[str | None, Path | None]:
         """Open an event directory if needed, without saving a frame yet."""
@@ -118,6 +156,7 @@ class MotionEventStore:
             src.rename(dst)
         except OSError:
             return event_id
+        self._invalidate_summary(event_id)
         return new_id
 
     def save_event_meta(self, event_id: str, data: dict) -> None:
@@ -133,6 +172,7 @@ class MotionEventStore:
             json.dumps(existing, ensure_ascii=True, indent=2),
             encoding="utf-8",
         )
+        self._invalidate_summary(event_id)
 
     def get_event(self, event_id: str):
         """Risolve un singolo evento senza ricostruire l'intero archivio.
@@ -176,6 +216,7 @@ class MotionEventStore:
             return 0
 
         self.close_current_event()
+        self._invalidate_summary()
         removed = 0
         for path in save_dir.iterdir():
             if path.is_dir() and path.name.startswith("motion_event_"):
@@ -287,6 +328,7 @@ class MotionEventStore:
             for item in entries:
                 if item["time"] < cutoff:
                     shutil.rmtree(item["path"], ignore_errors=True)
+                    self._invalidate_summary(item["path"].name)
                     removed += 1
                 else:
                     survivors.append(item)
@@ -299,6 +341,7 @@ class MotionEventStore:
                 if total <= quota_bytes:
                     break
                 shutil.rmtree(item["path"], ignore_errors=True)
+                self._invalidate_summary(item["path"].name)
                 total -= item["size"]
                 removed += 1
 
@@ -321,7 +364,10 @@ class MotionEventStore:
                 continue
             if not self._ensure_event_is_closed(event_dir):
                 continue
-            event = self._build_saved_event(event_dir, include_frames)
+            if include_frames:
+                event = self._build_saved_event(event_dir, include_frames)
+            else:
+                event = self._cached_summary(event_dir)
             if event:
                 events.append(event)
         return events
@@ -438,6 +484,7 @@ class MotionEventStore:
         if not event_dir.exists():
             return
         self._marker_path(event_dir).touch(exist_ok=True)
+        self._invalidate_summary(event_dir.name)
 
     def _ensure_event_is_closed(self, event_dir: Path) -> bool:
         marker_path = self._marker_path(event_dir)

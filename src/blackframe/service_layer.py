@@ -1,4 +1,5 @@
 import base64
+import copy
 import hashlib
 import json
 import logging
@@ -7,6 +8,7 @@ import platform
 import re
 import subprocess
 import tempfile
+import threading
 import time
 import uuid
 from dataclasses import dataclass
@@ -333,6 +335,11 @@ class CameraProfileService:
         self.store_path = Path(store_path)
         default_key_path = self.store_path.with_name(f".{self.store_path.stem}.key")
         self.secret_cipher = ProfileSecretCipher(key_path or default_key_path)
+        # Cache dello store decifrato, chiave (mtime_ns, size): get_active_profile_id
+        # è sul percorso di OGNI richiesta MJPEG/snapshot/status e senza cache ogni
+        # frame pagava lettura disco + Fernet-decrypt dell'intero JSON.
+        self._cache_lock = threading.Lock()
+        self._cache: tuple[tuple[int, int], dict] | None = None
 
     def list_profiles(self) -> list[dict]:
         data = self._read_store()
@@ -454,7 +461,32 @@ class CameraProfileService:
             "MOTION_SAVE_DIR": self._build_motion_dir(profile["id"]),
         }
 
+    def _store_stat_key(self) -> tuple[int, int] | None:
+        try:
+            stat = self.store_path.stat()
+        except OSError:
+            return None
+        return (stat.st_mtime_ns, stat.st_size)
+
     def _read_store(self) -> dict:
+        """Store decifrato, con cache invalidata da mtime/size del file.
+
+        deepcopy obbligatorio in entrambe le direzioni: i chiamanti mutano il
+        dict ritornato (``activate_profile``, ``ensure_default_profile``)."""
+        key = self._store_stat_key()
+        if key is not None:
+            with self._cache_lock:
+                if self._cache is not None and self._cache[0] == key:
+                    return copy.deepcopy(self._cache[1])
+        data = self._read_store_uncached()
+        # Ri-stat dopo la lettura: la migrazione plaintext->cifrato dentro la
+        # lettura può riscrivere il file (mtime nuovo).
+        key = self._store_stat_key()
+        with self._cache_lock:
+            self._cache = (key, copy.deepcopy(data)) if key is not None else None
+        return data
+
+    def _read_store_uncached(self) -> dict:
         if not self.store_path.exists():
             return {"active_profile_id": None, "profiles": []}
         try:
@@ -489,7 +521,12 @@ class CameraProfileService:
             self._write_store(data)
         return data
 
+    def _invalidate_cache(self) -> None:
+        with self._cache_lock:
+            self._cache = None
+
     def _backup_unreadable_store(self) -> Path:
+        self._invalidate_cache()
         timestamp = time.strftime("%Y%m%d_%H%M%S")
         backup_path = self.store_path.with_suffix(
             f"{self.store_path.suffix}.unreadable.{timestamp}.bak"
@@ -511,6 +548,7 @@ class CameraProfileService:
             persisted_profiles.append(profile)
         persisted["profiles"] = persisted_profiles
         _write_private_text(self.store_path, json.dumps(persisted, indent=2) + "\n")
+        self._invalidate_cache()
 
     def _normalize_profile(self, payload: dict) -> dict:
         def read_text(key: str, default: str = "") -> str:

@@ -677,11 +677,31 @@ class CameraStream:
         self._reset_backoff()
 
 
+def _env_int_config(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except ValueError:
+        return default
+
+
+def _env_float_config(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, str(default)))
+    except ValueError:
+        return default
+
+
+_PERMS_MARKER_NAME = ".perms_hardened_v1"
+
+
 def harden_captures_permissions() -> None:
     """Best-effort: make existing footage private (0700 dirs / 0600 files).
 
     New writes are already private via the process umask; this retro-fixes any
     clips/dirs created before the umask was in effect (e.g. an upgraded install).
+    A marker file skips the recursive chmod on later boots: the tree walk grows
+    with the archive and on the mini PC costs real boot time for zero gain once
+    the retrofit has run (new files are already born private).
     """
     candidates = [
         "captures",
@@ -699,6 +719,9 @@ def harden_captures_permissions() -> None:
         if root in seen or not root.exists():
             continue
         seen.add(root)
+        marker = root / _PERMS_MARKER_NAME
+        if marker.exists():
+            continue
         try:
             os.chmod(root, 0o700)
             for path in root.rglob("*"):
@@ -706,6 +729,8 @@ def harden_captures_permissions() -> None:
                     os.chmod(path, 0o700 if path.is_dir() else 0o600)
                 except OSError:
                     continue
+            marker.touch()
+            os.chmod(marker, 0o600)
         except OSError:
             logger.warning("Impossibile irrigidire i permessi di %s", root)
 
@@ -1251,16 +1276,26 @@ class MotionDetector:
 
         Il primo fotogramma (preroll) spesso non contiene ancora il soggetto: classificare
         solo cover.jpg o il frame iniziale produce falsi ``no_detection``.
+
+        Questo è il burst CPU peggiore sul mini PC (decode video + inferenze ONNX
+        in serie), quindi è contenuto in tre modi: tetto di frame configurabile,
+        stride (un frame classificato ogni due, ``grab()`` scarta l'altro senza
+        decodifica completa) e uscita anticipata quando un soggetto è già stato
+        trovato con confidenza alta — altri frame non cambierebbero l'esito.
         """
         if not self.classifier.enabled or not self.classifier.ready:
             return None
+        max_frames = _env_int_config(
+            "CLASSIFICATION_CLIP_MAX_FRAMES", getattr(self, "_CLIP_CLASSIFY_MAX_FRAMES", 24)
+        )
+        early_exit_conf = _env_float_config("CLASSIFICATION_EARLY_EXIT_CONF", 0.85)
         best: dict | None = None
         best_conf = -1.0
         clip = event_dir / "event.mp4"
         if clip.is_file():
             capture = cv2.VideoCapture(str(clip))
             try:
-                for _ in range(getattr(self, "_CLIP_CLASSIFY_MAX_FRAMES", 24)):
+                for _ in range(max_frames):
                     ok, frame = capture.read()
                     if not ok or frame is None:
                         break
@@ -1278,6 +1313,10 @@ class MotionDetector:
                         ):
                             best = result
                             best_conf = conf
+                    if best is not None and best_conf >= early_exit_conf:
+                        break
+                    # Stride: salta il frame successivo senza decodificarlo.
+                    capture.grab()
             finally:
                 capture.release()
         if best is not None:

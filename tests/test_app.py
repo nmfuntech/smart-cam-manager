@@ -344,7 +344,10 @@ class ClassificationNotifyGateTests(unittest.TestCase):
         detector.classifier = clip_clf
         result = detector._classify_best_from_event(event_dir)
         self.assertEqual(result.get("detected_label"), "persona")
-        self.assertGreater(clip_clf.calls, 10)
+        # Con lo stride (1 frame classificato ogni 2) il frame "tardivo" a
+        # indice 10 viene comunque raggiunto, con circa meta' delle inferenze.
+        self.assertGreaterEqual(clip_clf.calls, 4)
+        self.assertLess(clip_clf.calls, 10)
 
 
 class ClosedEventNotificationTests(unittest.TestCase):
@@ -2983,6 +2986,187 @@ class ContinuousConfigPropagationTests(unittest.TestCase):
             services.apply_runtime_config_all({"CONTINUOUS_RECORD_ENABLED": "true"})
         merged = monitor.apply_config.call_args[0][0]
         self.assertIs(merged["continuous_record_enabled"], True)
+
+
+class CameraProfileCacheTests(unittest.TestCase):
+    def setUp(self):
+        self.app_module = load_app_module()
+        self.tmpdir = tempfile.mkdtemp(prefix="profile-cache-")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir)
+
+    def _service(self):
+        return self.app_module.CameraProfileService(
+            store_path=str(Path(self.tmpdir) / "profiles.json"),
+            key_path=Path(self.tmpdir) / ".profiles.key",
+        )
+
+    def test_repeated_reads_hit_cache(self):
+        service = self._service()
+        service.ensure_default_profile(self.app_module.build_default_camera_profile())
+        with mock.patch.object(
+            service, "_read_store_uncached", wraps=service._read_store_uncached
+        ) as uncached:
+            service.get_active_profile_id()
+            service.get_active_profile_id()
+            service.list_profiles()
+        self.assertEqual(uncached.call_count, 1)
+
+    def test_write_invalidates_cache(self):
+        service = self._service()
+        profile = self.app_module.build_default_camera_profile()
+        service.ensure_default_profile(profile)
+        service.get_active_profile_id()
+        created = service.save_profile(
+            {
+                "name": "Garage",
+                "host": "10.0.0.9",
+                "username": "u",
+                "password": "p",
+            }
+        )
+        ids = [p["id"] for p in service.list_profiles()]
+        self.assertIn(created["id"], ids)
+
+    def test_external_file_change_is_picked_up(self):
+        service = self._service()
+        service.ensure_default_profile(self.app_module.build_default_camera_profile())
+        first = service.get_active_profile_id()
+        # Simula modifica esterna: riscrive lo store con altro active id.
+        other = self._service()
+        data = other._read_store()
+        data["active_profile_id"] = "qualcos-altro"
+        other._write_store(data)
+        self.assertNotEqual(service.get_active_profile_id(), first)
+
+    def test_cached_dict_mutation_does_not_leak(self):
+        service = self._service()
+        service.ensure_default_profile(self.app_module.build_default_camera_profile())
+        data = service._read_store()
+        data["active_profile_id"] = "mutato-localmente"
+        self.assertNotEqual(service.get_active_profile_id(), "mutato-localmente")
+
+
+class EventSummaryCacheTests(unittest.TestCase):
+    def setUp(self):
+        self.app_module = load_app_module()
+        self.tmpdir = tempfile.mkdtemp(prefix="summary-cache-")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir)
+
+    def _store(self):
+        return self.app_module.MotionEventStore(
+            {"save_dir": self.tmpdir, "event_gap": 3.0, "max_event_duration": 45.0}
+        )
+
+    def _make_event(self, name):
+        event_dir = Path(self.tmpdir) / name
+        event_dir.mkdir(parents=True)
+        (event_dir / "cover.jpg").write_bytes(b"jpg")
+        (event_dir / "latest.jpg").write_bytes(b"jpg")
+        (event_dir / self.app_module.MotionEventStore.CLOSED_MARKER_NAME).write_bytes(b"")
+        return event_dir
+
+    def test_second_listing_does_not_rebuild_summaries(self):
+        self._make_event("motion_event_20260417_120001")
+        self._make_event("motion_event_20260417_120101")
+        store = self._store()
+        store.list_events(limit=10)
+        with mock.patch.object(
+            store, "_build_saved_event", side_effect=AssertionError("cache mancata")
+        ):
+            events = store.list_events(limit=10)
+        self.assertEqual(len(events), 2)
+
+    def test_meta_write_refreshes_summary(self):
+        self._make_event("motion_event_20260417_120001")
+        store = self._store()
+        store.list_events(limit=10)
+        store.save_event_meta(
+            "motion_event_20260417_120001",
+            {"classification": {"detected_label": "persona"}},
+        )
+        events = store.list_events(limit=10)
+        self.assertEqual(events[0]["category"], "persona")
+
+    def test_include_frames_bypasses_summary_cache(self):
+        event_dir = self._make_event("motion_event_20260417_120001")
+        (event_dir / "frame_20260417_120001_001.jpg").write_bytes(b"jpg")
+        store = self._store()
+        store.list_events(limit=10)
+        events = store.list_events(limit=10, include_frames=True)
+        self.assertIn("frames", events[0])
+
+
+class HardenPermissionsMarkerTests(unittest.TestCase):
+    def setUp(self):
+        self.app_module = load_app_module()
+        self.tmpdir = tempfile.mkdtemp(prefix="perms-")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir)
+
+    def test_second_run_skips_tree_walk(self):
+        cwd = os.getcwd()
+        os.chdir(self.tmpdir)
+        self.addCleanup(os.chdir, cwd)
+        captures = Path(self.tmpdir) / "captures"
+        (captures / "motion").mkdir(parents=True)
+        (captures / "motion" / "clip.jpg").write_bytes(b"jpg")
+        env = {"MOTION_SAVE_DIR": "", "CONTINUOUS_RECORD_DIR": ""}
+        with mock.patch.dict(os.environ, env):
+            self.app_module.harden_captures_permissions()
+            marker = captures / self.app_module._PERMS_MARKER_NAME
+            self.assertTrue(marker.exists())
+            with mock.patch.object(
+                self.app_module.os, "chmod", side_effect=AssertionError("rieseguito")
+            ):
+                self.app_module.harden_captures_permissions()
+
+
+class ClipClassificationEarlyExitTests(unittest.TestCase):
+    def setUp(self):
+        self.app_module = load_app_module()
+
+    def test_early_exit_stops_after_confident_subject(self):
+        import cv2
+        import numpy as np
+
+        tmpdir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmpdir)
+        event_dir = Path(tmpdir) / "motion_event_test"
+        event_dir.mkdir()
+        clip = event_dir / "event.mp4"
+        writer = cv2.VideoWriter(str(clip), cv2.VideoWriter_fourcc(*"mp4v"), 5.0, (320, 240))
+        for _ in range(20):
+            writer.write(np.full((240, 320, 3), 200, dtype=np.uint8))
+        writer.release()
+
+        detector = self.app_module.MotionDetector.__new__(self.app_module.MotionDetector)
+        detector.config = {"save_dir": tmpdir}
+
+        class AlwaysPerson:
+            enabled = True
+            ready = True
+            calls = 0
+
+            def classify(self, frame):
+                self.calls += 1
+                return {
+                    "detected_label": "persona",
+                    "class_label": "persona",
+                    "confidence": 0.95,
+                    "classification_status": "ok",
+                }
+
+        clf = AlwaysPerson()
+        detector.classifier = clf
+        result = detector._classify_best_from_event(event_dir)
+        self.assertEqual(result["detected_label"], "persona")
+        # 0.95 >= soglia 0.85: si ferma alla prima inferenza confidente.
+        self.assertEqual(clf.calls, 1)
 
 
 class GetEventDirectResolutionTests(unittest.TestCase):
