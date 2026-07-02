@@ -13,7 +13,9 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
+from typing import Any
 
+from blackframe.automation.rules_store import load_rules_raw
 from blackframe.commands import COMMAND_REGISTRY, validate_arg
 
 from . import ollama_client
@@ -48,7 +50,25 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
-def interpret(text: str, exclude: frozenset[str] = frozenset()) -> Suggestion:
+def _known_names(services: Any) -> dict[str, list[str]]:
+    """Nomi device/regola reali per il grounding del prompt (best-effort)."""
+    names: dict[str, list[str]] = {}
+    registry = getattr(services, "automation_registry", None) if services is not None else None
+    if registry is not None:
+        try:
+            names["device"] = registry.device_names()
+        except Exception:
+            logger.exception("Impossibile leggere i nomi device per il grounding del prompt")
+    try:
+        names["rule"] = [
+            r.get("name") for r in load_rules_raw() if isinstance(r, dict) and r.get("name")
+        ]
+    except Exception:
+        logger.exception("Impossibile leggere i nomi regola per il grounding del prompt")
+    return names
+
+
+def interpret(text: str, exclude: frozenset[str] = frozenset(), services: Any = None) -> Suggestion:
     max_chars = _env_int("AGENT_MAX_INPUT_CHARS", 300)
     text = (text or "").strip()
     if not text:
@@ -59,9 +79,16 @@ def interpret(text: str, exclude: frozenset[str] = frozenset()) -> Suggestion:
     base_url = _env("AGENT_OLLAMA_URL", "http://127.0.0.1:11434")
     model = _env("AGENT_OLLAMA_MODEL", "qwen2.5:0.5b")
     timeout = _env_float("AGENT_TIMEOUT_SEC", 8.0)
+    keep_alive = _env("AGENT_OLLAMA_KEEP_ALIVE", "30m")
 
+    known_names = _known_names(services)
     response = ollama_client.chat_json(
-        base_url, model, build_system_prompt(exclude), text, timeout=timeout
+        base_url,
+        model,
+        build_system_prompt(exclude, known_names),
+        text,
+        timeout=timeout,
+        keep_alive=keep_alive or None,
     )
     if response is None:
         return Suggestion(ok=False, reason="Assistente non disponibile al momento.")
@@ -81,7 +108,7 @@ def interpret(text: str, exclude: frozenset[str] = frozenset()) -> Suggestion:
 
     raw_arg = response.get("arg")
     try:
-        arg = validate_arg(spec.arg, raw_arg if isinstance(raw_arg, str) else None)
+        arg = validate_arg(spec.arg, raw_arg if isinstance(raw_arg, str) else None, services)
     except ValueError as exc:
         return Suggestion(ok=False, reason=str(exc))
 

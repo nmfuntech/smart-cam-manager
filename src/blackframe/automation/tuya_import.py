@@ -4,21 +4,18 @@ from __future__ import annotations
 
 import json
 import re
-import unicodedata
 from pathlib import Path
 
 import yaml
+
+from blackframe.commands.naming import normalize_identifier
 
 _LOGICAL_NAME_RE = re.compile(r"^[a-z0-9_]+$")
 
 
 def slugify_smart_name(name: str) -> str:
     """Converte un nome Smart Life in identificatore rules.yaml (a-z, 0-9, _)."""
-    text = unicodedata.normalize("NFKD", str(name or ""))
-    text = text.encode("ascii", "ignore").decode("ascii")
-    text = text.lower()
-    text = re.sub(r"[^a-z0-9]+", "_", text)
-    return text.strip("_") or "device"
+    return normalize_identifier(name) or "device"
 
 
 def load_name_map(path: str | Path | None) -> dict[str, str]:

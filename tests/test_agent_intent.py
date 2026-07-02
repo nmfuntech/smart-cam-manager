@@ -87,6 +87,32 @@ class InterpretTests(unittest.TestCase):
             result = intent.interpret("mandami una foto", exclude=WEB_EXCLUDED_COMMANDS)
         self.assertFalse(result.ok)
 
+    def test_loosely_typed_device_arg_resolves_with_services(self):
+        class FakeRegistry:
+            def device_names(self):
+                return ["lampada_ingresso"]
+
+        services = mock.Mock(automation_registry=FakeRegistry())
+        with mock.patch.object(
+            intent.ollama_client,
+            "chat_json",
+            return_value={"command": "device_on", "arg": "la lampada dell'ingresso"},
+        ):
+            result = intent.interpret("accendi la lampada dell'ingresso", services=services)
+        self.assertTrue(result.ok)
+        self.assertEqual(result.arg, "lampada_ingresso")
+
+    def test_prompt_sent_to_ollama_is_grounded_with_known_device_names(self):
+        class FakeRegistry:
+            def device_names(self):
+                return ["lampada_ingresso"]
+
+        services = mock.Mock(automation_registry=FakeRegistry())
+        with mock.patch.object(intent.ollama_client, "chat_json", return_value=None) as chat_json:
+            intent.interpret("accendi la lampada", services=services)
+        system_prompt = chat_json.call_args[0][2]
+        self.assertIn("lampada_ingresso", system_prompt)
+
 
 class CatalogTests(unittest.TestCase):
     def test_catalog_excludes_non_executable_commands(self):
@@ -98,6 +124,17 @@ class CatalogTests(unittest.TestCase):
         text = build_catalog_text(frozenset({"status"}))
         self.assertNotIn("- status:", text)
         self.assertIn("- config:", text)
+
+    def test_catalog_without_known_names_uses_generic_placeholder(self):
+        text = build_catalog_text()
+        self.assertIn("- device_on:", text)
+        self.assertIn("nome del dispositivo/regola", text)
+
+    def test_catalog_with_known_names_grounds_device_arg_description(self):
+        text = build_catalog_text(known_names={"device": ["lampada_ingresso", "presa_dj"]})
+        device_line = next(line for line in text.splitlines() if line.startswith("- device_on:"))
+        self.assertIn("lampada_ingresso", device_line)
+        self.assertIn("presa_dj", device_line)
 
 
 if __name__ == "__main__":

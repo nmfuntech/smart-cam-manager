@@ -25,9 +25,16 @@ def chat_json(
     user_text: str,
     *,
     timeout: float = 8.0,
+    keep_alive: str | None = None,
 ) -> dict | None:
     """Chiama ``POST {base_url}/api/chat`` in modalità JSON e ritorna il
-    contenuto già parsato come dict, o ``None`` su qualunque errore."""
+    contenuto già parsato come dict, o ``None`` su qualunque errore.
+
+    ``keep_alive`` (es. ``"30m"``) tiene il modello residente in RAM tra una
+    richiesta e l'altra: senza specificarlo Ollama usa il default di 5 minuti
+    e ogni richiesta dopo un periodo di inattività paga il costo di ricarica
+    del modello da disco, che su hardware limitato può superare ``timeout``.
+    """
     url = f"{base_url.rstrip('/')}/api/chat"
     payload = {
         "model": model,
@@ -39,6 +46,8 @@ def chat_json(
         "stream": False,
         "options": {"temperature": 0},
     }
+    if keep_alive:
+        payload["keep_alive"] = keep_alive
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(url, data=data, method="POST")
     req.add_header("Content-Type", "application/json")

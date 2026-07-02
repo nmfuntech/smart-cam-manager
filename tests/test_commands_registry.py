@@ -99,11 +99,41 @@ class ValidateArgTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_arg(spec, "altissima")
 
-    def test_name_rejects_invalid_characters(self):
+    def test_name_normalizes_spaces_case_and_accents(self):
         spec = CommandArgSpec(kind="name")
         self.assertEqual(validate_arg(spec, "luce_1"), "luce_1")
+        self.assertEqual(validate_arg(spec, "Luce Salotto"), "luce_salotto")
+        self.assertEqual(validate_arg(spec, "l'ingresso"), "l_ingresso")
+
+    def test_name_rejects_input_that_normalizes_to_empty(self):
+        spec = CommandArgSpec(kind="name")
         with self.assertRaises(ValueError):
-            validate_arg(spec, "Luce Salotto")
+            validate_arg(spec, "!!!")
+
+    def test_name_resolves_against_known_candidates_with_services(self):
+        spec = CommandArgSpec(kind="name", name_source="device")
+        services = FakeServices()
+        services.automation_registry = DeviceRegistry(
+            store_path=Path(tempfile.mkdtemp()) / "devices.json", device_factory=lambda cfg: None
+        )
+        services.automation_registry.save_device(
+            {"name": "lampada_ingresso", "driver": "mock", "device_id": "x", "ip": "1.2.3.4"}
+        )
+        self.assertEqual(
+            validate_arg(spec, "la lampada dell'ingresso", services), "lampada_ingresso"
+        )
+
+    def test_name_ambiguous_or_unknown_raises_with_services(self):
+        spec = CommandArgSpec(kind="name", name_source="device")
+        services = FakeServices()
+        services.automation_registry = DeviceRegistry(
+            store_path=Path(tempfile.mkdtemp()) / "devices.json", device_factory=lambda cfg: None
+        )
+        services.automation_registry.save_device(
+            {"name": "presa_cucina", "driver": "mock", "device_id": "x", "ip": "1.2.3.4"}
+        )
+        with self.assertRaises(ValueError):
+            validate_arg(spec, "lampada ingresso", services)
 
     def test_required_missing_raises(self):
         spec = CommandArgSpec(kind="name", required=True)
@@ -207,11 +237,16 @@ class DeviceRegistryBackedTests(unittest.TestCase):
 
     def test_device_on_unknown_name_reports_error(self):
         result = execute("device_on", "non_esiste", self.services)
-        self.assertIn("errore dispositivo", result.text.lower())
+        self.assertIn("non trovato", result.text.lower())
 
-    def test_device_on_invalid_name_shows_usage(self):
-        result = execute("device_on", "Nome Con Spazi", self.services)
+    def test_device_on_empty_name_shows_usage(self):
+        result = execute("device_on", "!!!", self.services)
         self.assertTrue(result.text.startswith("Uso: /device_on"))
+
+    def test_device_on_tolerates_spaces_case_and_articles(self):
+        result = execute("device_on", "la luce test", self.services)
+        self.assertIn("acceso", result.text)
+        self.assertIn("luce_test", result.text)
 
 
 class RuleRegistryBackedTests(unittest.TestCase):

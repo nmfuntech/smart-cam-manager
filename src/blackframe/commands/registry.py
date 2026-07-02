@@ -26,6 +26,8 @@ from typing import Any, Callable, Literal
 from blackframe.automation import DeviceError
 from blackframe.automation.rules_store import load_rules_raw, set_rule_enabled
 
+from .naming import normalize_identifier, resolve_name
+
 logger = logging.getLogger(__name__)
 
 # Stessa regex usata da routes/automation.py e telegram_commands.py per nomi
@@ -62,6 +64,9 @@ class CommandArgSpec:
     kind: Literal["none", "enum", "name", "int", "float"]
     enum: tuple[str, ...] = ()
     required: bool = True
+    # Per kind=="name": "device" o "rule" — indica quale elenco di nomi noti
+    # usare per il grounding del prompt LLM e la risoluzione tollerante.
+    name_source: str | None = None
 
 
 @dataclass
@@ -81,12 +86,29 @@ class CommandSpec:
     handler: Callable[[Any, str | None], CommandResult] | None = field(default=None)
 
 
-def validate_arg(spec: CommandArgSpec | None, raw: str | None) -> str | None:
+def _known_names_for(spec: CommandArgSpec, services: Any) -> list[str] | None:
+    if spec.name_source == "device":
+        registry = getattr(services, "automation_registry", None)
+        if registry is None:
+            return None
+        return registry.device_names()
+    if spec.name_source == "rule":
+        return [r.get("name") for r in load_rules_raw() if isinstance(r, dict) and r.get("name")]
+    return None
+
+
+def validate_arg(spec: CommandArgSpec | None, raw: str | None, services: Any = None) -> str | None:
     """Normalizza/valida un argomento grezzo contro lo schema del comando.
 
     Solleva ``ValueError`` con un messaggio in italiano su qualunque input non
     conforme: sia il parsing testuale (Telegram) sia l'output dell'LLM (agente)
     passano da qui prima di poter raggiungere ``execute``.
+
+    Per ``kind=="name"``, ``raw`` viene prima normalizzato (spazi/accenti/
+    preposizioni) e, se ``services`` è fornito, risolto contro l'elenco reale
+    dei nomi noti (device o regole): un input come "la lampada dell'ingresso"
+    può così risolvere a ``lampada_ingresso`` senza che l'utente/il modello
+    debbano indovinare lo slug esatto.
     """
     if spec is None or spec.kind == "none":
         return None
@@ -101,9 +123,25 @@ def validate_arg(spec: CommandArgSpec | None, raw: str | None) -> str | None:
             raise ValueError(f"Valore non valido, usa uno tra: {', '.join(spec.enum)}")
         return value
     if spec.kind == "name":
-        if not _NAME_RE.fullmatch(raw):
-            raise ValueError("Nome non valido: usa solo lettere minuscole, cifre e underscore")
-        return raw
+        normalized = normalize_identifier(raw)
+        if not normalized or not _NAME_RE.fullmatch(normalized):
+            raise ValueError(
+                "Nome non valido: usa solo lettere, cifre e underscore (es. lampada_ingresso)"
+            )
+        if services is not None and spec.name_source:
+            candidates = _known_names_for(spec, services)
+            if candidates:
+                resolved, suggestions = resolve_name(normalized, candidates)
+                if resolved is not None:
+                    return resolved
+                if suggestions:
+                    raise ValueError(
+                        f"Nome non trovato. Forse intendevi: {', '.join(suggestions)}?"
+                    )
+                raise ValueError(
+                    f"Nome non trovato tra quelli disponibili: {', '.join(candidates)}"
+                )
+        return normalized
     if spec.kind == "int":
         try:
             int(float(raw))
@@ -360,9 +398,17 @@ def _make_device_action(action: str) -> Callable[[Any, str | None], CommandResul
         registry = getattr(services, "automation_registry", None)
         if registry is None:
             return CommandResult(text="Automazione non disponibile.")
-        name = (arg or "").strip()
-        if not _NAME_RE.fullmatch(name):
+        normalized = normalize_identifier((arg or "").strip())
+        if not normalized or not _NAME_RE.fullmatch(normalized):
             return CommandResult(text=usage)
+        name, suggestions = resolve_name(normalized, registry.device_names())
+        if name is None:
+            if suggestions:
+                return CommandResult(
+                    text=f"Dispositivo '{normalized}' non trovato. "
+                    f"Forse intendevi: {', '.join(suggestions)}?"
+                )
+            return CommandResult(text=f"Dispositivo '{normalized}' non trovato. Usa /devices.")
         try:
             getattr(registry.get(name), action)()
         except DeviceError as exc:
@@ -387,13 +433,36 @@ def _rules(services: Any, arg: str | None) -> CommandResult:
     return CommandResult(text="\n".join(lines))
 
 
+def _rule_names() -> list[str]:
+    return [r.get("name") for r in load_rules_raw() if isinstance(r, dict) and r.get("name")]
+
+
+def _resolve_rule_name(arg: str | None) -> tuple[str | None, str | None]:
+    """Risolve l'arg grezzo a un nome regola esistente, o un messaggio d'errore."""
+    normalized = normalize_identifier((arg or "").strip())
+    if not normalized or not _NAME_RE.fullmatch(normalized):
+        return None, None
+    name, suggestions = resolve_name(normalized, _rule_names())
+    if name is not None:
+        return name, None
+    if suggestions:
+        return (
+            None,
+            f"Regola '{normalized}' non trovata. Forse intendevi: {', '.join(suggestions)}?",
+        )
+    return None, f"Regola '{normalized}' non trovata. Usa /rules."
+
+
 def _rule_run(services: Any, arg: str | None) -> CommandResult:
-    name = (arg or "").strip()
-    if not _NAME_RE.fullmatch(name):
+    normalized = normalize_identifier((arg or "").strip())
+    if not normalized or not _NAME_RE.fullmatch(normalized):
         return CommandResult(text="Uso: /rule_run <nome>")
     engine = getattr(services, "automation_engine", None)
     if engine is None:
         return CommandResult(text="Automazione disabilitata: abilitala per eseguire le regole.")
+    name, error = _resolve_rule_name(arg)
+    if name is None:
+        return CommandResult(text=error or "Uso: /rule_run <nome>")
     planned = engine.run_rule(name, execute=True)
     if planned is None:
         return CommandResult(text=f"Regola '{name}' non trovata.")
@@ -404,9 +473,9 @@ def _make_rule_enabled(enabled: bool) -> Callable[[Any, str | None], CommandResu
     usage = f"Uso: /rule_{'on' if enabled else 'off'} <nome>"
 
     def handler(services: Any, arg: str | None) -> CommandResult:
-        name = (arg or "").strip()
-        if not _NAME_RE.fullmatch(name):
-            return CommandResult(text=usage)
+        name, error = _resolve_rule_name(arg)
+        if name is None:
+            return CommandResult(text=error or usage)
         if not set_rule_enabled(name, enabled):
             return CommandResult(text=f"Regola '{name}' non trovata.")
         reload_automation = getattr(services, "reload_automation", None)
@@ -420,7 +489,8 @@ def _make_rule_enabled(enabled: bool) -> Callable[[Any, str | None], CommandResu
 # --- registro -------------------------------------------------------------------
 
 _NONE_ARG = CommandArgSpec(kind="none")
-_NAME_ARG = CommandArgSpec(kind="name", required=True)
+_DEVICE_NAME_ARG = CommandArgSpec(kind="name", required=True, name_source="device")
+_RULE_NAME_ARG = CommandArgSpec(kind="name", required=True, name_source="rule")
 
 COMMAND_REGISTRY: dict[str, CommandSpec] = {
     "status": CommandSpec("status", "Stato camera e movimento", None, True, _status),
@@ -561,26 +631,30 @@ COMMAND_REGISTRY: dict[str, CommandSpec] = {
     "device_on": CommandSpec(
         "device_on",
         "Accendi un dispositivo per nome",
-        _NAME_ARG,
+        _DEVICE_NAME_ARG,
         False,
         _make_device_action("turn_on"),
     ),
     "device_off": CommandSpec(
         "device_off",
         "Spegni un dispositivo per nome",
-        _NAME_ARG,
+        _DEVICE_NAME_ARG,
         False,
         _make_device_action("turn_off"),
     ),
     "rules": CommandSpec("rules", "Elenca le regole di automazione", None, True, _rules),
     "rule_run": CommandSpec(
-        "rule_run", "Esegui subito una regola per nome", _NAME_ARG, False, _rule_run
+        "rule_run", "Esegui subito una regola per nome", _RULE_NAME_ARG, False, _rule_run
     ),
     "rule_on": CommandSpec(
-        "rule_on", "Abilita una regola per nome", _NAME_ARG, False, _make_rule_enabled(True)
+        "rule_on", "Abilita una regola per nome", _RULE_NAME_ARG, False, _make_rule_enabled(True)
     ),
     "rule_off": CommandSpec(
-        "rule_off", "Disabilita una regola per nome", _NAME_ARG, False, _make_rule_enabled(False)
+        "rule_off",
+        "Disabilita una regola per nome",
+        _RULE_NAME_ARG,
+        False,
+        _make_rule_enabled(False),
     ),
     # Catalogo-only: la clip on-demand resta gestita da telegram_commands.py
     # (registrazione asincrona + invio video threadato). Elencata qui solo

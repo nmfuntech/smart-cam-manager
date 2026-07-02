@@ -540,7 +540,7 @@ class TelegramCommandBotTests(unittest.TestCase):
     def test_device_off_unknown_reports_error(self):
         bot, _ = self._bot()
         self._handle(bot, "/device_off nope")
-        self.assertIn("Errore dispositivo", self.messages[0][1])
+        self.assertIn("non trovato", self.messages[0][1])
 
     def test_device_on_missing_arg(self):
         bot, _ = self._bot()
@@ -548,7 +548,14 @@ class TelegramCommandBotTests(unittest.TestCase):
         self.assertIn("Uso:", self.messages[0][1])
 
     def test_rule_run_executes(self):
-        bot, services = self._bot()
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        rules_path = Path(tmp.name) / "rules.yaml"
+        rules_path.write_text(
+            "- name: luce_notte\n  on: person_detected\n"
+            "  do:\n    - device: luce\n      action: turn_on\n"
+        )
+        bot, services = self._bot(AUTOMATION_RULES_PATH=str(rules_path))
         self._handle(bot, "/rule_run luce_notte")
         self.assertEqual(services.automation_engine.ran, [("luce_notte", True)])
         self.assertIn("eseguita", self.messages[0][1])

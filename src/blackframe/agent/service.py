@@ -61,7 +61,7 @@ class AgentService:
             return ProposalResult(ok=False, error="Assistente non abilitato.")
 
         exclude = WEB_EXCLUDED_COMMANDS if channel == "web" else frozenset()
-        suggestion = interpret(text, exclude=exclude)
+        suggestion = interpret(text, exclude=exclude, services=self.services)
         if not suggestion.ok:
             return ProposalResult(ok=False, error=suggestion.reason or "Non ho capito.")
 
