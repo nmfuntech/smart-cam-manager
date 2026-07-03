@@ -126,12 +126,6 @@ def camera_view(profile_id: str):
     )
 
 
-@video_bp.route("/model-training")
-@require_auth()
-def model_training():
-    return render_template("model_training.html")
-
-
 @video_bp.route("/dashboard")
 @require_auth()
 def dashboard():

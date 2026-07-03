@@ -1,0 +1,27 @@
+{#- Nav unica per tutte le pagine autenticate. La pagina corrente dichiara
+    `{% set nav_active = '<chiave>' %}` e qui diventa uno span non cliccabile
+    con aria-current. -#}
+{% macro nav_link(key, href, label) -%}
+  {%- if nav_active == key -%}
+  <span class="ghost-button compact-button is-current" aria-current="page">{{ label }}</span>
+  {%- else -%}
+  <a class="ghost-button compact-button" href="{{ href }}">{{ label }}</a>
+  {%- endif -%}
+{%- endmacro %}
+<header class="app-header">
+  <a class="app-header-brand" href="/">BLACKFRAME</a>
+  <nav class="app-header-nav">
+    {% if nav_active == 'cameras' %}
+    <span class="status-pill compact-button" id="wifi-pill">Wi-Fi: verifica...</span>
+    {% endif %}
+    {{ nav_link('viewer', '/', 'Viewer') }}
+    {{ nav_link('dashboard', '/dashboard', 'Dashboard') }}
+    {{ nav_link('cameras', '/cameras', 'Camere') }}
+    {{ nav_link('automazione', '/automazione', 'Automazione') }}
+    {{ nav_link('agente', '/agente', 'Agente') }}
+    <form method="post" action="{{ url_for('auth.logout') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+      <button class="ghost-button compact-button" type="submit">Esci</button>
+    </form>
+  </nav>
+</header>

@@ -1,46 +1,16 @@
-<!DOCTYPE html>
-<html lang="it">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="blackframe-csrf-token" content="{{ csrf_token }}" />
-    <title>BLACKFRAME · Dashboard</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500;700&display=swap"
-      rel="stylesheet"
-    />
-    <link
-      rel="stylesheet"
-      href="{{ url_for('static', filename='styles.css', v=static_asset_version) }}"
-    />
-  </head>
-  <body>
-
-    <header class="app-header">
-      <a class="app-header-brand" href="/">BLACKFRAME</a>
-      <nav class="app-header-nav">
-        <a class="ghost-button compact-button" href="/">Viewer</a>
-        <a class="ghost-button compact-button" href="/cameras">Camere</a>
-        <a class="ghost-button compact-button" href="/automazione">Automazione</a>
-        <a class="ghost-button compact-button" href="/agente">Agente</a>
-        <form method="post" action="{{ url_for('auth.logout') }}">
-          <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
-          <button class="ghost-button compact-button" type="submit">Esci</button>
-        </form>
-      </nav>
-    </header>
-
+{% extends "base.html" %}
+{% set nav_active = 'dashboard' %}
+{% block title %}BLACKFRAME · Dashboard{% endblock %}
+{% block content %}
     <main class="page viewer-page">
-      <div class="viewer-topbar compact" style="margin-bottom:16px">
-        <h2 style="margin:0;font-size:1.4rem;letter-spacing:0.06em;text-transform:uppercase">Dashboard</h2>
+      <div class="viewer-topbar compact page-topbar">
+        <h2 class="page-title">Dashboard</h2>
       </div>
 
       {% if not cameras %}
-      <p class="motion-capture-empty" style="display:grid;margin-top:40px">
+      <p class="motion-capture-empty empty-hint">
         Nessuna camera attiva o monitorata. Abilita il monitoraggio dalla pagina
-        <a href="/cameras" style="color:var(--accent)">Camere</a>.
+        <a href="/cameras" class="accent-link">Camere</a>.
       </p>
       {% else %}
       <section class="camera-grid">
@@ -67,9 +37,10 @@
       </section>
       {% endif %}
     </main>
+{% endblock %}
+{% block scripts %}
     <script
       type="module"
       src="{{ url_for('static', filename='js/dashboard.js', v=static_asset_version) }}"
     ></script>
-  </body>
-</html>
+{% endblock %}

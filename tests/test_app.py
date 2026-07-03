@@ -1926,13 +1926,14 @@ class AppFactoryTests(unittest.TestCase):
             headers=csrf_headers(csrf_token),
         )
         viewer_response = client.get(saved["viewer_url"])
+        # Pagina orfana rimossa nel consolidamento UI: la guida sul modello
+        # vive nella sezione Riconoscimento della pagina Impostazioni.
         training_response = client.get("/model-training")
 
         self.assertEqual(manager_response.status_code, 200)
         self.assertEqual(activate_response.status_code, 200)
         self.assertEqual(viewer_response.status_code, 200)
-        self.assertEqual(training_response.status_code, 200)
-        self.assertIn("Addestramento modello", training_response.data.decode("utf-8"))
+        self.assertEqual(training_response.status_code, 404)
         self.assertEqual(fake_camera.last_updates["TAPO_HOST"], "192.168.1.40")
         self.assertIn("captures/motion", fake_motion.last_updates["MOTION_SAVE_DIR"])
 
@@ -2859,6 +2860,80 @@ class NetworkAndCredentialHardeningTests(unittest.TestCase):
                 headers={"X-Forwarded-For": "also/garbage"},
             )
         self.assertEqual(blocked.status_code, 429)
+
+
+class NavConsistencyTests(unittest.TestCase):
+    """Ogni pagina autenticata usa la nav condivisa (_nav.html): voce corrente
+    marcata una sola volta, link a tutte le altre pagine sempre presenti."""
+
+    def setUp(self):
+        self.app_module = load_app_module()
+
+    def _client(self):
+        class FakeCamera:
+            def get_frame(self):
+                return b"frame"
+
+            def get_status(self):
+                return {"connected": True, "error": ""}
+
+        class FakePtz:
+            def get_status(self):
+                return {"available": True, "host": "127.0.0.1", "port": 2020, "error": ""}
+
+        class FakeMotion:
+            config = {"save_dir": tempfile.gettempdir()}
+
+            def get_status(self):
+                return {"enabled": True}
+
+            def list_events(self, limit=8, include_frames=False):
+                return []
+
+        class FakeRuntimeConfig:
+            def get_public_config(self):
+                return {"MOTION_ENABLED": True}
+
+        app = self.app_module.create_app(
+            self.app_module.AppServices(
+                camera=FakeCamera(),
+                ptz=FakePtz(),
+                motion=FakeMotion(),
+                features=build_feature_services(self.app_module),
+                runtime_config=FakeRuntimeConfig(),
+            )
+        )
+        client = app.test_client()
+        authenticate_client(client)
+        return client
+
+    def test_every_page_marks_current_once_and_links_the_rest(self):
+        client = self._client()
+        pages = {
+            "/": "Viewer",
+            "/dashboard": "Dashboard",
+            "/cameras": "Camere",
+            "/automazione": "Automazione",
+            "/agente": "Agente",
+        }
+        for url, label in pages.items():
+            response = client.get(url, follow_redirects=True)
+            self.assertEqual(response.status_code, 200, url)
+            html = response.data.decode("utf-8")
+            self.assertEqual(html.count('aria-current="page"'), 1, url)
+            for other_url, other_label in pages.items():
+                if other_url == url:
+                    continue
+                self.assertIn(f'href="{other_url}"', html, f"{url} -> {other_url}")
+            self.assertIn(">Esci<", html, url)
+
+    def test_login_page_has_no_nav(self):
+        client = self._client()
+        with client.session_transaction() as session_state:
+            session_state.clear()
+        response = client.get("/login")
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("app-header-nav", response.data.decode("utf-8"))
 
 
 class AutomationSourceContextTests(unittest.TestCase):

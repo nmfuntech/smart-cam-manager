@@ -1790,3 +1790,65 @@ details[open].sidebar-advanced .sidebar-advanced-chevron {
     align-self: flex-end;
   }
 }
+
+/* ─── Utility di layout (ex stili inline dei template) ──────────────────── */
+.page-topbar {
+  margin-bottom: 16px;
+}
+
+.page-title {
+  margin: 0;
+  font-size: 1.4rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.empty-hint {
+  display: grid;
+  margin-top: 40px;
+}
+
+.accent-link {
+  color: var(--accent);
+}
+
+.topbar-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.button-row {
+  display: flex;
+  gap: 8px;
+}
+
+.dialog-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 4px;
+}
+
+.label-optional {
+  font-size: 0.7em;
+  opacity: 0.5;
+}
+
+.dialog-wide {
+  width: min(600px, 95vw);
+}
+
+.dialog-wider {
+  width: min(640px, 95vw);
+}
+
+.subsection-title {
+  font-size: 0.85rem;
+  letter-spacing: 0.08em;
+}
+
+.section-head-spaced {
+  margin-top: 12px;
+}
