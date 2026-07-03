@@ -21,6 +21,9 @@ import logging
 import os
 import re
 
+from blackframe.envutil import env_float as _env_float
+from blackframe.envutil import env_int as _env_int
+
 from . import ollama_client
 
 logger = logging.getLogger(__name__)
@@ -60,20 +63,6 @@ _SYSTEM_PROMPT = (
     "italiano, usando SOLO i dati forniti. Se i dati non bastano per "
     "rispondere, di' che non lo sai. Non inventare informazioni."
 )
-
-
-def _env_float(name: str, default: float) -> float:
-    try:
-        return float(os.getenv(name, str(default)))
-    except ValueError:
-        return default
-
-
-def _env_int(name: str, default: int) -> int:
-    try:
-        return int(os.getenv(name, str(default)))
-    except ValueError:
-        return default
 
 
 def looks_like_question(text: str) -> bool:

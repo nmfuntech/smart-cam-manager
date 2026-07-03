@@ -17,6 +17,7 @@ from typing import Any
 
 from blackframe.commands import COMMAND_REGISTRY, CommandResult
 from blackframe.commands import execute as registry_execute
+from blackframe.envutil import env_bool as _env_bool
 
 from . import ollama_client
 from .answer import compose_answer, looks_like_question
@@ -30,13 +31,6 @@ logger = logging.getLogger(__name__)
 # rappresentarli in una risposta JSON della chat web, quindi il canale "web"
 # non li propone nemmeno all'LLM (restano disponibili solo via Telegram).
 WEB_EXCLUDED_COMMANDS = frozenset({"snapshot", "latest"})
-
-
-def _env_bool(name: str, default: bool = False) -> bool:
-    raw = os.getenv(name)
-    if raw is None:
-        return default
-    return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
 @dataclass

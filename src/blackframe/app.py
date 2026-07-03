@@ -23,6 +23,7 @@ from blackframe.automation import (
 )
 from blackframe.classification import PersonPetClassifier
 from blackframe.continuous_recording import ContinuousRecorder
+from blackframe.envutil import env_float, env_int
 from blackframe.motion_events import MotionEventStore
 from blackframe.notifications import TelegramNotifier
 from blackframe.recording import EventRecorder
@@ -677,20 +678,6 @@ class CameraStream:
         self._reset_backoff()
 
 
-def _env_int_config(name: str, default: int) -> int:
-    try:
-        return int(os.getenv(name, str(default)))
-    except ValueError:
-        return default
-
-
-def _env_float_config(name: str, default: float) -> float:
-    try:
-        return float(os.getenv(name, str(default)))
-    except ValueError:
-        return default
-
-
 _PERMS_MARKER_NAME = ".perms_hardened_v1"
 
 
@@ -1285,10 +1272,10 @@ class MotionDetector:
         """
         if not self.classifier.enabled or not self.classifier.ready:
             return None
-        max_frames = _env_int_config(
+        max_frames = env_int(
             "CLASSIFICATION_CLIP_MAX_FRAMES", getattr(self, "_CLIP_CLASSIFY_MAX_FRAMES", 24)
         )
-        early_exit_conf = _env_float_config("CLASSIFICATION_EARLY_EXIT_CONF", 0.85)
+        early_exit_conf = env_float("CLASSIFICATION_EARLY_EXIT_CONF", 0.85)
         best: dict | None = None
         best_conf = -1.0
         clip = event_dir / "event.mp4"

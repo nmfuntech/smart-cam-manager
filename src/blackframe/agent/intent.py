@@ -12,12 +12,15 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from dataclasses import dataclass
 from typing import Any
 
 from blackframe.automation.rules_store import load_rules_raw
 from blackframe.commands import COMMAND_REGISTRY, validate_arg
+from blackframe.envutil import env_bool as _env_bool
+from blackframe.envutil import env_float as _env_float
+from blackframe.envutil import env_int as _env_int
+from blackframe.envutil import env_str as _env
 
 from . import fastpath, ollama_client
 from .catalog import (
@@ -37,31 +40,6 @@ class Suggestion:
     command: str | None = None
     arg: str | None = None
     reason: str | None = None
-
-
-def _env(name: str, default: str = "") -> str:
-    return os.getenv(name, default).strip()
-
-
-def _env_float(name: str, default: float) -> float:
-    try:
-        return float(os.getenv(name, str(default)))
-    except ValueError:
-        return default
-
-
-def _env_int(name: str, default: int) -> int:
-    try:
-        return int(os.getenv(name, str(default)))
-    except ValueError:
-        return default
-
-
-def _env_bool(name: str, default: bool = False) -> bool:
-    raw = os.getenv(name)
-    if raw is None:
-        return default
-    return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _known_names(services: Any) -> dict[str, list[str]]:

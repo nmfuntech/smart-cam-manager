@@ -9,7 +9,6 @@ from __future__ import annotations
 import hmac
 import json
 import logging
-import os
 import tempfile
 import threading
 import time
@@ -23,6 +22,9 @@ from typing import Any
 
 from blackframe.commands import COMMAND_REGISTRY, CommandResult
 from blackframe.commands import execute as registry_execute
+from blackframe.envutil import env_bool as _env_bool
+from blackframe.envutil import env_float, env_int
+from blackframe.envutil import env_str as _env
 from blackframe.notifications import TELEGRAM_API_BASE, telegram_api_call
 from blackframe.recording import record_clip
 from blackframe.service_layer import _write_private_text
@@ -149,31 +151,13 @@ INLINE_MENU_ROWS = [
 ]
 
 
-def _env(name: str, default: str = "") -> str:
-    return os.getenv(name, default).strip()
-
-
-def _env_bool(name: str, default: bool = False) -> bool:
-    raw = os.getenv(name)
-    if raw is None:
-        return default
-    return raw.strip().lower() in {"1", "true", "yes", "on"}
-
-
+# Pavimenti di default specifici di questo modulo; il parsing vive in envutil.
 def _env_float(name: str, default: float, minimum: float = 0.0) -> float:
-    try:
-        value = float(_env(name, str(default)))
-    except ValueError:
-        value = default
-    return max(minimum, value)
+    return env_float(name, default, minimum=minimum)
 
 
 def _env_int(name: str, default: int, minimum: int = 1) -> int:
-    try:
-        value = int(_env(name, str(default)))
-    except ValueError:
-        value = default
-    return max(minimum, value)
+    return env_int(name, default, minimum=minimum)
 
 
 def _reply_keyboard_markup() -> str:

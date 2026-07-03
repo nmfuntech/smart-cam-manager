@@ -17,7 +17,6 @@ I comandi puramente amministrativi di Telegram (``start``, ``help``, ``menu``,
 from __future__ import annotations
 
 import logging
-import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -25,6 +24,8 @@ from typing import Any, Callable, Literal
 
 from blackframe.automation import DeviceError
 from blackframe.automation.rules_store import load_rules_raw, set_rule_enabled
+from blackframe.envutil import env_bool as _env_bool
+from blackframe.envutil import env_int
 
 from .naming import normalize_identifier, resolve_name
 
@@ -44,19 +45,9 @@ SENSITIVITY_PRESETS = {
 }
 
 
-def _env_bool(name: str, default: bool = False) -> bool:
-    raw = os.getenv(name)
-    if raw is None:
-        return default
-    return raw.strip().lower() in {"1", "true", "yes", "on"}
-
-
+# Pavimento di default specifico del modulo; il parsing vive in envutil.
 def _env_int(name: str, default: int, minimum: int = 0) -> int:
-    try:
-        value = int(os.getenv(name, str(default)))
-    except ValueError:
-        value = default
-    return max(minimum, value)
+    return env_int(name, default, minimum=minimum)
 
 
 @dataclass

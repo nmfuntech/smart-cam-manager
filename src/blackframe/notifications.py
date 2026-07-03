@@ -7,7 +7,6 @@ avoid blocking the motion detection loop.
 
 import json
 import logging
-import os
 import threading
 import time
 import urllib.error
@@ -18,6 +17,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
 
+from blackframe.envutil import env_bool as _env_bool
+from blackframe.envutil import env_str as _env
 from blackframe.service_layer import _write_private_text
 
 logger = logging.getLogger(__name__)
@@ -107,17 +108,6 @@ def send_telegram_test(
     if result.get("ok"):
         return True, None
     return False, result.get("description") or "Invio fallito"
-
-
-def _env(name: str, default: str = "") -> str:
-    return os.getenv(name, default).strip()
-
-
-def _env_bool(name: str, default: bool = False) -> bool:
-    raw = os.getenv(name)
-    if raw is None:
-        return default
-    return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _build_multipart(
