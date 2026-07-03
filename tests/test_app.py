@@ -2946,6 +2946,57 @@ class NavConsistencyTests(unittest.TestCase):
         self.assertNotIn("app-header-nav", response.data.decode("utf-8"))
 
 
+class DashboardTilesTests(unittest.TestCase):
+    """I tile della dashboard usano snapshot aggiornati dal poller, non N
+    stream MJPEG simultanei (ognuno pinna un thread del server)."""
+
+    def setUp(self):
+        self.app_module = load_app_module()
+
+    def test_tiles_use_snapshot_not_mjpeg(self):
+        tmpdir = tempfile.mkdtemp(prefix="dash-profiles-")
+        self.addCleanup(shutil.rmtree, tmpdir)
+        features = build_feature_services(self.app_module)
+        # Store profili isolato: ensure_default_profile sul file condiviso
+        # renderebbe attivo un profilo per i test successivi.
+        features = self.app_module.FeatureServices(
+            presets=features.presets,
+            notifications=features.notifications,
+            recording=features.recording,
+            camera_profiles=self.app_module.CameraProfileService(
+                str(Path(tmpdir) / "profiles.json")
+            ),
+            wifi=features.wifi,
+        )
+        features.camera_profiles.ensure_default_profile(
+            self.app_module.build_default_camera_profile()
+        )
+
+        class FakeMotion:
+            config = {"save_dir": tempfile.gettempdir()}
+
+            def get_status(self):
+                return {"enabled": True}
+
+        app = self.app_module.create_app(
+            self.app_module.AppServices(
+                camera=mock.Mock(),
+                ptz=mock.Mock(),
+                motion=FakeMotion(),
+                features=features,
+                runtime_config=mock.Mock(),
+            )
+        )
+        client = app.test_client()
+        authenticate_client(client)
+        response = client.get("/dashboard")
+        self.assertEqual(response.status_code, 200)
+        html = response.data.decode("utf-8")
+        self.assertIn('data-role="tile-snapshot"', html)
+        self.assertIn("/snapshot.jpg", html)
+        self.assertNotIn("/video_feed", html)
+
+
 class SettingsPageTests(unittest.TestCase):
     def setUp(self):
         self.app_module = load_app_module()

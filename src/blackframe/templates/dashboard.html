@@ -24,9 +24,13 @@
             <span class="status-pill">Monitor</span>
             {% endif %}
           </div>
+          {# Snapshot aggiornato dal poller invece dello stream MJPEG: N stream
+             simultanei pinnano un thread server ciascuno — troppo per il mini
+             PC. Il live pieno resta dietro "Apri". #}
           <img
-            src="{{ url_for('video.camera_video_feed', profile_id=cam.id) }}"
-            alt="Live {{ cam.name }}"
+            data-role="tile-snapshot"
+            src="{{ url_for('video.camera_snapshot', profile_id=cam.id) }}"
+            alt="Anteprima {{ cam.name }}"
           />
           <div class="tile-foot">
             <span class="status-pill motion-pill" data-role="motion-pill">Motion: -</span>

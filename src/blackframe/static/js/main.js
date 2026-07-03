@@ -2,6 +2,7 @@ import { createLiveController } from "./live-ui.js";
 import { createMotionController } from "./motion-ui.js";
 import { createPtzController } from "./ptz-ui.js";
 import { createCameraConfigController } from "./camera-ui.js";
+import { createAdaptivePoller } from "./poller.js";
 
 const live = createLiveController({
   overlay: document.getElementById("viewer-overlay"),
@@ -95,174 +96,79 @@ if (isActiveView) {
   bindMotionOverlayToggle();
 }
 
-const POLL_MODE = {
-  FAST: "fast",
-  DEFAULT: "default",
-  HIDDEN: "hidden",
-};
-
-const FAST_WINDOW_MS = 12000;
-const MODE_CHECK_MS = 500;
-
-let fastUntil = Date.now() + 4000;
-let activeMode = null;
-let pollingHandles = [];
 let motionEnabled = true;
 
-const POLL_INTERVALS = {
-  [POLL_MODE.FAST]: {
-    streamStatus: 2000,
-    motionStatus: 2000,
-    runtimeConfig: 8000,
-    captureList: 5000,
-    ptzStatus: 6000,
+async function pollMotionStatus() {
+  const enabled = await motion.refreshMotionStatus();
+  syncMotionEnabledState(enabled);
+  if (typeof enabled === "boolean") {
+    renderMotionOverlayState(enabled);
+  }
+}
+
+const pollerTasks = {
+  streamStatus: {
+    run: () => live.refreshStatus(),
+    intervals: { fast: 2000, default: 4000, hidden: 20000 },
   },
-  [POLL_MODE.DEFAULT]: {
-    streamStatus: 4000,
-    motionStatus: 5000,
-    runtimeConfig: 20000,
-    captureList: 10000,
-    ptzStatus: 12000,
-  },
-  [POLL_MODE.HIDDEN]: {
-    streamStatus: 20000,
-    motionStatus: 15000,
-    runtimeConfig: 30000,
-    captureList: 30000,
-    ptzStatus: 30000,
+  motionStatus: {
+    run: pollMotionStatus,
+    intervals: { fast: 2000, default: 5000, hidden: 15000 },
   },
 };
 
-function getCurrentMode() {
-  if (document.hidden) {
-    return POLL_MODE.HIDDEN;
-  }
-  if (Date.now() < fastUntil) {
-    return POLL_MODE.FAST;
-  }
-  return POLL_MODE.DEFAULT;
+if (isActiveView) {
+  pollerTasks.runtimeConfig = {
+    run: () => motion.refreshRuntimeConfig(),
+    intervals: { fast: 8000, default: 20000, hidden: 30000 },
+  };
+  pollerTasks.captureList = {
+    run: () => motion.refreshCaptureList(),
+    intervals: { fast: 5000, default: 10000, hidden: 30000 },
+  };
+  pollerTasks.ptzStatus = {
+    run: () => ptz.refreshPtzStatus(),
+    intervals: { fast: 6000, default: 12000, hidden: 30000 },
+  };
 }
 
-function getInterval(mode, key) {
-  const modeIntervals = POLL_INTERVALS[mode] || POLL_INTERVALS[POLL_MODE.DEFAULT];
-  const baseMs = modeIntervals[key];
-  if (!Number.isFinite(baseMs)) {
-    return 0;
-  }
-  if (baseMs <= 0) {
-    return 0;
-  }
-  if (motionEnabled) {
+const poller = createAdaptivePoller({
+  tasks: pollerTasks,
+  // Con il motion disabilitato lo stato e la lista eventi cambiano di rado:
+  // gli intervalli raddoppiano.
+  getIntervalOverride: (key, baseMs) => {
+    if (motionEnabled) {
+      return baseMs;
+    }
+    if (key === "motionStatus") {
+      return Math.max(baseMs * 2, 7000);
+    }
+    if (key === "captureList") {
+      return Math.max(baseMs * 2, 12000);
+    }
     return baseMs;
-  }
-  if (key === "motionStatus") {
-    return Math.max(baseMs * 2, 7000);
-  }
-  if (key === "captureList") {
-    return Math.max(baseMs * 2, 12000);
-  }
-  return baseMs;
-}
-
-function clearPollingHandles() {
-  pollingHandles.forEach((handle) => clearInterval(handle));
-  pollingHandles = [];
-}
-
-let authLost = false;
-
-function scheduleTask(taskKey, callback, mode) {
-  const intervalMs = getInterval(mode, taskKey);
-  if (intervalMs <= 0) {
-    return;
-  }
-  pollingHandles.push(setInterval(callback, intervalMs));
-}
+  },
+});
 
 function syncMotionEnabledState(enabled) {
   if (typeof enabled !== "boolean" || enabled === motionEnabled) {
     return;
   }
   motionEnabled = enabled;
-  if (activeMode) {
-    applyPollingMode(activeMode);
-  }
-}
-
-function applyPollingMode(mode) {
-  if (authLost) {
-    clearPollingHandles();
-    return;
-  }
-  clearPollingHandles();
-  activeMode = mode;
-
-  scheduleTask("streamStatus", () => live.refreshStatus(), mode);
-  scheduleTask("motionStatus", async () => {
-    const enabled = await motion.refreshMotionStatus();
-    syncMotionEnabledState(enabled);
-    if (typeof enabled === "boolean") {
-      renderMotionOverlayState(enabled);
-    }
-  }, mode);
-  if (isActiveView) {
-    scheduleTask("runtimeConfig", () => motion.refreshRuntimeConfig(), mode);
-    scheduleTask("captureList", () => motion.refreshCaptureList(), mode);
-    scheduleTask("ptzStatus", () => ptz.refreshPtzStatus(), mode);
-  }
-}
-
-function refreshPollingMode() {
-  const mode = getCurrentMode();
-  if (mode !== activeMode) {
-    applyPollingMode(mode);
-  }
-}
-
-function markUserActive() {
-  if (document.hidden) {
-    return;
-  }
-  fastUntil = Date.now() + FAST_WINDOW_MS;
-  refreshPollingMode();
+  poller.reapply();
 }
 
 async function bootstrap() {
-  if (authLost) {
-    return;
-  }
   live.ensureVideoFeed();
   await live.refreshStatus();
-  const enabled = await motion.refreshMotionStatus();
-  syncMotionEnabledState(enabled);
-  if (typeof enabled === "boolean") {
-    renderMotionOverlayState(enabled);
-  }
+  await pollMotionStatus();
   if (isActiveView) {
     await motion.refreshRuntimeConfig();
     await motion.refreshCaptureList();
     await ptz.refreshPtzStatus();
     await cameras.refresh();
   }
-
-  applyPollingMode(getCurrentMode());
-  setInterval(() => refreshPollingMode(), MODE_CHECK_MS);
+  poller.start();
 }
-
-window.addEventListener("blackframe:auth-required", () => {
-  authLost = true;
-  clearPollingHandles();
-});
-
-document.addEventListener("visibilitychange", () => {
-  if (!document.hidden) {
-    fastUntil = Date.now() + 4000;
-  }
-  refreshPollingMode();
-});
-
-["pointerdown", "keydown", "wheel", "touchstart"].forEach((eventName) => {
-  window.addEventListener(eventName, markUserActive, { passive: true });
-});
 
 bootstrap();
