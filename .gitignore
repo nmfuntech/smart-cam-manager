@@ -13,6 +13,7 @@ data/.camera_profiles.key
 data/.test-camera-profiles.key
 # Other runtime state in data/ (guest chat IDs, PTZ presets) is private too.
 data/telegram_guests.json
+data/agent_transcript.json
 data/presets.json
 # Coda notifiche Telegram persistita (in volo, privata).
 data/.telegram_queue.json

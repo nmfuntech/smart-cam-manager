@@ -12,7 +12,7 @@ from urllib.parse import quote, urlparse
 import cv2
 from flask import Flask
 
-from blackframe.agent import AgentService
+from blackframe.agent import AgentService, AgentTranscriptStore
 from blackframe.auth import auth_bp, configure_auth
 from blackframe.automation import (
     ActionDispatcher,
@@ -2167,6 +2167,9 @@ class AppServices:
     automation_engine: AutomationEngine | None = None
     automation_registry: DeviceRegistry | None = None
     agent: AgentService | None = None
+    # Transcript della chat web /agente: esiste anche ad agente spento, così
+    # la history resta leggibile dalla UI.
+    agent_transcript: AgentTranscriptStore = field(default_factory=AgentTranscriptStore)
 
     def camera_and_motion(self, profile_id: str):
         """Resolve the (camera, motion) pair for a profile: active main pair or a monitor."""

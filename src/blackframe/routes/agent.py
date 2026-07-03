@@ -31,6 +31,38 @@ def _result_payload(proposal: ProposalResult) -> dict:
     return {"result_text": proposal.answer or raw_text}
 
 
+def _transcript():
+    return get_services().agent_transcript
+
+
+def _record_proposal(text: str, proposal: ProposalResult) -> None:
+    """Registra il turno nel transcript (best-effort, mai bloccante).
+
+    Le proposte pending si registrano come richiesta di conferma; l'esito
+    arriva con il turno di confirm/cancel. I bottoni non vengono ricreati
+    dalla history (il pending vive in-memory con TTL breve).
+    """
+    try:
+        transcript = _transcript()
+        transcript.append("user", text)
+        if not proposal.ok:
+            transcript.append("agent", proposal.error or "Non ho capito.", kind="error")
+        elif proposal.executed:
+            reply = proposal.answer or (proposal.result.text if proposal.result else "")
+            transcript.append(
+                "agent", reply or "Eseguito.", kind="message", command=proposal.command
+            )
+        else:
+            transcript.append(
+                "agent",
+                f"Ho capito: {proposal.description} — confermi?",
+                kind="confirm_request",
+                command=proposal.command,
+            )
+    except Exception:
+        current_app.logger.exception("Registrazione transcript agente fallita")
+
+
 @agent_bp.get("/agente")
 @require_auth()
 def agente_page():
@@ -79,6 +111,7 @@ def agente_interpret():
         return jsonify({"ok": False, "error": "Assistente non abilitato."}), 503
 
     proposal = agent.propose(text, "web", _channel_key())
+    _record_proposal(text, proposal)
     if not proposal.ok:
         return jsonify({"ok": False, "error": proposal.error})
     return jsonify(
@@ -109,6 +142,14 @@ def agente_confirm():
         return jsonify({"ok": False, "error": "Assistente non abilitato."}), 503
 
     proposal = agent.confirm(pending_id, "web", _channel_key())
+    try:
+        if proposal.ok:
+            outcome = proposal.result.text if proposal.result else "Eseguito."
+            _transcript().append("agent", outcome, kind="executed", command=proposal.command)
+        else:
+            _transcript().append("agent", proposal.error or "Richiesta scaduta.", kind="error")
+    except Exception:
+        current_app.logger.exception("Registrazione transcript agente fallita")
     if not proposal.ok:
         return jsonify({"ok": False, "error": proposal.error})
     return jsonify(
@@ -138,4 +179,26 @@ def agente_cancel():
         return jsonify({"ok": False, "error": "Assistente non abilitato."}), 503
 
     cancelled = agent.cancel(pending_id, "web", _channel_key())
+    if cancelled:
+        try:
+            _transcript().append("agent", "Annullato.", kind="message")
+        except Exception:
+            current_app.logger.exception("Registrazione transcript agente fallita")
     return jsonify({"ok": True, "cancelled": cancelled})
+
+
+@agent_bp.get("/api/agente/history")
+@require_auth(api=True)
+def agente_history():
+    limit = request.args.get("limit", default=100, type=int)
+    limit = max(1, min(limit, 500))
+    return jsonify({"ok": True, "messages": _transcript().list(limit=limit)})
+
+
+@agent_bp.delete("/api/agente/history")
+@require_auth(api=True)
+@require_csrf(api=True)
+@rate_limit("agente", **_RL)
+def agente_history_clear():
+    _transcript().clear()
+    return jsonify({"ok": True})

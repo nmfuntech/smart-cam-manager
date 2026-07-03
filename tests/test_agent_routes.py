@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from blackframe.agent import AgentService
+from blackframe.agent import AgentService, AgentTranscriptStore
 
 # ── Shared test helpers (stesso pattern di tests/test_automation_routes.py) ──
 
@@ -123,6 +123,10 @@ class AgentRouteTestBase(unittest.TestCase):
             runtime_config=self.runtime_config,
         )
         self.services.agent = AgentService(self.services)
+        # Transcript su file temporaneo: mai scrivere in data/ del repo.
+        self.services.agent_transcript = AgentTranscriptStore(
+            Path(self.tmp.name) / "transcript.json"
+        )
 
         self.env_patch = mock.patch.dict(os.environ, {"AGENT_ENABLED": "true"})
         self.env_patch.start()
@@ -254,6 +258,58 @@ class AgentInterpretTests(AgentRouteTestBase):
             resp = self._post_json("/api/agente/interpret", {"text": "mandami una foto"})
         data = resp.get_json()
         self.assertFalse(data["ok"])
+
+    def test_interpret_records_transcript(self):
+        with (
+            mock.patch(
+                "blackframe.agent.intent.ollama_client.chat_json",
+                return_value={"command": "status", "arg": None},
+            ),
+            mock.patch(
+                "blackframe.agent.answer.ollama_client.chat_text",
+                return_value=None,
+            ),
+        ):
+            self._post_json("/api/agente/interpret", {"text": "come sta la camera?"})
+        messages = self.services.agent_transcript.list()
+        self.assertEqual(len(messages), 2)
+        self.assertEqual(messages[0]["role"], "user")
+        self.assertEqual(messages[0]["text"], "come sta la camera?")
+        self.assertEqual(messages[1]["role"], "agent")
+        self.assertEqual(messages[1]["command"], "status")
+
+    def test_confirm_flow_records_request_and_outcome(self):
+        with mock.patch(
+            "blackframe.agent.intent.ollama_client.chat_json",
+            return_value={"command": "motion_off", "arg": None},
+        ):
+            resp = self._post_json("/api/agente/interpret", {"text": "spegni il movimento"})
+        pending_id = resp.get_json()["pending_id"]
+        self._post_json("/api/agente/confirm", {"pending_id": pending_id})
+
+        kinds = [m["kind"] for m in self.services.agent_transcript.list()]
+        self.assertIn("confirm_request", kinds)
+        self.assertIn("executed", kinds)
+
+    def test_history_endpoint_returns_messages(self):
+        self.services.agent_transcript.append("user", "ciao")
+        self.services.agent_transcript.append("agent", "ciao a te")
+        authenticate_client(self.client)
+        resp = self.client.get("/api/agente/history")
+        data = resp.get_json()
+        self.assertTrue(data["ok"])
+        self.assertEqual([m["text"] for m in data["messages"]], ["ciao", "ciao a te"])
+
+    def test_history_requires_auth(self):
+        resp = self.client.get("/api/agente/history")
+        self.assertEqual(resp.status_code, 401)
+
+    def test_history_delete_clears_transcript(self):
+        self.services.agent_transcript.append("user", "ciao")
+        token = authenticate_client(self.client)
+        resp = self.client.delete("/api/agente/history", headers=csrf_headers(token))
+        self.assertTrue(resp.get_json()["ok"])
+        self.assertEqual(self.services.agent_transcript.list(), [])
 
     def test_toggle_updates_runtime_config_and_reloads_agent(self):
         resp = self._patch_json("/api/agente/toggle", {"enabled": False})

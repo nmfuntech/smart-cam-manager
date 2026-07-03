@@ -11,6 +11,24 @@ const chatLog = document.getElementById("agent-chat-log");
 const form = document.getElementById("agent-form");
 const input = document.getElementById("agent-input");
 const sendBtn = document.getElementById("btn-agent-send");
+const newChatBtn = document.getElementById("agent-new-chat");
+
+const STATUS_REFRESH_MS = 30000;
+
+const timeFormatter = new Intl.DateTimeFormat("it-IT", { hour: "2-digit", minute: "2-digit" });
+const dateFormatter = new Intl.DateTimeFormat("it-IT", { day: "2-digit", month: "2-digit" });
+
+function formatTimestamp(tsSeconds) {
+  if (!Number.isFinite(tsSeconds)) {
+    return "";
+  }
+  const date = new Date(tsSeconds * 1000);
+  const now = new Date();
+  const sameDay = date.toDateString() === now.toDateString();
+  return sameDay
+    ? timeFormatter.format(date)
+    : `${dateFormatter.format(date)} ${timeFormatter.format(date)}`;
+}
 
 let pendingId = null;
 let confirmRow = null;
@@ -33,7 +51,7 @@ function updateEmptyState() {
   chatEmpty.hidden = chatLog.childElementCount > 0;
 }
 
-function appendBubble(text, role, { isError = false } = {}) {
+function appendBubble(text, role, { isError = false, ts = null } = {}) {
   if (chatEmpty) {
     chatEmpty.hidden = true;
   }
@@ -49,6 +67,14 @@ function appendBubble(text, role, { isError = false } = {}) {
   label.className = "agent-bubble-label";
   label.textContent = role === "user" ? "Tu" : "Agente";
 
+  const stamp = formatTimestamp(ts ?? Date.now() / 1000);
+  if (stamp) {
+    const timeEl = document.createElement("time");
+    timeEl.className = "agent-bubble-time";
+    timeEl.textContent = stamp;
+    label.append(" · ", timeEl);
+  }
+
   const body = document.createElement("p");
   body.className = "agent-bubble-text";
   body.textContent = text;
@@ -58,6 +84,46 @@ function appendBubble(text, role, { isError = false } = {}) {
   chatLog.append(row);
   scrollChatToBottom();
   return row;
+}
+
+async function loadHistory() {
+  try {
+    const { response, data } = await fetchJson("/api/agente/history?limit=100");
+    if (!response.ok || !data.ok) {
+      return;
+    }
+    chatLog.innerHTML = "";
+    for (const message of data.messages || []) {
+      appendBubble(message.text, message.role === "user" ? "user" : "agent", {
+        isError: message.kind === "error",
+        ts: message.ts,
+      });
+    }
+  } catch {
+    // history assente: si parte dalla chat vuota
+  } finally {
+    updateEmptyState();
+    scrollChatToBottom();
+  }
+}
+
+async function clearHistory() {
+  if (!window.confirm("Svuotare la conversazione? La cronologia verrà eliminata.")) {
+    return;
+  }
+  await cancelPendingIfAny({ silent: true });
+  try {
+    const { response, data } = await fetchJson("/api/agente/history", { method: "DELETE" });
+    if (!response.ok || !data.ok) {
+      setFeedback(data.error || "Impossibile svuotare la chat", true);
+      return;
+    }
+    chatLog.innerHTML = "";
+    updateEmptyState();
+    setFeedback("");
+  } catch {
+    setFeedback("Errore di rete", true);
+  }
 }
 
 function removeConfirmRow() {
@@ -272,6 +338,8 @@ form.addEventListener("submit", (event) => {
 
 toggleCheckbox.addEventListener("change", () => setEnabled(toggleCheckbox.checked));
 
+newChatBtn?.addEventListener("click", clearHistory);
+
 document.querySelectorAll(".agent-suggestion").forEach((button) => {
   button.addEventListener("click", () => {
     const text = String(button.dataset.text || "").trim();
@@ -283,3 +351,13 @@ document.querySelectorAll(".agent-suggestion").forEach((button) => {
 });
 
 loadStatus();
+loadHistory();
+
+// La pill di stato prima era caricata una volta sola e restava stantia se
+// l'agente veniva attivato/spento altrove (es. da /impostazioni o Telegram).
+setInterval(loadStatus, STATUS_REFRESH_MS);
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) {
+    loadStatus();
+  }
+});

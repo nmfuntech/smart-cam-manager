@@ -1928,3 +1928,9 @@ details[open].sidebar-advanced .sidebar-advanced-chevron {
   text-align: center;
   margin-top: 6px;
 }
+
+.agent-bubble-time {
+  font-size: 0.68rem;
+  opacity: 0.55;
+  font-variant-numeric: tabular-nums;
+}
