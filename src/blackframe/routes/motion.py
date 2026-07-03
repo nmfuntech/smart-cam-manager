@@ -20,29 +20,8 @@ _CATEGORY_SUFFIX = "(?:" + "|".join(re.escape(c) for c in MotionEventStore.EVENT
 EVENT_ID_PATTERN = re.compile(rf"^motion_event_\d{{8}}_\d{{6}}(?:__{_CATEGORY_SUFFIX})?$")
 EVENT_FRAME_PATTERN = re.compile(r"^(cover|latest|frame_\d{8}_\d{6}_\d{3})\.jpg$")
 LEGACY_CAPTURE_PATTERN = re.compile(r"^motion_\d{8}_\d{6}\.jpg$")
-PUBLIC_RUNTIME_UPDATE_KEYS = {
-    "MOTION_ENABLED",
-    "MOTION_THRESHOLD",
-    "MOTION_MIN_AREA",
-    "MOTION_MOG2_HISTORY",
-    "MOTION_GLOBAL_CHANGE_RATIO",
-    "MOTION_MORPH_KERNEL",
-    "CLASSIFICATION_ENABLED",
-    "CLASSIFICATION_BACKEND",
-    "CLASSIFICATION_MIN_CONFIDENCE",
-    "CLASSIFICATION_SAMPLE_POLICY",
-    "CLASSIFICATION_DETECT_PERSON",
-    "CLASSIFICATION_DETECT_PET",
-    "MOTION_RETENTION_DAYS",
-    "MOTION_RETENTION_MAX_MB",
-    "RECORD_ENABLED",
-    "RECORD_MAX_WIDTH",
-    "NOTIFY_TELEGRAM_ENABLED",
-    "NOTIFY_PREFER_VIDEO",
-    "CONTINUOUS_RECORD_ENABLED",
-    "CONTINUOUS_RECORD_SEGMENT_MIN",
-    "CONTINUOUS_RECORD_RETAIN_HOURS",
-}
+# L'allowlist delle chiavi modificabili da UI vive in runtime_config
+# (ConfigField.ui_editable): una sola fonte invece di tre da tenere in sync.
 
 
 def get_services():
@@ -102,7 +81,7 @@ def update_runtime_config():
     updates = payload.get("updates", {})
     if not isinstance(updates, dict) or not updates:
         return jsonify({"ok": False, "error": "Campo updates mancante o non valido"}), 400
-    invalid_keys = sorted(set(updates) - PUBLIC_RUNTIME_UPDATE_KEYS)
+    invalid_keys = sorted(set(updates) - get_services().runtime_config.public_update_keys())
     if invalid_keys:
         return (
             jsonify(

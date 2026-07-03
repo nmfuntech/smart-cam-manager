@@ -246,11 +246,13 @@ export function createTelegramController(elements) {
   }
 
   function bind() {
-    if (!dialog || !openButton) {
-      return;
+    // Il controller funziona sia dentro un <dialog> (viewer) sia come
+    // sezione inline (pagina Impostazioni): open/close esistono solo nel
+    // primo caso.
+    if (dialog && openButton) {
+      openButton.addEventListener("click", open);
+      closeButton?.addEventListener("click", close);
     }
-    openButton.addEventListener("click", open);
-    closeButton?.addEventListener("click", close);
     discoverButton?.addEventListener("click", discover);
     testButton?.addEventListener("click", sendTest);
     saveButton?.addEventListener("click", save);
@@ -265,5 +267,5 @@ export function createTelegramController(elements) {
     });
   }
 
-  return { bind };
+  return { bind, load: loadConfig };
 }

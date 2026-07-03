@@ -1,7 +1,7 @@
 import os
 import re
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 
@@ -13,6 +13,45 @@ class ConfigField:
     internal_only: bool = False
     minimum: float | None = None
     must_be_odd: bool = False
+    # Modificabile dalla UI web via PATCH /api/runtime_config. Fonte unica
+    # dell'allowlist (prima duplicata in routes/motion.py): mai derivarla da
+    # "not sensitive" — esporrebbe TAPO_HOST e simili, che appartengono ai
+    # profili camera, non alla pagina impostazioni.
+    ui_editable: bool = False
+
+
+# Chiavi esposte alla pagina Impostazioni / sidebar viewer. Applicate ai
+# ConfigField in __init__ (vedi ConfigField.ui_editable).
+_UI_EDITABLE_KEYS = frozenset(
+    {
+        "MOTION_ENABLED",
+        "MOTION_THRESHOLD",
+        "MOTION_MIN_AREA",
+        "MOTION_BLUR_SIZE",
+        "MOTION_MOG2_HISTORY",
+        "MOTION_GLOBAL_CHANGE_RATIO",
+        "MOTION_MORPH_KERNEL",
+        "CLASSIFICATION_ENABLED",
+        "CLASSIFICATION_BACKEND",
+        "CLASSIFICATION_MIN_CONFIDENCE",
+        "CLASSIFICATION_SAMPLE_POLICY",
+        "CLASSIFICATION_DETECT_PERSON",
+        "CLASSIFICATION_DETECT_PET",
+        "MOTION_RETENTION_DAYS",
+        "MOTION_RETENTION_MAX_MB",
+        "RECORD_ENABLED",
+        "RECORD_FPS",
+        "RECORD_PREROLL_SEC",
+        "RECORD_MAX_DURATION_SEC",
+        "RECORD_MAX_WIDTH",
+        "NOTIFY_TELEGRAM_ENABLED",
+        "NOTIFY_MIN_INTERVAL_SEC",
+        "NOTIFY_PREFER_VIDEO",
+        "CONTINUOUS_RECORD_ENABLED",
+        "CONTINUOUS_RECORD_SEGMENT_MIN",
+        "CONTINUOUS_RECORD_RETAIN_HOURS",
+    }
+)
 
 
 class RuntimeConfigManager:
@@ -176,6 +215,16 @@ class RuntimeConfigManager:
             ),
             "AGENT_ENABLED": ConfigField("AGENT_ENABLED", "bool"),
         }
+        for key in _UI_EDITABLE_KEYS:
+            self.fields[key] = replace(self.fields[key], ui_editable=True)
+
+    def public_update_keys(self) -> frozenset[str]:
+        """Chiavi accettate da PATCH /api/runtime_config (allowlist UI)."""
+        return frozenset(
+            key
+            for key, field in self.fields.items()
+            if field.ui_editable and not field.sensitive and not field.internal_only
+        )
 
     def get_public_config(self) -> dict:
         data = {}

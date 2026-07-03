@@ -1549,6 +1549,9 @@ class AppFactoryTests(unittest.TestCase):
                 self.current.update(updates)
                 return self.current
 
+            def public_update_keys(self):
+                return RuntimeConfigManager().public_update_keys()
+
         fake_camera = FakeCamera()
         fake_ptz = FakePtz()
         fake_motion = FakeMotion()
@@ -1661,6 +1664,9 @@ class AppFactoryTests(unittest.TestCase):
 
             def update(self, updates, allow_sensitive=False, allow_internal=False):
                 return {"MOTION_ENABLED": True, **updates}
+
+            def public_update_keys(self):
+                return RuntimeConfigManager().public_update_keys()
 
         app = self.app_module.create_app(
             self.app_module.AppServices(
@@ -2915,6 +2921,7 @@ class NavConsistencyTests(unittest.TestCase):
             "/cameras": "Camere",
             "/automazione": "Automazione",
             "/agente": "Agente",
+            "/impostazioni": "Impostazioni",
         }
         for url, label in pages.items():
             response = client.get(url, follow_redirects=True)
@@ -2934,6 +2941,113 @@ class NavConsistencyTests(unittest.TestCase):
         response = client.get("/login")
         self.assertEqual(response.status_code, 200)
         self.assertNotIn("app-header-nav", response.data.decode("utf-8"))
+
+
+class SettingsPageTests(unittest.TestCase):
+    def setUp(self):
+        self.app_module = load_app_module()
+
+    def test_page_requires_auth(self):
+        app = self.app_module.create_app(
+            self.app_module.AppServices(
+                camera=mock.Mock(),
+                ptz=mock.Mock(),
+                motion=mock.Mock(config={"save_dir": tempfile.gettempdir()}),
+                features=build_feature_services(self.app_module),
+                runtime_config=mock.Mock(),
+            )
+        )
+        client = app.test_client()
+        response = client.get("/impostazioni")
+        self.assertIn(response.status_code, (302, 401))
+
+    def test_page_renders_all_sections(self):
+        app = self.app_module.create_app(
+            self.app_module.AppServices(
+                camera=mock.Mock(),
+                ptz=mock.Mock(),
+                motion=mock.Mock(config={"save_dir": tempfile.gettempdir()}),
+                features=build_feature_services(self.app_module),
+                runtime_config=mock.Mock(),
+            )
+        )
+        client = app.test_client()
+        authenticate_client(client)
+        response = client.get("/impostazioni")
+        self.assertEqual(response.status_code, 200)
+        html = response.data.decode("utf-8")
+        for section_id in (
+            'id="movimento"',
+            'id="riconoscimento"',
+            'id="registrazione"',
+            'id="telegram"',
+            'id="agente"',
+            'id="sistema"',
+        ):
+            self.assertIn(section_id, html)
+
+
+class PublicUpdateKeysTests(unittest.TestCase):
+    def test_allowlist_from_single_source(self):
+        manager = RuntimeConfigManager()
+        keys = manager.public_update_keys()
+        # Chiavi storiche della sidebar viewer.
+        for key in ("MOTION_ENABLED", "CLASSIFICATION_ENABLED", "RECORD_ENABLED"):
+            self.assertIn(key, keys)
+        # Nuove chiavi esposte dalla pagina Impostazioni.
+        for key in (
+            "MOTION_BLUR_SIZE",
+            "RECORD_FPS",
+            "RECORD_PREROLL_SEC",
+            "RECORD_MAX_DURATION_SEC",
+            "NOTIFY_MIN_INTERVAL_SEC",
+        ):
+            self.assertIn(key, keys)
+        # Mai sensibili o interne, anche se qualcuno le marcasse ui_editable.
+        for key in keys:
+            field = manager.fields[key]
+            self.assertFalse(field.sensitive, key)
+            self.assertFalse(field.internal_only, key)
+        self.assertNotIn("TAPO_PASSWORD", keys)
+        self.assertNotIn("MOTION_SAVE_DIR", keys)
+
+    def test_patch_accepts_new_key_and_rejects_sensitive(self):
+        app_module = load_app_module()
+
+        class FakeRuntimeConfig:
+            def get_public_config(self):
+                return {}
+
+            def update(self, updates, allow_sensitive=False, allow_internal=False):
+                return dict(updates)
+
+            def public_update_keys(self):
+                return RuntimeConfigManager().public_update_keys()
+
+        services = app_module.AppServices(
+            camera=mock.Mock(),
+            ptz=mock.Mock(),
+            motion=mock.Mock(config={"save_dir": tempfile.gettempdir()}),
+            features=build_feature_services(app_module),
+            runtime_config=FakeRuntimeConfig(),
+        )
+        app = app_module.create_app(services)
+        client = app.test_client()
+        csrf_token = authenticate_client(client)
+
+        ok_response = client.patch(
+            "/api/runtime_config",
+            json={"updates": {"RECORD_FPS": 8}},
+            headers=csrf_headers(csrf_token),
+        )
+        self.assertEqual(ok_response.status_code, 200)
+
+        bad_response = client.patch(
+            "/api/runtime_config",
+            json={"updates": {"TAPO_PASSWORD": "x"}},
+            headers=csrf_headers(csrf_token),
+        )
+        self.assertEqual(bad_response.status_code, 400)
 
 
 class AutomationSourceContextTests(unittest.TestCase):

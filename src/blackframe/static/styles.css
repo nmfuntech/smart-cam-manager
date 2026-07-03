@@ -1852,3 +1852,73 @@ details[open].sidebar-advanced .sidebar-advanced-chevron {
 .section-head-spaced {
   margin-top: 12px;
 }
+
+/* ─── Pagina Impostazioni ───────────────────────────────────────────────── */
+.settings-layout {
+  display: grid;
+  grid-template-columns: 180px 1fr;
+  gap: 20px;
+  align-items: start;
+}
+
+.settings-subnav {
+  position: sticky;
+  top: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.settings-subnav a {
+  color: var(--text);
+  text-decoration: none;
+  font-size: 0.85rem;
+  letter-spacing: 0.04em;
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+}
+
+.settings-subnav a:hover {
+  border-color: rgba(82, 242, 199, 0.35);
+  color: var(--accent);
+}
+
+.settings-sections {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  min-width: 0;
+}
+
+.settings-section {
+  scroll-margin-top: 16px;
+}
+
+.settings-advanced {
+  margin-top: 10px;
+}
+
+.settings-advanced summary {
+  cursor: pointer;
+  font-size: 0.8rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  opacity: 0.75;
+}
+
+.settings-advanced[open] summary {
+  margin-bottom: 10px;
+}
+
+@media (max-width: 760px) {
+  .settings-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .settings-subnav {
+    position: static;
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+}

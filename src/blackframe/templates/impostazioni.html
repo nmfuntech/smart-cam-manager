@@ -1,0 +1,318 @@
+{% extends "base.html" %}
+{% set nav_active = 'impostazioni' %}
+{% block title %}BLACKFRAME · Impostazioni{% endblock %}
+{% block content %}
+    <main class="page camera-manager-page viewer-page">
+      <section class="viewer-shell camera-manager-shell">
+
+        <div class="viewer-topbar">
+          <div>
+            <h1 class="camera-manager-title">Impostazioni</h1>
+            <p class="description compact">
+              Tutte le impostazioni del sistema in un posto solo. Ogni sezione si
+              salva in modo indipendente.
+            </p>
+          </div>
+        </div>
+
+        <div class="settings-layout">
+          <nav class="settings-subnav" aria-label="Sezioni impostazioni">
+            <a href="#movimento">Movimento</a>
+            <a href="#riconoscimento">Riconoscimento</a>
+            <a href="#registrazione">Registrazione</a>
+            <a href="#telegram">Notifiche Telegram</a>
+            <a href="#agente">Agente</a>
+            <a href="#sistema">Sistema</a>
+          </nav>
+
+          <div class="settings-sections">
+
+            <!-- ── Movimento ─────────────────────────────────────── -->
+            <section class="sidebar-block settings-section" id="movimento">
+              <div class="camera-config-head">
+                <h2>Movimento</h2>
+              </div>
+              <div class="runtime-grid">
+                <label class="runtime-field toggle-field">
+                  <span>Rilevamento movimento</span>
+                  <input id="set-motion-enabled" type="checkbox" />
+                </label>
+                <label class="runtime-field slider-field">
+                  <span>Sensibilità</span>
+                  <input id="set-motion-threshold" type="range" min="1" max="3" step="1" />
+                  <p class="slider-hint" id="set-motion-threshold-hint">A destra rileva di più, a sinistra filtra di più</p>
+                  <p class="slider-value" id="set-motion-threshold-value">-</p>
+                </label>
+                <label class="runtime-field slider-field">
+                  <span>Soggetto minimo</span>
+                  <input id="set-motion-min-area" type="range" min="1" max="3" step="1" />
+                  <p class="slider-hint" id="set-motion-min-area-hint">A destra accetta soggetti più piccoli, a sinistra solo più grandi</p>
+                  <p class="slider-value" id="set-motion-min-area-value">-</p>
+                </label>
+              </div>
+              <details class="settings-advanced">
+                <summary>Avanzate</summary>
+                <div class="runtime-grid">
+                  <label class="runtime-field">
+                    <span>Storia MOG2 (frame)</span>
+                    <input id="set-mog2-history" type="number" min="1" step="1" />
+                  </label>
+                  <label class="runtime-field">
+                    <span>Soglia cambio globale (0-1)</span>
+                    <input id="set-global-change-ratio" type="number" min="0" step="0.01" />
+                  </label>
+                  <label class="runtime-field">
+                    <span>Kernel morfologico (dispari)</span>
+                    <input id="set-morph-kernel" type="number" min="1" step="2" />
+                  </label>
+                  <label class="runtime-field">
+                    <span>Blur (dispari)</span>
+                    <input id="set-blur-size" type="number" min="1" step="2" />
+                  </label>
+                </div>
+              </details>
+              <button class="ghost-button compact-button save-runtime" id="set-save-movimento" type="button">
+                Salva movimento
+              </button>
+              <p class="runtime-feedback" id="set-feedback-movimento"></p>
+            </section>
+
+            <!-- ── Riconoscimento ────────────────────────────────── -->
+            <section class="sidebar-block settings-section" id="riconoscimento">
+              <div class="camera-config-head">
+                <h2>Riconoscimento</h2>
+              </div>
+              <div class="runtime-grid">
+                <label class="runtime-field toggle-field">
+                  <span>Classificazione persone/animali</span>
+                  <input id="set-classification-enabled" type="checkbox" />
+                </label>
+                <label class="runtime-field toggle-field classification-suboption">
+                  <span>🧍 Notifica persone</span>
+                  <input id="set-detect-person" type="checkbox" />
+                </label>
+                <label class="runtime-field toggle-field classification-suboption">
+                  <span>🐕 Notifica animali</span>
+                  <input id="set-detect-pet" type="checkbox" />
+                </label>
+              </div>
+              <details class="settings-advanced">
+                <summary>Avanzate</summary>
+                <div class="runtime-grid">
+                  <label class="runtime-field">
+                    <span>Backend</span>
+                    <select id="set-classification-backend">
+                      <option value="detection">Detection (MobileNet-SSD)</option>
+                      <option value="local">Local (ONNX)</option>
+                      <option value="teachable_machine">Teachable Machine</option>
+                      <option value="cloud">Cloud HTTP</option>
+                    </select>
+                  </label>
+                  <label class="runtime-field slider-field">
+                    <span>Soglia confidenza</span>
+                    <input id="set-min-confidence" type="range" min="0.3" max="0.99" step="0.01" />
+                    <p class="slider-value" id="set-min-confidence-value">0.55</p>
+                  </label>
+                  <label class="runtime-field">
+                    <span>Policy campionamento</span>
+                    <select id="set-sample-policy">
+                      <option value="event_cover">event_cover</option>
+                    </select>
+                  </label>
+                </div>
+                <p class="tg-hint">
+                  Nessun modello è incluso nell'installazione: scaricalo con
+                  <code>make fetch-model</code> (o <code>.\blackframe.ps1 fetch-model</code> su
+                  Windows) prima di abilitare. Il backend consigliato è
+                  <strong>detection</strong>: riconosce persone, cani e gatti e localizza il
+                  soggetto anche su hardware modesto.
+                </p>
+              </details>
+              <button class="ghost-button compact-button save-runtime" id="set-save-riconoscimento" type="button">
+                Salva riconoscimento
+              </button>
+              <p class="runtime-feedback" id="set-feedback-riconoscimento"></p>
+            </section>
+
+            <!-- ── Registrazione ─────────────────────────────────── -->
+            <section class="sidebar-block settings-section" id="registrazione">
+              <div class="camera-config-head">
+                <h2>Registrazione</h2>
+              </div>
+              <p class="tg-section-label">Clip evento</p>
+              <div class="runtime-grid">
+                <label class="runtime-field toggle-field">
+                  <span>Clip video per ogni evento</span>
+                  <input id="set-record-enabled" type="checkbox" />
+                </label>
+                <label class="runtime-field">
+                  <span>FPS clip</span>
+                  <input id="set-record-fps" type="number" min="1" step="1" />
+                </label>
+                <label class="runtime-field">
+                  <span>Preroll (sec)</span>
+                  <input id="set-record-preroll" type="number" min="0" step="0.5" />
+                </label>
+                <label class="runtime-field">
+                  <span>Durata massima (sec)</span>
+                  <input id="set-record-max-duration" type="number" min="1" step="1" />
+                </label>
+                <label class="runtime-field">
+                  <span>Larghezza massima (px, 0 = originale)</span>
+                  <input id="set-record-max-width" type="number" min="0" step="2" />
+                </label>
+              </div>
+              <p class="tg-section-label">Registrazione continua</p>
+              <div class="runtime-grid">
+                <label class="runtime-field toggle-field">
+                  <span>Registrazione continua</span>
+                  <input id="set-continuous-enabled" type="checkbox" />
+                </label>
+                <label class="runtime-field">
+                  <span>Durata segmento (min)</span>
+                  <input id="set-continuous-segment-min" type="number" min="1" step="1" />
+                </label>
+                <label class="runtime-field">
+                  <span>Conserva (ore)</span>
+                  <input id="set-continuous-retain-hours" type="number" min="0.1" step="0.5" />
+                </label>
+              </div>
+              <p class="tg-section-label">Conservazione eventi</p>
+              <div class="runtime-grid">
+                <label class="runtime-field">
+                  <span>Elimina dopo (giorni, 0 = mai)</span>
+                  <input id="set-retention-days" type="number" min="0" step="1" />
+                </label>
+                <label class="runtime-field">
+                  <span>Spazio massimo (MB, 0 = illimitato)</span>
+                  <input id="set-retention-max-mb" type="number" min="0" step="100" />
+                </label>
+              </div>
+              <button class="ghost-button compact-button save-runtime" id="set-save-registrazione" type="button">
+                Salva registrazione
+              </button>
+              <p class="runtime-feedback" id="set-feedback-registrazione"></p>
+            </section>
+
+            <!-- ── Notifiche Telegram ────────────────────────────── -->
+            <section class="sidebar-block settings-section" id="telegram">
+              <div class="camera-config-head">
+                <h2>Notifiche Telegram</h2>
+              </div>
+              <ol class="tg-steps">
+                <li>Apri Telegram, cerca <strong>@BotFather</strong>, invia <code>/newbot</code> e copia il token.</li>
+                <li>Cerca il tuo nuovo bot e mandagli un messaggio qualsiasi (es. <code>/start</code>).</li>
+                <li>Incolla il token qui sotto, premi <strong>Trova chat</strong>, scegli la chat e salva.</li>
+              </ol>
+              <label class="runtime-field">
+                <span>Token del bot</span>
+                <input id="set-tg-token" type="password" autocomplete="off" placeholder="123456789:AA..." />
+                <p class="tg-hint" id="set-tg-token-hint"></p>
+              </label>
+              <div class="tg-row">
+                <label class="runtime-field tg-grow">
+                  <span>Chat ID</span>
+                  <input id="set-tg-chat-id" type="text" inputmode="numeric" placeholder="es. 123456789" />
+                </label>
+                <button class="ghost-button compact-button" id="set-tg-discover" type="button">
+                  Trova chat
+                </button>
+              </div>
+              <div class="tg-chat-list" id="set-tg-chat-list" hidden></div>
+              <label class="runtime-field toggle-field">
+                <span>Invia clip video (se registrazione attiva)</span>
+                <input id="set-tg-prefer-video" type="checkbox" />
+              </label>
+              <label class="runtime-field toggle-field">
+                <span>Notifiche abilitate</span>
+                <input id="set-tg-enabled" type="checkbox" />
+              </label>
+              <label class="runtime-field">
+                <span>Intervallo minimo tra notifiche (sec)</span>
+                <input id="set-notify-min-interval" type="number" min="0" step="1" />
+              </label>
+              <hr class="tg-separator" />
+              <p class="tg-section-label">Accesso familiare</p>
+              <p class="tg-invite-desc">
+                Scegli un codice segreto e salvalo. Poi copia il link e mandalo
+                ai familiari: basterà toccarlo da Telegram per essere autorizzati.
+              </p>
+              <label class="runtime-field">
+                <span>Codice segreto</span>
+                <input id="set-tg-invite-code" type="text" autocomplete="off" placeholder="es. famiglia2024" />
+              </label>
+              <div class="tg-invite-link-box" id="set-tg-invite-link-box" hidden>
+                <span class="tg-invite-link-label">Link da condividere</span>
+                <div class="tg-invite-link-row">
+                  <code id="set-tg-invite-link-text" class="tg-invite-link-url"></code>
+                  <button type="button" id="set-tg-invite-copy" class="ghost-button compact-button">Copia</button>
+                </div>
+              </div>
+              <p class="tg-hint" id="set-tg-invite-hint"></p>
+              <div class="tg-actions">
+                <button class="ghost-button compact-button" id="set-tg-test" type="button">
+                  Invia messaggio di prova
+                </button>
+                <button class="ghost-button compact-button tg-save" id="set-tg-save" type="button">
+                  Salva Telegram
+                </button>
+              </div>
+              <p class="runtime-feedback" id="set-tg-feedback"></p>
+            </section>
+
+            <!-- ── Agente ────────────────────────────────────────── -->
+            <section class="sidebar-block settings-section" id="agente">
+              <div class="camera-config-head">
+                <h2>Agente</h2>
+              </div>
+              <p class="description compact">
+                Assistente in linguaggio naturale (richiede Ollama locale). La chat
+                vive nella pagina <a class="accent-link" href="/agente">Agente</a>.
+              </p>
+              <div class="topbar-controls">
+                <span class="status-pill" id="set-agent-pill">Verifica...</span>
+                <label class="auto-topbar-toggle">
+                  <span>Abilitato</span>
+                  <input type="checkbox" id="set-agent-toggle" />
+                </label>
+              </div>
+              <p class="runtime-feedback" id="set-feedback-agente"></p>
+            </section>
+
+            <!-- ── Sistema ───────────────────────────────────────── -->
+            <section class="sidebar-block settings-section" id="sistema">
+              <div class="camera-config-head">
+                <h2>Sistema</h2>
+              </div>
+              <div class="stats-grid-compact">
+                <div class="motion-stat">
+                  <span class="motion-label">Stream</span>
+                  <strong id="set-stream-status">-</strong>
+                </div>
+                <div class="motion-stat">
+                  <span class="motion-label">Stima disco (24h)</span>
+                  <strong id="set-disk-estimate">-</strong>
+                </div>
+              </div>
+              <div class="button-row">
+                <button class="ghost-button compact-button" id="set-open-folder" type="button">
+                  Apri cartella catture
+                </button>
+                <button class="ghost-button compact-button danger-button" id="set-clear-events" type="button">
+                  Cancella tutti gli eventi
+                </button>
+              </div>
+              <p class="runtime-feedback" id="set-feedback-sistema"></p>
+            </section>
+
+          </div>
+        </div>
+      </section>
+    </main>
+{% endblock %}
+{% block scripts %}
+    <script
+      type="module"
+      src="{{ url_for('static', filename='js/impostazioni-page.js', v=static_asset_version) }}"
+    ></script>
+{% endblock %}

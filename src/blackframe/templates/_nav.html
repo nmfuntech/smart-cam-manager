@@ -19,6 +19,7 @@
     {{ nav_link('cameras', '/cameras', 'Camere') }}
     {{ nav_link('automazione', '/automazione', 'Automazione') }}
     {{ nav_link('agente', '/agente', 'Agente') }}
+    {{ nav_link('impostazioni', '/impostazioni', 'Impostazioni') }}
     <form method="post" action="{{ url_for('auth.logout') }}">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
       <button class="ghost-button compact-button" type="submit">Esci</button>
