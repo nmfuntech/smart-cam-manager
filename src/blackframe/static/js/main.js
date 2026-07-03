@@ -2,7 +2,6 @@ import { createLiveController } from "./live-ui.js";
 import { createMotionController } from "./motion-ui.js";
 import { createPtzController } from "./ptz-ui.js";
 import { createCameraConfigController } from "./camera-ui.js";
-import { createTelegramController } from "./telegram-ui.js";
 
 const live = createLiveController({
   overlay: document.getElementById("viewer-overlay"),
@@ -27,24 +26,7 @@ const motion = createMotionController({
   captureToggle: document.getElementById("capture-toggle"),
   captureClear: document.getElementById("capture-clear"),
   captureOpenFolder: document.getElementById("capture-open-folder"),
-  runtimeSave: document.getElementById("runtime-save"),
-  runtimeSaveClassification: document.getElementById("runtime-save-classification"),
   runtimeFeedback: document.getElementById("runtime-feedback"),
-  runtimeFeedbackClassification: document.getElementById("runtime-feedback-classification"),
-  cfgMotionEnabled: document.getElementById("cfg-motion-enabled"),
-  cfgMotionThreshold: document.getElementById("cfg-motion-threshold"),
-  cfgMotionThresholdHint: document.getElementById("cfg-motion-threshold-hint"),
-  cfgMotionThresholdValue: document.getElementById("cfg-motion-threshold-value"),
-  cfgMotionMinArea: document.getElementById("cfg-motion-min-area"),
-  cfgMotionMinAreaHint: document.getElementById("cfg-motion-min-area-hint"),
-  cfgMotionMinAreaValue: document.getElementById("cfg-motion-min-area-value"),
-  cfgClassificationEnabled: document.getElementById("cfg-classification-enabled"),
-  cfgClassificationDetectPerson: document.getElementById("cfg-classification-detect-person"),
-  cfgClassificationDetectPet: document.getElementById("cfg-classification-detect-pet"),
-  cfgClassificationBackend: document.getElementById("cfg-classification-backend"),
-  cfgClassificationMinConfidence: document.getElementById("cfg-classification-min-confidence"),
-  cfgClassificationMinConfidenceValue: document.getElementById("cfg-classification-min-confidence-value"),
-  cfgClassificationSamplePolicy: document.getElementById("cfg-classification-sample-policy"),
   cfgRecordEnabled: document.getElementById("cfg-record-enabled"),
   cfgNotifyTelegramEnabled: document.getElementById("cfg-notify-telegram-enabled"),
   motionCaptureVideo: document.getElementById("motion-capture-video"),
@@ -101,37 +83,15 @@ function bindMotionOverlayToggle() {
   });
 }
 
-const telegram = createTelegramController({
-  openButton: document.getElementById("telegram-config-open"),
-  dialog: document.getElementById("telegram-dialog"),
-  closeButton: document.getElementById("telegram-close"),
-  tokenInput: document.getElementById("tg-bot-token"),
-  tokenHint: document.getElementById("tg-token-hint"),
-  chatIdInput: document.getElementById("tg-chat-id"),
-  discoverButton: document.getElementById("tg-discover"),
-  chatList: document.getElementById("tg-chat-list"),
-  preferVideo: document.getElementById("tg-prefer-video"),
-  enabled: document.getElementById("tg-enabled"),
-  testButton: document.getElementById("tg-test"),
-  saveButton: document.getElementById("tg-save"),
-  feedback: document.getElementById("tg-feedback"),
-  sidebarEnabledToggle: document.getElementById("cfg-notify-telegram-enabled"),
-  inviteCodeInput: document.getElementById("tg-invite-code"),
-  inviteHint: document.getElementById("tg-invite-hint"),
-  inviteLinkBox: document.getElementById("tg-invite-link-box"),
-  inviteLinkText: document.getElementById("tg-invite-link-text"),
-  inviteCopyButton: document.getElementById("tg-invite-copy"),
-});
-
 // A monitored secondary camera renders a live-only viewer: no PTZ, settings,
-// events gallery or Telegram dialog, so their controllers are not wired up.
+// events gallery, so their controllers are not wired up. La configurazione
+// Telegram vive in /impostazioni.
 const isActiveView = document.body.dataset.activeView !== "false";
 
 if (isActiveView) {
   motion.bind();
   ptz.bind();
   cameras.bind();
-  telegram.bind();
   bindMotionOverlayToggle();
 }
 

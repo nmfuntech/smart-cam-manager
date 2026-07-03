@@ -1922,3 +1922,9 @@ details[open].sidebar-advanced .sidebar-advanced-chevron {
     flex-wrap: wrap;
   }
 }
+
+.settings-link {
+  width: 100%;
+  text-align: center;
+  margin-top: 6px;
+}

@@ -56,34 +56,6 @@
               MOTION ON
             </button>
             <div class="runtime-grid">
-              <label class="runtime-field slider-field">
-                <span>Sensibilità</span>
-                <input id="cfg-motion-threshold" type="range" min="1" max="3" step="1" />
-                <p class="slider-hint" id="cfg-motion-threshold-hint">A destra rileva di più, a sinistra filtra di più</p>
-                <p class="slider-value" id="cfg-motion-threshold-value">-</p>
-              </label>
-              <label class="runtime-field slider-field">
-                <span>Soggetto minimo</span>
-                <input id="cfg-motion-min-area" type="range" min="1" max="3" step="1" />
-                <p class="slider-hint" id="cfg-motion-min-area-hint">A destra accetta soggetti più piccoli, a sinistra solo più grandi</p>
-                <p class="slider-value" id="cfg-motion-min-area-value">-</p>
-              </label>
-              <div class="classification-group">
-                <label class="runtime-field toggle-field classification-master">
-                  <span>Classificazione</span>
-                  <input id="cfg-classification-enabled" type="checkbox" />
-                </label>
-                <div class="classification-children">
-                  <label class="runtime-field toggle-field classification-suboption">
-                    <span>🧍 Notifica persone</span>
-                    <input id="cfg-classification-detect-person" type="checkbox" checked />
-                  </label>
-                  <label class="runtime-field toggle-field classification-suboption">
-                    <span>🐕 Notifica animali</span>
-                    <input id="cfg-classification-detect-pet" type="checkbox" checked />
-                  </label>
-                </div>
-              </div>
               <label class="runtime-field toggle-field">
                 <span>Registrazione video</span>
                 <input id="cfg-record-enabled" type="checkbox" />
@@ -93,18 +65,10 @@
                 <input id="cfg-notify-telegram-enabled" type="checkbox" />
               </label>
             </div>
-            <button
-              class="ghost-button compact-button"
-              id="telegram-config-open"
-              type="button"
-              style="width:100%;margin-top:2px"
-            >
-              Configura Telegram
-            </button>
-            <button class="ghost-button compact-button save-runtime" id="runtime-save" type="button">
-              Salva impostazioni
-            </button>
             <p class="runtime-feedback" id="runtime-feedback">-</p>
+            <a class="ghost-button compact-button settings-link" href="/impostazioni">
+              Tutte le impostazioni →
+            </a>
           </section>
 
           <!-- 3. TELECAMERA PTZ -->
@@ -120,49 +84,6 @@
             <p class="ptz-message" id="ptz-message">-</p>
           </section>
 
-          <!-- 4. AVANZATE — collassabile, nascosto di default -->
-          <details class="sidebar-block sidebar-advanced">
-            <summary class="sidebar-advanced-summary">
-              <span class="sidebar-section-label" style="margin:0">Classificazione avanzate</span>
-              <span class="sidebar-advanced-chevron">▾</span>
-            </summary>
-            <div class="runtime-grid sidebar-advanced-body">
-              <label class="runtime-field">
-                <span>Backend</span>
-                <select id="cfg-classification-backend">
-                  <option value="detection">Detection (MobileNet-SSD)</option>
-                  <option value="local">Local (ONNX)</option>
-                  <option value="teachable_machine">Teachable Machine</option>
-                  <option value="cloud">Cloud HTTP</option>
-                </select>
-              </label>
-              <label class="runtime-field slider-field">
-                <span>Soglia confidenza</span>
-                <input
-                  id="cfg-classification-min-confidence"
-                  type="range"
-                  min="0.3"
-                  max="0.99"
-                  step="0.01"
-                />
-                <p class="slider-value" id="cfg-classification-min-confidence-value">0.55</p>
-              </label>
-              <label class="runtime-field">
-                <span>Policy campionamento</span>
-                <select id="cfg-classification-sample-policy">
-                  <option value="event_cover">event_cover</option>
-                </select>
-              </label>
-            </div>
-            <button
-              class="ghost-button compact-button save-runtime"
-              id="runtime-save-classification"
-              type="button"
-            >
-              Salva impostazioni
-            </button>
-            <p class="runtime-feedback" id="runtime-feedback-classification">-</p>
-          </details>
           {% endif %}
 
         </aside>
@@ -240,77 +161,6 @@
       </section>
     </main>
 
-    {% if is_active_view %}
-    <dialog class="tg-dialog" id="telegram-dialog">
-      <form method="dialog" class="tg-dialog-form">
-        <div class="tg-dialog-head">
-          <strong>Configurazione notifiche Telegram</strong>
-          <button class="tg-dialog-close" id="telegram-close" type="button" aria-label="Chiudi">×</button>
-        </div>
-
-        <ol class="tg-steps">
-          <li>Apri Telegram, cerca <strong>@BotFather</strong>, invia <code>/newbot</code> e copia il token.</li>
-          <li>Cerca il tuo nuovo bot e mandagli un messaggio qualsiasi (es. <code>/start</code>).</li>
-          <li>Incolla il token qui sotto, premi <strong>Trova chat</strong>, scegli la chat e salva.</li>
-        </ol>
-
-        <label class="runtime-field">
-          <span>Token del bot</span>
-          <input id="tg-bot-token" type="password" autocomplete="off" placeholder="123456789:AA..." />
-          <p class="tg-hint" id="tg-token-hint"></p>
-        </label>
-
-        <div class="tg-row">
-          <label class="runtime-field tg-grow">
-            <span>Chat ID</span>
-            <input id="tg-chat-id" type="text" inputmode="numeric" placeholder="es. 123456789" />
-          </label>
-          <button class="ghost-button compact-button" id="tg-discover" type="button">
-            Trova chat
-          </button>
-        </div>
-        <div class="tg-chat-list" id="tg-chat-list" hidden></div>
-
-        <label class="runtime-field toggle-field">
-          <span>Invia clip video (se registrazione attiva)</span>
-          <input id="tg-prefer-video" type="checkbox" />
-        </label>
-        <label class="runtime-field toggle-field">
-          <span>Notifiche abilitate</span>
-          <input id="tg-enabled" type="checkbox" />
-        </label>
-
-        <hr class="tg-separator" />
-        <p class="tg-section-label">Accesso familiare</p>
-        <p class="tg-invite-desc">
-          Scegli un codice segreto e salvalo. Poi copia il link e mandalo
-          ai familiari: basterà toccarlo da Telegram per essere autorizzati.
-        </p>
-        <label class="runtime-field">
-          <span>Codice segreto</span>
-          <input id="tg-invite-code" type="text" autocomplete="off" placeholder="es. famiglia2024" />
-        </label>
-        <div class="tg-invite-link-box" id="tg-invite-link-box" hidden>
-          <span class="tg-invite-link-label">Link da condividere</span>
-          <div class="tg-invite-link-row">
-            <code id="tg-invite-link-text" class="tg-invite-link-url"></code>
-            <button type="button" id="tg-invite-copy" class="ghost-button compact-button">Copia</button>
-          </div>
-        </div>
-        <p class="tg-hint" id="tg-invite-hint"></p>
-
-        <div class="tg-actions">
-          <button class="ghost-button compact-button" id="tg-test" type="button">
-            Invia messaggio di prova
-          </button>
-          <button class="ghost-button compact-button tg-save" id="tg-save" type="button">
-            Salva
-          </button>
-        </div>
-        <p class="runtime-feedback" id="tg-feedback">-</p>
-      </form>
-    </dialog>
-    {% endif %}
 {% endblock %}
 {% block scripts %}
     <script

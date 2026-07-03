@@ -1469,10 +1469,13 @@ class AppFactoryTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         page = response.data.decode("utf-8")
-        self.assertIn('id="cfg-classification-enabled"', page)
-        self.assertIn('id="cfg-classification-backend"', page)
-        self.assertIn('id="cfg-classification-min-confidence"', page)
-        self.assertIn('id="cfg-classification-sample-policy"', page)
+        # Viewer slim: restano i quick toggle e il link alla pagina
+        # Impostazioni; la configurazione completa vive in /impostazioni.
+        self.assertIn('id="cfg-record-enabled"', page)
+        self.assertIn('id="cfg-notify-telegram-enabled"', page)
+        self.assertIn('href="/impostazioni"', page)
+        self.assertNotIn('id="cfg-classification-enabled"', page)
+        self.assertNotIn('id="telegram-dialog"', page)
 
     def test_runtime_config_endpoints_update_and_apply(self):
         class FakeCamera:
