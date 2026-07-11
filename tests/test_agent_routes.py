@@ -161,6 +161,14 @@ class AgentRoutesAuthTests(AgentRouteTestBase):
         resp = self.client.get("/agente")
         self.assertEqual(resp.status_code, 302)
 
+    def test_page_preloads_model_after_authentication(self):
+        authenticate_client(self.client)
+        with mock.patch.object(self.services.agent, "start_warmup") as preload:
+            resp = self.client.get("/agente")
+
+        self.assertEqual(resp.status_code, 200)
+        preload.assert_called_once()
+
     def test_interpret_requires_auth(self):
         resp = self._post_json("/api/agente/interpret", {"text": "ciao"}, authed=False)
         self.assertEqual(resp.status_code, 401)

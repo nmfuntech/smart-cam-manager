@@ -268,6 +268,18 @@ class RuntimeConfigManager:
             "AGENT_OLLAMA_KEEP_ALIVE": ConfigField(
                 "AGENT_OLLAMA_KEEP_ALIVE", "str", internal_only=True
             ),
+            "AGENT_RESIDENCY_MODE": ConfigField(
+                "AGENT_RESIDENCY_MODE", "str", internal_only=True
+            ),
+            "AGENT_PRELOAD_ON_UI_OPEN": ConfigField(
+                "AGENT_PRELOAD_ON_UI_OPEN", "bool", internal_only=True
+            ),
+            "AGENT_RESIDENT_MIN_FREE_RAM_MB": ConfigField(
+                "AGENT_RESIDENT_MIN_FREE_RAM_MB", "float", minimum=0, internal_only=True
+            ),
+            "AGENT_MODEL_ESTIMATED_RAM_MB": ConfigField(
+                "AGENT_MODEL_ESTIMATED_RAM_MB", "float", minimum=0, internal_only=True
+            ),
             "AGENT_NATURAL_ANSWERS": ConfigField(
                 "AGENT_NATURAL_ANSWERS", "bool", internal_only=True
             ),

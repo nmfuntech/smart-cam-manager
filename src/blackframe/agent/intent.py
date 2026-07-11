@@ -34,6 +34,7 @@ from .catalog import (
     build_system_prompt,
 )
 from .context import LastTurn
+from .residency import effective_keep_alive
 
 logger = logging.getLogger(__name__)
 
@@ -291,7 +292,7 @@ def interpret(
     base_url = _env("AGENT_OLLAMA_URL", "http://127.0.0.1:11434")
     model = _env("AGENT_OLLAMA_MODEL", "qwen2.5:0.5b")
     timeout = _env_float("AGENT_TIMEOUT_SEC", 8.0)
-    keep_alive = _env("AGENT_OLLAMA_KEEP_ALIVE", "30m")
+    keep_alive = effective_keep_alive()
 
     # Opzioni di generazione tarate per hardware limitato: num_ctx piccolo
     # riduce RAM e tempo di prefill, num_predict basso taglia le generazioni

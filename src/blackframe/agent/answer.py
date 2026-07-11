@@ -25,6 +25,7 @@ from blackframe.envutil import env_float as _env_float
 from blackframe.envutil import env_int as _env_int
 
 from . import ollama_client
+from .residency import effective_keep_alive
 
 logger = logging.getLogger(__name__)
 
@@ -88,7 +89,7 @@ def compose_answer(question: str, command: str, result_text: str) -> str | None:
     base_url = os.getenv("AGENT_OLLAMA_URL", "http://127.0.0.1:11434").strip()
     model = os.getenv("AGENT_OLLAMA_MODEL", "qwen2.5:0.5b").strip()
     timeout = _env_float("AGENT_TIMEOUT_SEC", 8.0)
-    keep_alive = os.getenv("AGENT_OLLAMA_KEEP_ALIVE", "30m").strip()
+    keep_alive = effective_keep_alive()
 
     user_text = f"Domanda: {question}\nDati ({command}):\n{result_text[:max_chars]}"
     answer = ollama_client.chat_text(

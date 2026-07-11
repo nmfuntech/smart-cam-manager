@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 from flask import Blueprint, current_app, jsonify, render_template, request, session
 
 from blackframe.agent.service import ProposalResult
@@ -67,6 +69,14 @@ def _record_proposal(text: str, proposal: ProposalResult) -> None:
 @agent_bp.get("/agente")
 @require_auth()
 def agente_page():
+    agent = get_services().agent
+    if agent is not None and os.getenv("AGENT_PRELOAD_ON_UI_OPEN", "true").lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        agent.start_warmup()
     return render_template("agente.html")
 
 
