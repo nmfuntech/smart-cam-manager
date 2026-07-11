@@ -221,6 +221,9 @@ def _read_raw_packet(camera) -> tuple:
 
 def _poll_new_frame(camera, last_sequence: int, timeout: float):
     """Wait up to ``timeout`` seconds for a frame with a new sequence number."""
+    waiter = getattr(camera, "wait_for_raw_frame", None)
+    if waiter is not None:
+        return waiter(last_sequence, timeout)
     deadline = time.time() + max(0.0, timeout)
     while time.time() < deadline:
         frame, sequence = _read_raw_packet(camera)
@@ -362,6 +365,14 @@ class EventRecorder:
                     logger.exception("Errore callback completamento registrazione")
 
             threading.Thread(target=_wait_and_notify, daemon=True).start()
+
+    def stop(self, timeout: float = 2.0) -> None:
+        """Stop active recording and wait briefly for writer cleanup."""
+        with self.lock:
+            thread = self._thread
+            self._stop_locked()
+        if thread is not None and thread.is_alive() and thread is not threading.current_thread():
+            thread.join(timeout=max(0.0, timeout))
 
     def _stop_locked(self) -> None:
         if self._stop is not None:

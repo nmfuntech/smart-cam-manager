@@ -31,9 +31,61 @@ class InterpretTests(unittest.TestCase):
         chat_json.assert_not_called()
         self.assertFalse(result.ok)
 
+    def test_out_of_scope_is_rejected_without_ollama(self):
+        with mock.patch.object(intent.ollama_client, "chat_json") as chat_json:
+            result = intent.interpret("ordina una pizza margherita")
+        chat_json.assert_not_called()
+        self.assertFalse(result.ok)
+
+    def test_destructive_request_is_rejected_even_with_domain_word(self):
+        with mock.patch.object(intent.ollama_client, "chat_json") as chat_json:
+            result = intent.interpret("cancella tutti i video registrati")
+        chat_json.assert_not_called()
+        self.assertFalse(result.ok)
+
+    def test_oos_after_valid_context_is_still_rejected(self):
+        turn = LastTurn(
+            user_text="stato",
+            command="status",
+            arg=None,
+            created_at=time.monotonic(),
+        )
+        with mock.patch.object(intent.ollama_client, "chat_json") as chat_json:
+            result = intent.interpret("ordina una pizza", last_turn=turn)
+        chat_json.assert_not_called()
+        self.assertFalse(result.ok)
+
+    def test_llm_result_cache_avoids_second_inference(self):
+        with intent._CACHE_LOCK:
+            intent._CACHE.clear()
+        env = {"AGENT_FASTPATH": "false", "AGENT_CACHE": "true"}
+        with mock.patch.dict(os.environ, env):
+            with mock.patch.object(
+                intent.ollama_client,
+                "chat_json",
+                return_value={"command": "status", "arg": None},
+            ) as chat_json:
+                first = intent.interpret("controlla la telecamera")
+                second = intent.interpret("controlla la telecamera")
+        self.assertTrue(first.ok and second.ok)
+        chat_json.assert_called_once()
+
+    def test_concurrent_llm_request_fails_fast(self):
+        self.assertTrue(intent._LLM_SLOT.acquire(blocking=False))
+        try:
+            with mock.patch.dict(
+                os.environ,
+                {"AGENT_FASTPATH": "false", "AGENT_CACHE": "false"},
+            ):
+                result = intent.interpret("controlla la telecamera")
+        finally:
+            intent._LLM_SLOT.release()
+        self.assertFalse(result.ok)
+        self.assertIn("occupato", result.reason)
+
     def test_ollama_unavailable_is_reported_as_not_ok(self):
         with mock.patch.object(intent.ollama_client, "chat_json", return_value=None):
-            result = intent.interpret("spegni il movimento")
+            result = intent.interpret("controlla il movimento")
         self.assertFalse(result.ok)
         self.assertIn("non disponibile", result.reason.lower())
 
@@ -126,7 +178,9 @@ class InterpretLlmWiringTests(unittest.TestCase):
     """Cosa arriva davvero a chat_json: schema, esempi, contesto."""
 
     def _interpret_and_capture(self, text, env=None, **kwargs):
-        with mock.patch.dict(os.environ, env or {}):
+        settings = {"AGENT_FASTPATH": "false", "AGENT_DOMAIN_GATE": "false", "AGENT_CACHE": "false"}
+        settings.update(env or {})
+        with mock.patch.dict(os.environ, settings):
             with mock.patch.object(
                 intent.ollama_client, "chat_json", return_value=None
             ) as chat_json:
@@ -190,8 +244,14 @@ class InterpretLlmWiringTests(unittest.TestCase):
         call = self._interpret_and_capture("frase qualunque", env={"AGENT_OLLAMA_NUM_CTX": "2048"})
         options = call.kwargs["options"]
         self.assertEqual(options["num_ctx"], 2048)
-        self.assertEqual(options["num_predict"], 80)
+        self.assertEqual(options["num_predict"], 48)
         self.assertEqual(options["temperature"], 0.0)
+
+    def test_high_confidence_family_reduces_schema(self):
+        call = self._interpret_and_capture("controlla il movimento")
+        enum = call.kwargs["response_schema"]["properties"]["command"]["anyOf"][0]["enum"]
+        self.assertIn("motion_off", enum)
+        self.assertNotIn("ptz_left", enum)
 
 
 class ResponseSchemaTests(unittest.TestCase):

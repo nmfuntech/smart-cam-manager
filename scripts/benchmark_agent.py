@@ -45,7 +45,7 @@ from blackframe.commands import registry as commands_registry  # noqa: E402
 _CASES_PATH = Path(__file__).resolve().parent / "agent_benchmark_cases.json"
 # Frase volutamente NON coperta dal fast-path deterministico: serve a forzare
 # una vera chiamata LLM per misurare la latenza a modello freddo.
-_COLD_PROBE = "vorrei sapere come procede il monitoraggio della casa"
+_COLD_PROBE = "vorrei sapere come procede il monitoraggio della telecamera"
 
 
 class _FakeRegistry:

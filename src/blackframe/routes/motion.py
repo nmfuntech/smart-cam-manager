@@ -97,6 +97,20 @@ def update_runtime_config():
         config = get_services().runtime_config.update(updates)
         # Propagate to the active camera and every monitored camera runtime.
         get_services().apply_runtime_config_all(updates)
+        try:
+            from blackframe.performance_profiles import PerformanceProfileManager
+
+            PerformanceProfileManager(
+                get_services().runtime_config,
+                catalog_path=os.getenv(
+                    "PERFORMANCE_PROFILE_CATALOG_PATH", "config/performance_profiles.yaml"
+                ),
+                state_path=os.getenv(
+                    "PERFORMANCE_PROFILE_STATE_PATH", "data/performance_profile.json"
+                ),
+            ).record_overrides(updates)
+        except Exception:
+            current_app.logger.exception("Aggiornamento override profilo prestazioni fallito")
         return jsonify({"ok": True, "config": config})
     except ValueError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400

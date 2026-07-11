@@ -10,45 +10,24 @@ import re
 import sys
 from pathlib import Path
 
+from blackframe.performance_profiles import load_profile_settings
+
+
+def _profile_env_value(value) -> str:
+    if value is True:
+        return "true"
+    if value is False:
+        return "false"
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
+
 # Tuning consigliato per mini PC Windows: valori validati sul campo (rilevamento
 # persona affidabile + accensione automazione a bassa latenza). Allineato alla
 # configurazione testata. Richiede ffmpeg in PATH per la riproduzione nel browser.
 MINI_PC_WINDOWS: dict[str, str] = {
-    "TAPO_STREAM_PATH": "stream2",
-    "MOTION_THRESHOLD": "30",
-    "MOTION_MIN_AREA": "2500",
-    "MOTION_BLUR_SIZE": "7",
-    "MOTION_FRAME_INTERVAL": "0.25",
-    "MOTION_CAPTURE_INTERVAL": "0.35",
-    "MOTION_WARMUP_FRAMES": "35",
-    "MOTION_TRIGGER_FRAMES": "4",
-    "MOTION_CLEAR_FRAMES": "10",
-    "MOTION_SCALE_WIDTH": "420",
-    "MOTION_EVENT_GAP": "5.0",
-    "MOTION_EVENT_MAX_DURATION": "30.0",
-    "MOTION_GLOBAL_CHANGE_RATIO": "0.5",
-    "MOTION_MOG2_HISTORY": "500",
-    "MOTION_MORPH_KERNEL": "3",
-    "MOTION_MORPH_DILATE_ITER": "1",
-    "RTSP_BACKLOG_SKIP_FRAMES": "1",
-    "RECORD_ENABLED": "true",
-    "RECORD_FPS": "8",
-    "RECORD_MAX_WIDTH": "854",
-    "RECORD_MAX_DURATION_SEC": "22",
-    "RECORD_PREROLL_SEC": "2.0",
-    "RECORD_POSTROLL_SEC": "2.0",
-    "CLASSIFICATION_ENABLED": "true",
-    "CLASSIFICATION_BACKEND": "detection",
-    "CLASSIFICATION_MIN_CONFIDENCE": "0.5",
-    "CLASSIFICATION_CROP_TO_MOTION": "true",
-    # event_cover è richiesto dall'accensione automazione live durante l'evento.
-    "CLASSIFICATION_SAMPLE_POLICY": "event_cover",
-    "CLASSIFICATION_PET_PRIORITY_MARGIN": "0.12",
-    "NOTIFY_MIN_INTERVAL_SEC": "6",
-    "NOTIFY_TELEGRAM_MAX_VIDEO_MB": "20",
-    "NOTIFY_PREFER_VIDEO": "true",
-    "TELEGRAM_COMMANDS_ENABLED": "true",
-    "APP_ENABLE_OPEN_FOLDER": "true",
+    key: _profile_env_value(value)
+    for key, value in load_profile_settings("balanced").items()
 }
 
 PROFILES: dict[str, dict[str, str]] = {

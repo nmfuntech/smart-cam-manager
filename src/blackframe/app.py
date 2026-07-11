@@ -1,5 +1,6 @@
 import logging
 import os
+import shutil
 import threading
 import time
 from collections import deque
@@ -42,6 +43,21 @@ from scripts.runtime_paths import configure_runtime_environment
 
 configure_runtime_environment()
 logger = logging.getLogger(__name__)
+
+
+def configure_opencv_runtime() -> None:
+    """Optionally cap OpenCV internal workers on small CPUs."""
+    raw = os.getenv("OPENCV_NUM_THREADS", "").strip()
+    if not raw:
+        return
+    try:
+        cv2.setNumThreads(max(1, int(raw)))
+        cv2.setUseOptimized(True)
+    except (ValueError, AttributeError):
+        logger.warning("OPENCV_NUM_THREADS non valido: %r", raw)
+
+
+configure_opencv_runtime()
 
 # Privacy-at-rest: surveillance footage is the most sensitive asset here. Force a
 # restrictive process umask so every motion frame, clip and event dir is created
@@ -383,6 +399,7 @@ class CameraStream:
         self.next_retry_in_seconds = 0.0
         self._retry_delay_seconds = 1.0
         self.lock = threading.Lock()
+        self._raw_ready = threading.Condition(self.lock)
         self._stopped = threading.Event()
         self.thread = threading.Thread(target=self._reader, daemon=True)
         self.thread.start()
@@ -393,6 +410,9 @@ class CameraStream:
             if self.capture is not None:
                 self.capture.release()
             self.capture = None
+            self._raw_ready.notify_all()
+        if self.thread.is_alive() and self.thread is not threading.current_thread():
+            self.thread.join(timeout=2.0)
 
     def _endpoint(self) -> str:
         parsed = urlparse(self.rtsp_url)
@@ -497,6 +517,7 @@ class CameraStream:
                 with self.lock:
                     self.raw_frame = frame
                     self.raw_sequence += 1
+                    self._raw_ready.notify_all()
                     self.last_frame_at = now
                     self.last_success_at = now
                     self.last_error = ""
@@ -575,6 +596,19 @@ class CameraStream:
         with self.lock:
             if self.raw_frame is None:
                 return None, self.raw_sequence
+            return self.raw_frame.copy(), self.raw_sequence
+
+    def wait_for_raw_frame(self, last_sequence: int, timeout: float) -> tuple:
+        """Wait for a new frame without polling and copying unchanged arrays."""
+        deadline = time.monotonic() + max(0.0, timeout)
+        with self._raw_ready:
+            while not self._stopped.is_set() and self.raw_sequence == last_sequence:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return None, last_sequence
+                self._raw_ready.wait(timeout=remaining)
+            if self.raw_frame is None or self.raw_sequence == last_sequence:
+                return None, last_sequence
             return self.raw_frame.copy(), self.raw_sequence
 
     def _trim_preroll(self, now: float) -> None:
@@ -720,6 +754,23 @@ def harden_captures_permissions() -> None:
             os.chmod(marker, 0o600)
         except OSError:
             logger.warning("Impossibile irrigidire i permessi di %s", root)
+
+
+def harden_private_runtime_files() -> None:
+    """Force mode 0600 on known credential-bearing runtime files."""
+    candidates = {
+        Path(".env"),
+        Path("tinytuya.json"),
+        Path("data/tinytuya.json"),
+        Path(os.getenv("TELEGRAM_GUESTS_FILE", "data/telegram_guests.json")),
+    }
+    for path in candidates:
+        if not path.is_file():
+            continue
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            logger.warning("Impossibile irrigidire i permessi di %s", path)
 
 
 _onvif_xml_hardened = False
@@ -1017,8 +1068,9 @@ class MotionDetector:
         # mai dietro un salvataggio o una classificazione. Task "critical" (apertura/
         # chiusura evento) non vengono mai scartati; i salvataggi frame intermedi sì,
         # se la coda è sovraccarica (backpressure).
-        self._event_queue: list[tuple[bool, Callable[[], None]]] = []
+        self._event_queue: deque[tuple[bool, Callable[[], None]]] = deque()
         self._event_queue_lock = threading.Lock()
+        self._event_queue_ready = threading.Condition(self._event_queue_lock)
         self.processed_frames = 0
         self.trigger_streak = 0
         self.clear_streak = 0
@@ -1629,28 +1681,59 @@ class MotionDetector:
 
     def stop(self) -> None:
         self._stopped.set()
+        with self._event_queue_ready:
+            self._event_queue_ready.notify_all()
+        for thread in (getattr(self, "thread", None), getattr(self, "_event_thread", None)):
+            if (
+                thread is not None
+                and thread.is_alive()
+                and thread is not threading.current_thread()
+            ):
+                thread.join(timeout=2.0)
 
     # --- worker eventi (I/O + classificazione fuori dal lock di detection) ---
 
     # Oltre questa profondità di coda i task non critici (salvataggi frame intermedi)
     # vengono scartati: su un mini PC sotto carico è meglio perdere un frame che far
     # crescere la coda senza limite. Apertura/chiusura evento restano sempre.
-    _EVENT_QUEUE_MAX = 128
+    _EVENT_QUEUE_MAX = 8
+    _EVENT_QUEUE_TOTAL_MAX = 12
 
-    def _enqueue_event(self, fn: Callable[[], None], *, critical: bool = False) -> None:
-        with self._event_queue_lock:
-            if not critical and len(self._event_queue) >= self._EVENT_QUEUE_MAX:
+    def _enqueue_event(self, fn: Callable[[], None], *, critical: bool = False) -> bool:
+        with self._event_queue_ready:
+            noncritical = sum(1 for queued_critical, _ in self._event_queue if not queued_critical)
+            if not critical and (
+                noncritical >= self._EVENT_QUEUE_MAX
+                or len(self._event_queue) >= self._EVENT_QUEUE_TOTAL_MAX
+            ):
                 logger.warning("Coda eventi piena: salvataggio frame scartato (backpressure)")
-                return
+                return False
+            if critical and len(self._event_queue) >= self._EVENT_QUEUE_TOTAL_MAX:
+                # Preserve lifecycle operations by evicting one intermediate frame.
+                evict_index = next(
+                    (
+                        i
+                        for i, (queued_critical, _) in enumerate(self._event_queue)
+                        if not queued_critical
+                    ),
+                    None,
+                )
+                if evict_index is None:
+                    logger.error("Coda eventi critica piena: task lifecycle scartato")
+                    return False
+                del self._event_queue[evict_index]
             self._event_queue.append((critical, fn))
+            self._event_queue_ready.notify()
+            return True
 
     def _event_worker_loop(self) -> None:
-        while not self._stopped.is_set():
-            with self._event_queue_lock:
-                item = self._event_queue.pop(0) if self._event_queue else None
-            if item is None:
-                time.sleep(0.02)
-                continue
+        while True:
+            with self._event_queue_ready:
+                while not self._event_queue and not self._stopped.is_set():
+                    self._event_queue_ready.wait()
+                if self._stopped.is_set() and not self._event_queue:
+                    return
+                item = self._event_queue.popleft()
             _critical, fn = item
             try:
                 fn()
@@ -2053,21 +2136,80 @@ class RetentionJanitor:
         self.thread.start()
 
     def _sweep(self) -> float:
-        """Un giro di retention su tutti i detector; ritorna l'intervallo per il prossimo."""
+        """Apply age and one global byte quota, including orphan camera folders."""
         interval = 3600.0
-        for motion in self._provider():
-            interval = float(motion.config.get("retention_interval_sec", 3600) or 3600)
+        motions = list(self._provider())
+        roots: dict[Path, dict] = {}
+        for motion in motions:
+            interval = min(
+                interval,
+                float(motion.config.get("retention_interval_sec", 3600) or 3600),
+            )
+            save_dir = Path(motion.config.get("save_dir", "captures/motion"))
+            # Per-camera layout is captures/motion/<profile-id>. Legacy installs may
+            # point directly at captures/motion, so detect that shape explicitly.
+            root = save_dir.parent if save_dir.name != "motion" else save_dir
+            entry = roots.setdefault(
+                root,
+                {
+                    "days": float(motion.config.get("retention_days", 0) or 0),
+                    "max_mb": float(motion.config.get("retention_max_mb", 0) or 0),
+                    "active": set(),
+                },
+            )
+            current = getattr(motion._get_event_store(), "current_event_dir", None)
+            if current is not None:
+                entry["active"].add(Path(current).resolve())
+
+        for root, config in roots.items():
             try:
-                removed = motion.purge_old_events()
+                removed = self._purge_root(root, **config)
                 if removed:
-                    logger.info(
-                        "Retention (%s): rimossi %s eventi di movimento",
-                        motion.camera_id or "default",
-                        removed,
-                    )
+                    logger.info("Retention globale (%s): rimossi %s eventi", root, removed)
             except Exception:
-                logger.exception("Errore retention eventi (%s)", motion.camera_id or "default")
+                logger.exception("Errore retention globale (%s)", root)
         return interval
+
+    @staticmethod
+    def _purge_root(root: Path, days: float, max_mb: float, active: set[Path]) -> int:
+        if not root.exists() or (days <= 0 and max_mb <= 0):
+            return 0
+        candidates: list[dict] = []
+        protected_size = 0
+        paths = [*root.glob("motion_event_*"), *root.glob("*/motion_event_*")]
+        for path in paths:
+            if not path.is_dir():
+                continue
+            try:
+                size = sum(p.stat().st_size for p in path.rglob("*") if p.is_file())
+                if path.resolve() in active:
+                    protected_size += size
+                    continue
+                candidates.append({"path": path, "time": path.stat().st_mtime, "size": size})
+            except OSError:
+                continue
+        candidates.sort(key=lambda item: item["time"])
+        removed = 0
+        if days > 0:
+            cutoff = time.time() - days * 86400
+            survivors = []
+            for item in candidates:
+                if item["time"] < cutoff:
+                    shutil.rmtree(item["path"], ignore_errors=True)
+                    removed += 1
+                else:
+                    survivors.append(item)
+            candidates = survivors
+        if max_mb > 0:
+            quota = max_mb * 1024 * 1024
+            total = protected_size + sum(item["size"] for item in candidates)
+            for item in candidates:
+                if total <= quota:
+                    break
+                shutil.rmtree(item["path"], ignore_errors=True)
+                total -= item["size"]
+                removed += 1
+        return removed
 
     def _run(self) -> None:
         # Run once shortly after boot, then on the configured interval.
@@ -2113,7 +2255,7 @@ class CameraRuntime:
         self.motion.stop()
         self.camera.stop()
         if self.recorder is not None:
-            self.recorder.stop_event()
+            self.recorder.stop()
         if self.continuous is not None:
             self.continuous.stop()
 
@@ -2231,6 +2373,7 @@ class AppServices:
         Il vecchio ActionDispatcher daemon drains silenziosamente senza stop esplicito.
         """
         with _automation_reload_lock:
+            old_engine = self.automation_engine
             try:
                 registry = _build_registry()
                 engine = _build_automation()
@@ -2239,6 +2382,8 @@ class AppServices:
                 self.motion.automation = engine
                 for runtime in self.monitors.values():
                     runtime.motion.automation = engine
+                if old_engine is not None and old_engine is not engine:
+                    old_engine.stop()
                 logger.info(
                     "Automazione ricaricata: %s · %d regole · %d device",
                     "attiva" if engine is not None else "disabilitata",
@@ -2309,6 +2454,7 @@ def _build_agent(services: "AppServices") -> AgentService | None:
 
 def build_services() -> AppServices:
     harden_captures_permissions()
+    harden_private_runtime_files()
     runtime_config = RuntimeConfigManager()
     camera_profiles = CameraProfileService()
     camera_profiles.ensure_default_profile(build_default_camera_profile())

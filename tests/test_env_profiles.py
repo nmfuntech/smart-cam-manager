@@ -55,6 +55,16 @@ class EnvProfilesTests(unittest.TestCase):
             "CLASSIFICATION_MIN_CONFIDENCE": "0.5",
             "CLASSIFICATION_CROP_TO_MOTION": "true",
             "CLASSIFICATION_SAMPLE_POLICY": "event_cover",
+            "MOTION_CAPTURE_INTERVAL": "0.75",
+            "RECORD_FPS": "6",
+            "STREAM_MAX_WIDTH": "854",
+            "STREAM_JPEG_QUALITY": "72",
+            "CONTINUOUS_RECORD_ENABLED": "false",
+            "CLASSIFICATION_CLIP_MAX_FRAMES": "8",
+            "APP_MAX_MJPEG_STREAMS": "2",
+            "AGENT_OLLAMA_NUM_PREDICT": "48",
+            "AGENT_NATURAL_ANSWERS": "false",
+            "OPENCV_NUM_THREADS": "1",
         }
         for key, value in expected.items():
             self.assertEqual(

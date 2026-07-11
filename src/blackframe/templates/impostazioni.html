@@ -17,6 +17,7 @@
 
         <div class="settings-layout">
           <nav class="settings-subnav" aria-label="Sezioni impostazioni">
+            <a href="#prestazioni">Profilo prestazioni</a>
             <a href="#movimento">Movimento</a>
             <a href="#riconoscimento">Riconoscimento</a>
             <a href="#registrazione">Registrazione</a>
@@ -26,6 +27,46 @@
           </nav>
 
           <div class="settings-sections">
+
+            <section class="sidebar-block settings-section" id="prestazioni">
+              <div class="camera-config-head">
+                <div>
+                  <h2>Profilo prestazioni</h2>
+                  <p class="description compact">
+                    Scegli una base ottimizzata per hardware. Le modifiche manuali
+                    restano visibili come personalizzazioni.
+                  </p>
+                </div>
+                <span class="status-pill" id="performance-active-pill">Caricamento...</span>
+              </div>
+              <p class="tg-hint" id="performance-hardware">Rilevamento hardware...</p>
+              <div class="performance-profile-grid" id="performance-profile-list"></div>
+
+              <div class="performance-preview" id="performance-preview" hidden>
+                <div class="camera-config-head">
+                  <h3 id="performance-preview-title">Anteprima</h3>
+                  <span class="status-pill" id="performance-change-count"></span>
+                </div>
+                <div class="performance-diff-wrap">
+                  <table class="performance-diff-table">
+                    <thead>
+                      <tr><th>Parametro</th><th>Attuale</th><th>Profilo</th><th>Applicazione</th></tr>
+                    </thead>
+                    <tbody id="performance-diff-body"></tbody>
+                  </table>
+                </div>
+                <p class="tg-hint" id="performance-restart-hint"></p>
+                <div class="button-row">
+                  <button class="ghost-button compact-button" id="performance-cancel" type="button">
+                    Annulla
+                  </button>
+                  <button class="primary-button compact-button" id="performance-apply" type="button">
+                    Applica profilo
+                  </button>
+                </div>
+              </div>
+              <p class="runtime-feedback" id="performance-feedback"></p>
+            </section>
 
             <!-- ── Movimento ─────────────────────────────────────── -->
             <section class="sidebar-block settings-section" id="movimento">

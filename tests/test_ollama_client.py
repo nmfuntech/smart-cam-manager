@@ -35,7 +35,9 @@ class ChatJsonTests(unittest.TestCase):
             return _fake_response({"command": "status", "arg": None})
 
         with mock.patch.object(ollama_client.urllib.request, "urlopen", fake_urlopen):
-            ollama_client.chat_json("http://x", "m", "sys", "user", timeout=1.0, **kwargs)
+            ollama_client.chat_json(
+                "http://127.0.0.1", "m", "sys", "user", timeout=1.0, **kwargs
+            )
         return captured
 
     def test_keep_alive_included_in_payload_when_set(self):
@@ -81,7 +83,7 @@ class ChatJsonTests(unittest.TestCase):
         schema = {"type": "object"}
         with mock.patch.object(ollama_client.urllib.request, "urlopen", fake_urlopen):
             result = ollama_client.chat_json(
-                "http://x", "m", "sys", "user", timeout=1.0, response_schema=schema
+                "http://127.0.0.1", "m", "sys", "user", timeout=1.0, response_schema=schema
             )
         self.assertEqual(result, {"command": "status", "arg": None})
         self.assertEqual(payloads[0]["format"], schema)
@@ -95,7 +97,9 @@ class ChatJsonTests(unittest.TestCase):
             raise urllib.error.URLError(socket.timeout("timed out"))
 
         with mock.patch.object(ollama_client.urllib.request, "urlopen", fake_urlopen):
-            result = ollama_client.chat_json("http://x", "m", "sys", "user", timeout=1.0)
+            result = ollama_client.chat_json(
+                "http://127.0.0.1", "m", "sys", "user", timeout=1.0
+            )
         self.assertIsNone(result)
         self.assertEqual(len(calls), 1)
 
@@ -109,7 +113,9 @@ class ChatJsonTests(unittest.TestCase):
             return _fake_response({"command": "status", "arg": None})
 
         with mock.patch.object(ollama_client.urllib.request, "urlopen", fake_urlopen):
-            result = ollama_client.chat_json("http://x", "m", "sys", "user", timeout=1.0)
+            result = ollama_client.chat_json(
+                "http://127.0.0.1", "m", "sys", "user", timeout=1.0
+            )
         self.assertEqual(result, {"command": "status", "arg": None})
         self.assertEqual(len(calls), 2)
 
@@ -123,7 +129,9 @@ class ChatTextTests(unittest.TestCase):
             return _fake_response("  Risposta naturale.  ")
 
         with mock.patch.object(ollama_client.urllib.request, "urlopen", fake_urlopen):
-            result = ollama_client.chat_text("http://x", "m", "sys", "user", timeout=1.0)
+            result = ollama_client.chat_text(
+                "http://127.0.0.1", "m", "sys", "user", timeout=1.0
+            )
         self.assertEqual(result, "Risposta naturale.")
         self.assertNotIn("format", captured["payload"])
 
@@ -132,7 +140,17 @@ class ChatTextTests(unittest.TestCase):
             raise urllib.error.URLError(socket.timeout("timed out"))
 
         with mock.patch.object(ollama_client.urllib.request, "urlopen", fake_urlopen):
-            self.assertIsNone(ollama_client.chat_text("http://x", "m", "sys", "user", timeout=1.0))
+            self.assertIsNone(
+                ollama_client.chat_text(
+                    "http://127.0.0.1", "m", "sys", "user", timeout=1.0
+                )
+            )
+
+    def test_remote_endpoint_is_blocked_by_default(self):
+        with mock.patch.object(ollama_client.urllib.request, "urlopen") as urlopen:
+            result = ollama_client.chat_text("http://192.168.1.10:11434", "m", "s", "u")
+        self.assertIsNone(result)
+        urlopen.assert_not_called()
 
 
 class WarmupTests(unittest.TestCase):
@@ -146,7 +164,7 @@ class WarmupTests(unittest.TestCase):
             return _fake_response("")
 
         with mock.patch.object(ollama_client.urllib.request, "urlopen", fake_urlopen):
-            ollama_client.warmup("http://x", "m", keep_alive="30m")
+            ollama_client.warmup("http://127.0.0.1", "m", keep_alive="30m")
         self.assertTrue(captured["url"].endswith("/api/generate"))
         self.assertEqual(captured["payload"], {"model": "m", "keep_alive": "30m"})
 
@@ -155,7 +173,7 @@ class WarmupTests(unittest.TestCase):
             raise urllib.error.URLError(ConnectionRefusedError("refused"))
 
         with mock.patch.object(ollama_client.urllib.request, "urlopen", fake_urlopen):
-            ollama_client.warmup("http://x", "m")  # non deve sollevare
+            ollama_client.warmup("http://127.0.0.1", "m")  # non deve sollevare
 
 
 if __name__ == "__main__":

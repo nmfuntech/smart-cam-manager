@@ -22,10 +22,34 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import urllib.error
 import urllib.request
+from urllib.parse import urlsplit
 
 logger = logging.getLogger(__name__)
+
+
+def _base_url_allowed(base_url: str) -> bool:
+    try:
+        parsed = urlsplit(base_url)
+        host = (parsed.hostname or "").lower()
+    except ValueError:
+        return False
+    if parsed.scheme not in {"http", "https"} or not host:
+        return False
+    if os.getenv("AGENT_ALLOW_REMOTE_OLLAMA", "false").lower() in {"1", "true", "yes", "on"}:
+        return True
+    return host == "localhost" or host == "::1" or host.startswith("127.")
+
+
+def _api_url(base_url: str, path: str) -> str | None:
+    if not _base_url_allowed(base_url):
+        logger.error(
+            "Endpoint Ollama non consentito: usa loopback o AGENT_ALLOW_REMOTE_OLLAMA=true"
+        )
+        return None
+    return f"{base_url.rstrip('/')}{path}"
 
 
 def _is_transient_conn_error(exc: Exception) -> bool:
@@ -116,7 +140,9 @@ def chat_json(
     ``history`` è una lista di messaggi ``{"role", "content"}`` inserita tra
     il system prompt e il messaggio utente (contesto conversazionale).
     """
-    url = f"{base_url.rstrip('/')}/api/chat"
+    url = _api_url(base_url, "/api/chat")
+    if url is None:
+        return None
     payload = _chat_payload(
         model, system_prompt, user_text, keep_alive=keep_alive, history=history, options=options
     )
@@ -165,7 +191,9 @@ def chat_text(
     """Come ``chat_json`` ma senza vincolo di formato: ritorna il testo libero
     generato dal modello (usato per comporre risposte in italiano naturale),
     o ``None`` su qualunque errore."""
-    url = f"{base_url.rstrip('/')}/api/chat"
+    url = _api_url(base_url, "/api/chat")
+    if url is None:
+        return None
     payload = _chat_payload(
         model, system_prompt, user_text, keep_alive=keep_alive, history=None, options=options
     )
@@ -193,7 +221,9 @@ def warmup(
     può superare di molto ``AGENT_TIMEOUT_SEC``, ed è proprio il costo che
     questo warm-up paga in anticipo al posto del primo messaggio utente.
     """
-    url = f"{base_url.rstrip('/')}/api/generate"
+    url = _api_url(base_url, "/api/generate")
+    if url is None:
+        return
     payload: dict = {"model": model}
     if keep_alive:
         payload["keep_alive"] = keep_alive

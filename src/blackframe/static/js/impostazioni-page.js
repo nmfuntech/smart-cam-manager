@@ -4,6 +4,7 @@ import { setPillState } from "./ui.js";
 
 const JSON_HEADERS = { "Content-Type": "application/json" };
 const el = (id) => document.getElementById(id);
+let selectedPerformanceProfile = null;
 
 // Stessa mappa a 3 scenari usata storicamente dal viewer: la UI espone un
 // livello 1-3, il backend riceve il valore reale.
@@ -182,11 +183,170 @@ async function saveSection(name) {
     }
     setFeedback(feedbackEl, "Impostazioni salvate e applicate");
     applyConfig(data.config || {});
+    loadPerformanceProfiles();
   } catch {
     setFeedback(feedbackEl, "Errore di rete durante il salvataggio", true);
   } finally {
     if (button) button.disabled = false;
   }
+}
+
+// ── Profili prestazioni ──────────────────────────────────────────────────
+
+function profileMeta(profile) {
+  const req = profile.requirements;
+  const cameraLabel = req.max_monitored_cameras === 1 ? "camera" : "camere";
+  return `${req.min_ram_gb} GB RAM min · ${req.min_cpu_threads} thread CPU · ` +
+    `${req.max_monitored_cameras} ${cameraLabel} max`;
+}
+
+function renderPerformanceProfiles(data) {
+  const list = el("performance-profile-list");
+  if (!list) return;
+  list.replaceChildren();
+  const hardware = data.hardware || {};
+  const monitoredLabel = hardware.monitored_cameras === 1 ? "camera monitorata" : "camere monitorate";
+  el("performance-hardware").textContent =
+    `Hardware: ${hardware.ram_gb ?? "?"} GB RAM · ${hardware.cpu_threads ?? "?"} thread CPU · ` +
+    `${hardware.monitored_cameras ?? 1} ${monitoredLabel}`;
+
+  const activeText = data.active
+    ? `${data.active}${data.customized ? " · personalizzato" : ""}`
+    : "Nessun profilo applicato";
+  setPillState(el("performance-active-pill"), activeText, data.active ? "ok" : "");
+
+  for (const profile of data.profiles || []) {
+    const card = document.createElement("button");
+    card.type = "button";
+    card.className = "performance-profile-card";
+    if (profile.name === data.active) card.classList.add("is-active");
+    if (!profile.compatibility.compatible) card.classList.add("is-incompatible");
+
+    const title = document.createElement("strong");
+    title.textContent = profile.label;
+    const badges = document.createElement("span");
+    badges.className = "performance-profile-badges";
+    if (profile.name === data.recommended) badges.append(makeProfileBadge("Consigliato", "ok"));
+    if (profile.name === data.active) badges.append(makeProfileBadge("Attivo", "active"));
+    const description = document.createElement("span");
+    description.textContent = profile.description;
+    const meta = document.createElement("small");
+    meta.textContent = profileMeta(profile);
+    card.append(title, badges, description, meta);
+    if (!profile.compatibility.compatible) {
+      const warning = document.createElement("small");
+      warning.className = "performance-profile-warning";
+      warning.textContent = profile.compatibility.reasons.join(" · ");
+      card.append(warning);
+    }
+    card.addEventListener("click", () => previewPerformanceProfile(profile.name));
+    list.append(card);
+  }
+}
+
+function makeProfileBadge(text, state) {
+  const badge = document.createElement("span");
+  badge.className = `performance-mini-badge ${state}`;
+  badge.textContent = text;
+  return badge;
+}
+
+async function loadPerformanceProfiles() {
+  try {
+    const { response, data } = await fetchJson("/api/performance_profiles");
+    if (!response.ok || !data.ok) throw new Error(data.error || "Errore profili");
+    renderPerformanceProfiles(data);
+  } catch {
+    setFeedback(el("performance-feedback"), "Impossibile caricare i profili", true);
+  }
+}
+
+function formatProfileValue(value) {
+  if (value === null || value === undefined) return "non impostato";
+  if (typeof value === "boolean") return value ? "attivo" : "disattivo";
+  return String(value);
+}
+
+async function previewPerformanceProfile(profileName) {
+  const feedback = el("performance-feedback");
+  setFeedback(feedback, "Calcolo differenze...");
+  try {
+    const { response, data } = await fetchJson("/api/performance_profiles/preview", {
+      method: "POST",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ profile: profileName }),
+    });
+    if (!response.ok || !data.ok) {
+      setFeedback(feedback, data.error || "Anteprima fallita", true);
+      return;
+    }
+    selectedPerformanceProfile = profileName;
+    el("performance-preview-title").textContent = `Anteprima · ${data.label}`;
+    el("performance-change-count").textContent = `${data.changes.length} modifiche`;
+    const body = el("performance-diff-body");
+    body.replaceChildren();
+    for (const change of data.changes) {
+      const row = document.createElement("tr");
+      for (const value of [
+        change.key,
+        formatProfileValue(change.current),
+        formatProfileValue(change.recommended),
+        change.requires_restart ? "Riavvio" : "Immediata",
+      ]) {
+        const cell = document.createElement("td");
+        cell.textContent = value;
+        row.append(cell);
+      }
+      body.append(row);
+    }
+    el("performance-restart-hint").textContent = data.restart_required.length
+      ? `Richiedono riavvio: ${data.restart_required.join(", ")}`
+      : "Tutte le modifiche sono applicabili subito.";
+    el("performance-preview").hidden = false;
+    setFeedback(feedback, data.changes.length ? "Controlla le modifiche prima di applicare" : "Profilo già allineato");
+  } catch {
+    setFeedback(feedback, "Errore di rete durante anteprima", true);
+  }
+}
+
+async function applyPerformanceProfile() {
+  if (!selectedPerformanceProfile) return;
+  const button = el("performance-apply");
+  const feedback = el("performance-feedback");
+  button.disabled = true;
+  setFeedback(feedback, "Applicazione profilo...");
+  try {
+    const { response, data } = await fetchJson("/api/performance_profiles/apply", {
+      method: "POST",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ profile: selectedPerformanceProfile }),
+    });
+    if (!response.ok || !data.ok) {
+      setFeedback(feedback, data.error || "Applicazione fallita", true);
+      return;
+    }
+    applyConfig(data.config || {});
+    el("performance-preview").hidden = true;
+    selectedPerformanceProfile = null;
+    const suffix = data.restart_required.length || !data.live_apply_ok
+      ? " Riavvia il servizio per completare."
+      : "";
+    setFeedback(feedback, `Profilo applicato.${suffix}`);
+    loadPerformanceProfiles();
+  } catch {
+    setFeedback(feedback, "Errore di rete durante applicazione", true);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function bindPerformanceProfiles() {
+  el("performance-apply")?.addEventListener("click", applyPerformanceProfile);
+  el("performance-cancel")?.addEventListener("click", () => {
+    selectedPerformanceProfile = null;
+    el("performance-preview").hidden = true;
+    setFeedback(el("performance-feedback"), "");
+  });
 }
 
 async function loadRuntimeConfig() {
@@ -206,10 +366,10 @@ async function loadAgentStatus() {
   try {
     const { data } = await fetchJson("/api/agente/status");
     const enabled = Boolean(data.enabled);
-    setPillState(pill, enabled ? "ok" : "", enabled ? "Agente: attivo" : "Agente: spento");
+    setPillState(pill, enabled ? "Agente: attivo" : "Agente: spento", enabled ? "ok" : "");
     if (toggle) toggle.checked = enabled;
   } catch {
-    setPillState(pill, "error", "Agente: errore");
+    setPillState(pill, "Agente: errore", "error");
   }
 }
 
@@ -324,6 +484,7 @@ function initTelegram() {
 
 function loadAll() {
   loadRuntimeConfig();
+  loadPerformanceProfiles();
   loadAgentStatus();
   loadSystemInfo();
 }
@@ -336,6 +497,7 @@ for (const id of ["set-motion-threshold", "set-motion-min-area", "set-min-confid
 }
 el("set-agent-toggle")?.addEventListener("change", toggleAgent);
 bindSystemActions();
+bindPerformanceProfiles();
 initTelegram();
 loadAll();
 

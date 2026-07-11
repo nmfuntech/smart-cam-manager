@@ -27,6 +27,18 @@ from .pending import PendingIntentStore
 
 logger = logging.getLogger(__name__)
 
+_WARMUP_LOCK = threading.Lock()
+_WARMUP_THREAD: threading.Thread | None = None
+
+
+def _run_warmup_once(base_url: str, model: str, keep_alive: str | None) -> None:
+    global _WARMUP_THREAD
+    try:
+        ollama_client.warmup(base_url, model, keep_alive=keep_alive)
+    finally:
+        with _WARMUP_LOCK:
+            _WARMUP_THREAD = None
+
 # Comandi che producono media binari (foto/video): niente formato per
 # rappresentarli in una risposta JSON della chat web, quindi il canale "web"
 # non li propone nemmeno all'LLM (restano disponibili solo via Telegram).
@@ -74,17 +86,25 @@ class AgentService:
         """
         if not self.enabled or not _env_bool("AGENT_WARMUP", True):
             return
+        global _WARMUP_THREAD
         base_url = os.getenv("AGENT_OLLAMA_URL", "http://127.0.0.1:11434").strip()
         model = os.getenv("AGENT_OLLAMA_MODEL", "qwen2.5:0.5b").strip()
         keep_alive = os.getenv("AGENT_OLLAMA_KEEP_ALIVE", "30m").strip()
-        thread = threading.Thread(
-            target=ollama_client.warmup,
-            args=(base_url, model),
-            kwargs={"keep_alive": keep_alive or None},
-            name="agent-warmup",
-            daemon=True,
-        )
-        thread.start()
+        with _WARMUP_LOCK:
+            if _WARMUP_THREAD is not None and _WARMUP_THREAD.is_alive():
+                return
+            thread = threading.Thread(
+                target=_run_warmup_once,
+                args=(base_url, model, keep_alive or None),
+                name="agent-warmup",
+                daemon=True,
+            )
+            _WARMUP_THREAD = thread
+            try:
+                thread.start()
+            except Exception:
+                _WARMUP_THREAD = None
+                raise
 
     def propose(self, text: str, channel: str, channel_key: str) -> ProposalResult:
         if not self.enabled:

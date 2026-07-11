@@ -117,6 +117,23 @@ class ActionDispatcherTests(unittest.TestCase):
         d.submit(_make_job("lamp", "turn_on"))
         self.assertTrue(d._worker_running)
 
+    def test_queue_is_bounded(self):
+        d = ActionDispatcher(_MockRegistry({}), max_pending=2)
+        d._start_worker = lambda: None
+        self.assertTrue(d.submit(_make_job("lamp", "turn_on")))
+        self.assertTrue(d.submit(_make_job("lamp", "turn_off")))
+        self.assertFalse(d.submit(_make_job("lamp", "turn_on")))
+        self.assertEqual(len(d._pending), 2)
+
+    def test_stop_terminates_worker_and_cancels_timers(self):
+        lamp = MockDevice("lamp")
+        d = ActionDispatcher(_MockRegistry({"lamp": lamp}))
+        d.submit(_make_job("lamp", "turn_on", for_seconds=60))
+        assert _wait(lambda: lamp.is_on)
+        d.stop()
+        self.assertFalse(d._worker_running)
+        self.assertEqual(d._scheduled, [])
+
 
 if __name__ == "__main__":
     unittest.main()

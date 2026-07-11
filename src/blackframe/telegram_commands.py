@@ -240,6 +240,8 @@ class TelegramCommandBot:
         self._guests_lock = threading.Lock()
         self._bot_username: str | None = None
         self._bot_username_token: str = ""
+        self._clip_lock = threading.Lock()
+        self._active_clips = 0
 
     @property
     def enabled(self) -> bool:
@@ -298,6 +300,9 @@ class TelegramCommandBot:
 
     def stop(self) -> None:
         self._stop.set()
+        thread = self._thread
+        if thread is not None and thread.is_alive() and thread is not threading.current_thread():
+            thread.join(timeout=1.0)
 
     def status(self) -> dict:
         running = self._thread is not None and self._thread.is_alive()
@@ -435,6 +440,11 @@ class TelegramCommandBot:
         if not proposal.ok:
             self._send_message(chat_id, proposal.error or "Non ho capito, usa /help.")
             return
+        if not self._is_admin(chat_id) and not proposal.readonly:
+            if proposal.pending_id:
+                agent.cancel(proposal.pending_id, "telegram", chat_id)
+            self._send_message(chat_id, "Comando riservato agli amministratori.")
+            return
         if proposal.executed:
             # La risposta naturale composta dall'LLM (solo domande readonly)
             # sostituisce l'output grezzo; foto/video passano da _send_result.
@@ -468,6 +478,8 @@ class TelegramCommandBot:
         )
 
     def _agent_confirm(self, args: list[str], chat_id: str) -> str | None:
+        if not self._is_admin(chat_id):
+            return "Comando riservato agli amministratori."
         agent = getattr(self.services, "agent", None)
         if agent is None or not args:
             return "Richiesta non valida o scaduta."
@@ -567,6 +579,8 @@ class TelegramCommandBot:
             self._send_message(chat_id, "Menu comandi:", reply_markup=_inline_menu_markup())
             return None
         if command == "/clip":
+            if not self._is_admin(chat_id):
+                return "Comando riservato agli amministratori."
             return self._send_clip(args, chat_id)
         if command == "/agent_confirm":
             return self._agent_confirm(args, chat_id)
@@ -586,6 +600,8 @@ class TelegramCommandBot:
         spec = COMMAND_REGISTRY.get(name)
         if spec is None or spec.handler is None:
             return "Comando non riconosciuto. Usa /help."
+        if not self._is_admin(chat_id) and not spec.readonly:
+            return "Comando riservato agli amministratori."
         arg = args[0] if args else None
         result = registry_execute(name, arg, self.services)
         return self._send_result(chat_id, result)
@@ -627,14 +643,27 @@ class TelegramCommandBot:
             return f"Durata massima {CLIP_MAX_SEC} secondi."
         if self.services.camera.get_raw_frame() is None:
             return "Nessun frame disponibile."
+        if not self._reserve_clip():
+            return "Una clip e gia in registrazione. Riprova tra poco."
         threading.Thread(
             target=self._record_and_send_clip,
-            args=(chat_id, seconds),
+            args=(chat_id, seconds, True),
             daemon=True,
         ).start()
         return f"Registro clip di {seconds}s, attendi..."
 
-    def _record_and_send_clip(self, chat_id: str, seconds: int) -> None:
+    def _reserve_clip(self) -> bool:
+        maximum = _env_int("TELEGRAM_CLIP_MAX_CONCURRENT", 1, 1)
+        with self._clip_lock:
+            if self._active_clips >= maximum:
+                return False
+            self._active_clips += 1
+            return True
+
+    def _record_and_send_clip(self, chat_id: str, seconds: int, reserved: bool = False) -> None:
+        if not reserved and not self._reserve_clip():
+            self._send_message(chat_id, "Una clip e gia in registrazione. Riprova tra poco.")
+            return
         fps = _env_float("RECORD_FPS", 10, 1)
         max_width = _env_int("RECORD_MAX_WIDTH", 1280, 0)
         tmp_dir = tempfile.mkdtemp(prefix="blackframe_clip_")
@@ -657,6 +686,8 @@ class TelegramCommandBot:
                 Path(tmp_dir).rmdir()
             except OSError:
                 pass
+            with self._clip_lock:
+                self._active_clips = max(0, self._active_clips - 1)
 
     def _invite_info(self, chat_id: str) -> str:
         if not self._is_admin(chat_id):

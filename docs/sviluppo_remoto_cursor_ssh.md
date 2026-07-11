@@ -181,19 +181,65 @@ In alternativa, sul mini PC crea manualmente
 
 ### 2.3 Permessi su Windows (importante)
 
-OpenSSH su Windows rifiuta chiavi se i permessi ACL sono troppo permissivi. Sul mini PC,
-PowerShell **come utente `nikom`** (non necessariamente admin):
+OpenSSH su Windows rifiuta chiavi se i permessi ACL sono troppo permissivi.
+
+> **Utenti amministratori.** Se l'account Windows (es. `nikom`) appartiene al gruppo
+> **Administrators**, OpenSSH **non legge** `C:\Users\nikom\.ssh\authorized_keys`.
+> Usa invece `C:\ProgramData\ssh\administrators_authorized_keys` con ACL ristretta
+> (solo `SYSTEM` e `Administrators`). Verifica con:
+> `whoami /groups | findstr /i Administrators`
+
+**Script unico (PowerShell come amministratore)** — incolla tutto, adatta `$key` se serve:
+
+```powershell
+$key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICdDbuw6vruaV96c+va50pL5Z6kG70Q/dsU/6Ucplw1O cursor-blackframe-minipc"
+
+# --- Percorso admin (obbligatorio se nikom è Administrator) ---
+$adminKeys = "C:\ProgramData\ssh\administrators_authorized_keys"
+[System.IO.File]::WriteAllText($adminKeys, $key.Trim() + "`n")
+icacls $adminKeys /inheritance:r
+icacls $adminKeys /grant:r "BUILTIN\Administrators:(F)"
+icacls $adminKeys /grant:r "NT AUTHORITY\SYSTEM:(F)"
+
+# --- Percorso utente (se NON sei admin, o Match Group commentato in sshd_config) ---
+$sshDir = "C:\Users\nikom\.ssh"
+$authKeys = "$sshDir\authorized_keys"
+New-Item -ItemType Directory -Force -Path $sshDir | Out-Null
+[System.IO.File]::WriteAllText($authKeys, $key.Trim() + "`n")
+icacls $sshDir /inheritance:r
+icacls $sshDir /grant:r "nikom:(OI)(CI)F"
+icacls $authKeys /inheritance:r
+icacls $authKeys /grant:r "nikom:(R)"
+
+Restart-Service sshd
+Write-Host "Fatto. Test: ssh localhost (senza password)"
+```
+
+Usa `[System.IO.File]::WriteAllText` (ASCII, senza BOM). **Non** `Out-File -Encoding utf8`:
+su Windows aggiunge BOM e OpenSSH rifiuta la chiave.
+
+Permessi manuali (solo utente non admin):
 
 ```powershell
 $sshDir  = "$env:USERPROFILE\.ssh"
 $authKeys = "$sshDir\authorized_keys"
 
 icacls $sshDir /inheritance:r
-icacls $sshDir /grant "${env:USERNAME}:(OI)(CI)F"
+icacls $sshDir /grant:r "${env:USERNAME}:(OI)(CI)F"
 
 icacls $authKeys /inheritance:r
-icacls $authKeys /grant "${env:USERNAME}:(R)"
+icacls $authKeys /grant:r "${env:USERNAME}:(R)"
 ```
+
+Se `ssh localhost` chiede ancora password, controlla il log:
+
+```powershell
+Get-WinEvent -LogName "OpenSSH/Operational" -MaxEvents 15 |
+  Where-Object { $_.Message -match "key|auth|authorized" } |
+  Format-List TimeCreated, Message
+```
+
+Messaggi tipici: `bad ownership or modes`, `Authentication refused: bad ownership`.
 
 ### 2.4 Verificare `sshd_config` (solo se la chiave non funziona)
 
@@ -381,7 +427,7 @@ Il client può essere qualsiasi macchina sulla LAN; il codice resta solo sul min
 |---------|-----------------|---------|
 | `Connection refused` porta 22 | `sshd` fermo o firewall | `Start-Service sshd`; regola firewall TCP 22 |
 | `Connection timed out` | IP sbagliato, mini PC spento, altra subnet | `ping 192.168.x.x`; verifica LAN e IP statico |
-| Chiede sempre password Windows | Chiave non in `authorized_keys` o ACL errati | Rifare Parte 2.2–2.3 |
+| Chiede sempre password Windows | Chiave nel file sbagliato (admin → `administrators_authorized_keys`), BOM UTF-8 o ACL errati | Script Parte 2.3 + log OpenSSH/Operational |
 | `Permission denied (publickey)` | `PubkeyAuthentication` off o file `.ssh` di altro utente | Verifica utente SSH = proprietario di `.ssh` |
 | Cursor si blocca su "Installing server" | Antivirus/firewall blocca download | Attendi; riprova; controlla spazio disco su `C:` |
 | Cartella vuota o path errato | Repo in percorso diverso | `git rev-parse --show-toplevel` sul mini PC |

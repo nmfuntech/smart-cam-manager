@@ -43,11 +43,12 @@ class MatchTests(unittest.TestCase):
         services = FakeServices(["lampada_ingresso", "lampada_salotto"])
         self.assertIsNone(fastpath.match("accendi la lampada", services=services))
 
-    def test_toggle_phrases_fall_through_to_llm(self):
-        # "attiva il rilevamento movimento" ha il prefisso device ma non
-        # risolve a nessun device: deve decidere l'LLM (motion_on).
+    def test_toggle_phrases_use_fastpath(self):
         services = FakeServices(["lampada_ingresso"])
-        self.assertIsNone(fastpath.match("attiva il rilevamento movimento", services=services))
+        self.assertEqual(
+            fastpath.match("attiva il rilevamento movimento", services=services),
+            {"command": "motion_on", "arg": None},
+        )
 
     def test_ptz_verb_plus_single_direction(self):
         self.assertEqual(

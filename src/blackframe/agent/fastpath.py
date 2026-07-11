@@ -50,6 +50,39 @@ _KEYWORDS: dict[str, str] = {
     "fammi_una_foto": "snapshot",
     "snapshot": "snapshot",
     "ultimo_evento": "latest",
+    "riepilogo_impostazioni": "config",
+    "che_configurazione_hai_adesso": "config",
+    "fammi_vedere_l_ultimo_evento": "latest",
+    "cosa_e_successo_oggi": "events",
+    "quali_dispositivi_ci_sono": "devices",
+    "le_luci_sono_accese": "devices",
+    "che_regole_di_automazione_ci_sono": "rules",
+    "mandami_uno_scatto_della_camera": "snapshot",
+    "come_sta_la_telecamera": "status",
+    "com_e_la_situazione": "status",
+}
+
+_EXACT_ACTIONS: dict[str, tuple[str, str | None]] = {
+    "attiva_il_rilevamento_movimento": ("motion_on", None),
+    "spegni_il_movimento": ("motion_off", None),
+    "attiva_il_riconoscimento": ("classification_on", None),
+    "disattiva_il_riconoscimento_di_persone_e_animali": ("classification_off", None),
+    "avvisami_quando_vedi_una_persona": ("detect_person_on", None),
+    "ignora_le_persone": ("detect_person_off", None),
+    "avvisami_se_c_e_il_cane": ("detect_pet_on", None),
+    "ignora_gli_animali": ("detect_pet_off", None),
+    "attiva_le_notifiche": ("notifications_on", None),
+    "spegni_le_notifiche": ("notifications_off", None),
+    "riattiva_le_notifiche": ("resume", None),
+    "zitto_per_un_po": ("mute", None),
+    "attiva_le_clip_video_degli_eventi": ("record_on", None),
+    "niente_piu_clip_per_gli_eventi": ("record_off", None),
+    "attiva_la_registrazione_continua": ("continuous_on", None),
+    "ferma_la_registrazione_continua": ("continuous_off", None),
+    "guarda_in_alto": ("ptz_up", None),
+    "inquadra_piu_in_basso": ("ptz_down", None),
+    "ferma_il_movimento_della_telecamera": ("ptz_stop", None),
+    "torna_in_posizione_iniziale": ("ptz_home", None),
 }
 
 # Prefissi (sul messaggio normalizzato) per accensione/spegnimento device.
@@ -111,16 +144,112 @@ def _match_ptz(normalized: str) -> dict | None:
     return {"command": directions[0], "arg": None}
 
 
-def match(text: str, exclude: frozenset[str] = frozenset(), services: Any = None) -> dict | None:
+def _match_sensitivity(normalized: str) -> dict | None:
+    if "sensibilita" not in normalized:
+        return None
+    if any(word in normalized.split("_") for word in ("alta", "aumenta", "alza")):
+        return {"command": "sensitivity", "arg": "alta"}
+    if any(word in normalized.split("_") for word in ("bassa", "abbassa", "riduci")):
+        return {"command": "sensitivity", "arg": "bassa"}
+    if "media" in normalized.split("_"):
+        return {"command": "sensitivity", "arg": "media"}
+    return None
+
+
+def _match_mute(normalized: str) -> dict | None:
+    tokens = normalized.split("_")
+    if not ({"silenzia", "muto", "zitto"} & set(tokens)):
+        return None
+    number = next((token for token in tokens if token.isdigit()), None)
+    if number is None:
+        return {"command": "mute", "arg": None}
+    # Registry mute argument is expressed in minutes. Bare numbers keep same unit.
+    value = float(number)
+    if any(token.startswith("second") for token in tokens):
+        value /= 60
+    elif "ore" in tokens:
+        value *= 60
+    rendered = str(int(value)) if value.is_integer() else str(value)
+    return {"command": "mute", "arg": rendered}
+
+
+def _match_rule_action(normalized: str) -> dict | None:
+    prefixes = (
+        ("esegui_la_regola_", "rule_run"),
+        ("avvia_la_regola_", "rule_run"),
+        ("abilita_la_regola_", "rule_on"),
+        ("disabilita_la_regola_", "rule_off"),
+    )
+    for prefix, command in prefixes:
+        if normalized.startswith(prefix) and normalized[len(prefix) :]:
+            return {"command": command, "arg": normalized[len(prefix) :]}
+    return None
+
+
+def _match_followup(normalized: str, last_turn: Any) -> dict | None:
+    if last_turn is None:
+        return None
+    previous = getattr(last_turn, "command", None)
+    arg = getattr(last_turn, "arg", None)
+    if normalized in {"ora_spegnila", "spegnila"} and previous in {"device_on", "device_off"}:
+        return {"command": "device_off", "arg": arg}
+    if normalized in {"accendila_di_nuovo", "riaccendila"} and previous in {
+        "device_on",
+        "device_off",
+    }:
+        return {"command": "device_on", "arg": arg}
+    if normalized in {"e_ora_a_destra", "ora_a_destra"} and str(previous).startswith("ptz_"):
+        return {"command": "ptz_right", "arg": None}
+    if normalized == "riattivalo":
+        inverse = {
+            "motion_off": "motion_on",
+            "classification_off": "classification_on",
+            "record_off": "record_on",
+            "continuous_off": "continuous_on",
+        }
+        if previous in inverse:
+            return {"command": inverse[previous], "arg": None}
+    if normalized == "anzi_no_riaccendile" and previous in {"notifications_off", "resume"}:
+        return {"command": "notifications_on", "arg": None}
+    return None
+
+
+def match(
+    text: str,
+    exclude: frozenset[str] = frozenset(),
+    services: Any = None,
+    last_turn: Any = None,
+) -> dict | None:
     """Ritorna una proposta ``{"command", "arg"}`` nella stessa forma
     dell'output LLM, o ``None`` se nessuna regola conservativa scatta."""
     normalized = normalize_identifier(text)
     if not normalized:
         return None
 
+    followup = _match_followup(normalized, last_turn)
+    if followup is not None:
+        return followup if followup["command"] not in exclude else None
+
     command = _KEYWORDS.get(normalized)
     if command is not None:
         return {"command": command, "arg": None} if command not in exclude else None
+
+    exact = _EXACT_ACTIONS.get(normalized)
+    if exact is not None:
+        command, arg = exact
+        return {"command": command, "arg": arg} if command not in exclude else None
+
+    sensitivity = _match_sensitivity(normalized)
+    if sensitivity is not None:
+        return sensitivity if sensitivity["command"] not in exclude else None
+
+    mute = _match_mute(normalized)
+    if mute is not None:
+        return mute if mute["command"] not in exclude else None
+
+    rule = _match_rule_action(normalized)
+    if rule is not None:
+        return rule if rule["command"] not in exclude else None
 
     device = _match_device_action(normalized, services)
     if device is not None:

@@ -166,6 +166,22 @@ class TelegramNotifier:
         except ValueError:
             return DEFAULT_MAX_ATTEMPTS
 
+    def _max_pending(self) -> int:
+        try:
+            return max(1, int(_env("NOTIFY_QUEUE_MAX", "64") or 64))
+        except ValueError:
+            return 64
+
+    def _append_bounded_locked(self, job: _DeliveryJob) -> None:
+        while len(self._pending) >= self._max_pending():
+            dropped = self._pending.pop(0)
+            logger.error(
+                "Coda notifiche piena (%d): scarto evento piu vecchio %s",
+                self._max_pending(),
+                dropped.event_id,
+            )
+        self._pending.append(job)
+
     def _start_worker(self) -> None:
         with self._lock:
             if self._worker_running:
@@ -176,7 +192,7 @@ class TelegramNotifier:
     def _enqueue(self, job: _DeliveryJob) -> bool:
         self._start_worker()
         with self._lock:
-            self._pending.append(job)
+            self._append_bounded_locked(job)
             self._persist_locked()
         return True
 
@@ -238,7 +254,7 @@ class TelegramNotifier:
             backoff,
         )
         with self._lock:
-            self._pending.append(retried)
+            self._append_bounded_locked(retried)
             self._persist_locked()
 
     # --- persistenza coda ---------------------------------------------------
@@ -272,7 +288,7 @@ class TelegramNotifier:
         for entry in data:
             if not isinstance(entry, dict) or not entry.get("event_id"):
                 continue
-            self._pending.append(
+            self._append_bounded_locked(
                 _DeliveryJob(
                     event_id=str(entry.get("event_id")),
                     class_label=entry.get("class_label"),

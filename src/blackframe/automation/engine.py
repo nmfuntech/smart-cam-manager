@@ -88,6 +88,12 @@ class AutomationEngine:
                     logger.exception("Submit azione al dispatcher fallito (%s)", item.rule_name)
         return planned
 
+    def stop(self) -> None:
+        """Stop owned background dispatcher when this engine is replaced."""
+        stop = getattr(self._dispatcher, "stop", None)
+        if stop is not None:
+            stop()
+
     # --- matching -----------------------------------------------------------
 
     def _matches(self, rule: Rule, ctx: EventContext) -> bool:

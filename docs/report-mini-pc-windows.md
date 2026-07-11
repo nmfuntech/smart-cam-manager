@@ -37,7 +37,7 @@ make install-windows
 | | `MOTION_MOG2_HISTORY` / `MORPH_*` | 500 / 3 / 2 | MOG2 + morfologia più adatti a scene esterne |
 | | `MOTION_EVENT_GAP` / `MAX_DURATION` | 5s / 30s | Eventi distinti senza clip infinite |
 | **Registrazione eventi** | `RECORD_ENABLED` | true | Clip per ogni movimento |
-| | `RECORD_FPS` / `MAX_WIDTH` | 8 / 854 | Clip leggere (~480p), adatte a mini PC e Telegram |
+| | `RECORD_FPS` / `MAX_WIDTH` | 6 / 854 | Clip leggere (~480p), adatte a mini PC e Telegram |
 | | `RECORD_MAX_DURATION_SEC` | 22 | Limite durata per non saturare disco/CPU |
 | | `RECORD_PREROLL` / `POSTROLL` | 2s / 2s | Contesto prima/dopo il movimento |
 | **Classificazione** | `CLASSIFICATION_BACKEND` | `detection` | MobileNet-SSD locale (no cloud) |
@@ -202,6 +202,10 @@ CONTINUOUS_RECORD_ENABLED=true
 CONTINUOUS_RECORD_SEGMENT_MIN=10
 CONTINUOUS_RECORD_RETAIN_HOURS=24
 ```
+
+La registrazione continua resta disattivata nel profilo mini-PC: aggiunge resize,
+encoding e scrittura disco costanti. Attivarla solo quando l'archivio 24/7 è un
+requisito più importante del budget CPU/RAM.
 
 oppure via Telegram: `/continuous_on`.
 

@@ -116,9 +116,12 @@ class ContinuousRecorder:
 
     def stop(self) -> None:
         with self.lock:
+            thread = self._thread
             self._stop.set()
             self._thread = None
             self._current_segment = None
+        if thread is not None and thread.is_alive() and thread is not threading.current_thread():
+            thread.join(timeout=2.0)
 
     def apply_config(self, config: dict) -> None:
         with self.lock:

@@ -1895,6 +1895,104 @@ details[open].sidebar-advanced .sidebar-advanced-chevron {
   scroll-margin-top: 16px;
 }
 
+.performance-profile-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.performance-profile-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 7px;
+  min-height: 150px;
+  padding: 14px;
+  color: var(--text);
+  text-align: left;
+  background: rgba(6, 18, 28, 0.72);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  cursor: pointer;
+}
+
+.performance-profile-card:hover,
+.performance-profile-card:focus-visible {
+  border-color: rgba(82, 242, 199, 0.55);
+  outline: none;
+}
+
+.performance-profile-card.is-active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px rgba(82, 242, 199, 0.15);
+}
+
+.performance-profile-card.is-incompatible {
+  border-color: rgba(255, 137, 173, 0.4);
+}
+
+.performance-profile-card small,
+.performance-profile-card > span {
+  opacity: 0.72;
+}
+
+.performance-profile-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.performance-mini-badge {
+  padding: 2px 6px;
+  font-size: 0.65rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+}
+
+.performance-mini-badge.ok,
+.performance-mini-badge.active {
+  color: var(--accent);
+  border-color: rgba(82, 242, 199, 0.45);
+}
+
+.performance-profile-warning {
+  color: #ff89ad;
+  opacity: 1 !important;
+}
+
+.performance-preview {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.performance-diff-wrap {
+  max-height: 360px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.performance-diff-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.76rem;
+}
+
+.performance-diff-table th,
+.performance-diff-table td {
+  padding: 7px 9px;
+  text-align: left;
+  border-bottom: 1px solid var(--line);
+}
+
+.performance-diff-table th {
+  position: sticky;
+  top: 0;
+  background: #0b1720;
+}
+
 .settings-advanced {
   margin-top: 10px;
 }
@@ -1920,6 +2018,10 @@ details[open].sidebar-advanced .sidebar-advanced-chevron {
     position: static;
     flex-direction: row;
     flex-wrap: wrap;
+  }
+
+  .performance-profile-grid {
+    grid-template-columns: 1fr;
   }
 }
 

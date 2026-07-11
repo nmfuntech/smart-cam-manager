@@ -6,6 +6,7 @@ import tempfile
 import threading
 import time
 import unittest
+from collections import deque
 from pathlib import Path
 from unittest import mock
 
@@ -2421,6 +2422,9 @@ class CameraStreamStateTests(unittest.TestCase):
         camera.next_retry_in_seconds = 1.0
         camera._retry_delay_seconds = 2.0
         camera.lock = threading.Lock()
+        camera._raw_ready = threading.Condition(camera.lock)
+        camera._stopped = threading.Event()
+        camera.raw_sequence = 0
         return camera
 
     def test_status_transitions_offline_connecting_online(self):
@@ -2463,6 +2467,24 @@ class CameraStreamStateTests(unittest.TestCase):
         _frame, seq = camera.get_raw_frame_packet()
         self.assertEqual(seq, 42)
 
+    def test_wait_for_raw_frame_wakes_without_polling(self):
+        camera = self._build_camera_for_status_checks()
+
+        def publish():
+            time.sleep(0.02)
+            with camera._raw_ready:
+                camera.raw_frame = [4, 5, 6]
+                camera.raw_sequence = 1
+                camera._raw_ready.notify_all()
+
+        thread = threading.Thread(target=publish)
+        thread.start()
+        frame, sequence = camera.wait_for_raw_frame(0, 0.5)
+        thread.join()
+
+        self.assertEqual(frame, [4, 5, 6])
+        self.assertEqual(sequence, 1)
+
     def test_get_stream_config_encode_interval_matches_record_fps(self):
         # encode_interval = min(snapshot, 1000/record_fps). Con fps 10 e snapshot 700 -> 100ms.
         env = {"STREAM_SNAPSHOT_INTERVAL_ONLINE_MS": "700", "RECORD_FPS": "10"}
@@ -2486,12 +2508,13 @@ class MotionEventWorkerTests(unittest.TestCase):
     def _bare_detector(self, *, start_worker: bool):
         det = self.app_module.MotionDetector.__new__(self.app_module.MotionDetector)
         det._stopped = threading.Event()
-        det._event_queue = []
+        det._event_queue = deque()
         det._event_queue_lock = threading.Lock()
+        det._event_queue_ready = threading.Condition(det._event_queue_lock)
         if start_worker:
             t = threading.Thread(target=det._event_worker_loop, daemon=True)
             t.start()
-            self.addCleanup(det._stopped.set)
+            self.addCleanup(det.stop)
         return det
 
     def _wait(self, condition, timeout=2.0):
@@ -2521,8 +2544,14 @@ class MotionEventWorkerTests(unittest.TestCase):
         self.assertEqual(len(det._event_queue), det._EVENT_QUEUE_MAX)
         det._enqueue_event(lambda: None, critical=False)  # scartato
         self.assertEqual(len(det._event_queue), det._EVENT_QUEUE_MAX)
-        det._enqueue_event(lambda: None, critical=True)  # apertura/chiusura: mai scartati
-        self.assertEqual(len(det._event_queue), det._EVENT_QUEUE_MAX + 1)
+        det._enqueue_event(lambda: None, critical=True)
+        self.assertLessEqual(len(det._event_queue), det._EVENT_QUEUE_TOTAL_MAX)
+
+    def test_total_queue_is_bounded_even_for_critical_tasks(self):
+        det = self._bare_detector(start_worker=False)
+        for _ in range(det._EVENT_QUEUE_TOTAL_MAX + 5):
+            det._enqueue_event(lambda: None, critical=True)
+        self.assertEqual(len(det._event_queue), det._EVENT_QUEUE_TOTAL_MAX)
 
 
 class RuntimeConfigManagerTests(unittest.TestCase):
@@ -2798,6 +2827,29 @@ class NetworkAndCredentialHardeningTests(unittest.TestCase):
     def setUp(self):
         self.app_module = load_app_module()
 
+    def test_private_runtime_file_permissions_are_hardened(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            guests = Path(tmp) / "guests.json"
+            guests.write_text("{}")
+            os.chmod(guests, 0o644)
+            with mock.patch.dict(
+                os.environ,
+                {"TELEGRAM_GUESTS_FILE": str(guests)},
+                clear=False,
+            ):
+                self.app_module.harden_private_runtime_files()
+            self.assertEqual(os.stat(guests).st_mode & 0o777, 0o600)
+
+    def test_opencv_thread_cap_is_applied(self):
+        with (
+            mock.patch.dict(os.environ, {"OPENCV_NUM_THREADS": "1"}, clear=False),
+            mock.patch.object(self.app_module.cv2, "setNumThreads") as set_threads,
+            mock.patch.object(self.app_module.cv2, "setUseOptimized") as optimized,
+        ):
+            self.app_module.configure_opencv_runtime()
+        set_threads.assert_called_once_with(1)
+        optimized.assert_called_once_with(True)
+
     def test_rtsp_url_percent_encodes_credentials(self):
         url = self.app_module.rtsp_url_from_profile(
             {
@@ -3031,6 +3083,7 @@ class SettingsPageTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         html = response.data.decode("utf-8")
         for section_id in (
+            'id="prestazioni"',
             'id="movimento"',
             'id="riconoscimento"',
             'id="registrazione"',
@@ -3161,24 +3214,52 @@ class RetentionJanitorSweepTests(unittest.TestCase):
     def setUp(self):
         self.app_module = load_app_module()
 
-    def test_sweep_purges_every_detector_and_survives_errors(self):
+    def test_sweep_uses_global_root_quota(self):
         good = mock.Mock()
-        good.config = {"retention_interval_sec": 120}
+        good.config = {
+            "retention_interval_sec": 120,
+            "retention_days": 14,
+            "retention_max_mb": 5000,
+            "save_dir": "captures/motion/attiva",
+        }
         good.camera_id = "attiva"
-        good.purge_old_events.return_value = 2
+        good._get_event_store.return_value.current_event_dir = None
         broken = mock.Mock()
-        broken.config = {"retention_interval_sec": 120}
+        broken.config = {
+            "retention_interval_sec": 180,
+            "retention_days": 14,
+            "retention_max_mb": 5000,
+            "save_dir": "captures/motion/monitor",
+        }
         broken.camera_id = "monitor"
-        broken.purge_old_events.side_effect = RuntimeError("boom")
+        broken._get_event_store.return_value.current_event_dir = None
 
         janitor = self.app_module.RetentionJanitor.__new__(self.app_module.RetentionJanitor)
         janitor._provider = lambda: [good, broken]
 
-        interval = janitor._sweep()
+        with mock.patch.object(janitor, "_purge_root", return_value=2) as purge:
+            interval = janitor._sweep()
 
-        good.purge_old_events.assert_called_once()
-        broken.purge_old_events.assert_called_once()
+        purge.assert_called_once()
         self.assertEqual(interval, 120.0)
+
+    def test_global_retention_removes_orphan_profile_events(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "motion"
+            active = root / "active" / "motion_event_active"
+            orphan = root / "deleted-profile" / "motion_event_old"
+            active.mkdir(parents=True)
+            orphan.mkdir(parents=True)
+            (active / "frame.jpg").write_bytes(b"a" * 10)
+            (orphan / "frame.jpg").write_bytes(b"b" * 10)
+
+            removed = self.app_module.RetentionJanitor._purge_root(
+                root, days=0, max_mb=0.000015, active={active.resolve()}
+            )
+
+            self.assertEqual(removed, 1)
+            self.assertTrue(active.exists())
+            self.assertFalse(orphan.exists())
 
 
 class ContinuousConfigPropagationTests(unittest.TestCase):

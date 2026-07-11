@@ -150,6 +150,17 @@ class TelegramNotifierTests(unittest.TestCase):
         self._wait_deliveries(2)
         self.assertEqual(len(self.sent), 2)
 
+    def test_notification_queue_is_bounded(self):
+        notifier = self._notifier(NOTIFY_QUEUE_MAX="2")
+        notifier._start_worker = lambda: None
+        for index in range(3):
+            self.assertTrue(notifier.notify_event(f"motion_event_{index}", class_label="persona"))
+        self.assertEqual(len(notifier._pending), 2)
+        self.assertEqual(
+            [job.event_id for job in notifier._pending],
+            ["motion_event_1", "motion_event_2"],
+        )
+
     def test_on_delivered_only_after_successful_send(self):
         delivered: list[str] = []
 
@@ -452,6 +463,19 @@ class TelegramCommandBotTests(unittest.TestCase):
         self.assertEqual(self.messages, [])
         self.assertEqual(services.runtime_config.updates, [])
 
+    def test_guest_can_read_but_cannot_mutate_or_record_clip(self):
+        bot, services = self._bot()
+        bot._is_admin = lambda _chat_id: False
+
+        readonly = bot._dispatch("/status", [], "guest")
+        mutation = bot._dispatch("/motion_off", [], "guest")
+        clip = bot._dispatch("/clip", [], "guest")
+
+        self.assertIn("BLACKFRAME", readonly)
+        self.assertIn("riservato", mutation)
+        self.assertIn("riservato", clip)
+        self.assertEqual(services.runtime_config.updates, [])
+
     def test_motion_command_updates_runtime_and_services(self):
         bot, services = self._bot()
 
@@ -626,6 +650,13 @@ class TelegramCommandBotTests(unittest.TestCase):
 
         self.assertIn("Uso", self.messages[0][1])
 
+    def test_clip_concurrency_is_bounded(self):
+        bot, services = self._bot()
+        services.camera.get_raw_frame = lambda: object()
+        self.assertTrue(bot._reserve_clip())
+        response = bot._send_clip([], "123")
+        self.assertIn("gia in registrazione", response)
+
     def test_record_and_send_clip_sends_video(self):
         bot, services = self._bot()
 
@@ -729,7 +760,7 @@ class TelegramCommandBotTests(unittest.TestCase):
             self.assertIn("999", data)
             self.assertEqual(data["999"]["name"], "Mario Rossi")
 
-    def test_invited_guest_can_send_commands(self):
+    def test_invited_guest_is_limited_to_readonly_commands(self):
         with tempfile.TemporaryDirectory() as tmp:
             guests_file = os.path.join(tmp, "guests.json")
             Path(guests_file).write_text(
@@ -737,9 +768,12 @@ class TelegramCommandBotTests(unittest.TestCase):
             )
             bot, services = self._bot(TELEGRAM_GUESTS_FILE=guests_file)
 
+            self._handle(bot, "/status", chat_id=456)
             self._handle(bot, "/motion_off", chat_id=456)
 
-            self.assertEqual(services.runtime_config.updates, [{"MOTION_ENABLED": False}])
+            self.assertIn("BLACKFRAME", self.messages[0][1])
+            self.assertIn("riservato", self.messages[1][1])
+            self.assertEqual(services.runtime_config.updates, [])
 
     def test_admin_invite_shows_code(self):
         bot, _ = self._bot(TELEGRAM_INVITE_CODE="mysecret")
