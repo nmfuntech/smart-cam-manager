@@ -30,6 +30,16 @@ from urllib.parse import urlsplit
 logger = logging.getLogger(__name__)
 
 
+def _keep_alive_value(value: str | None) -> str | int | None:
+    """Ollama richiede numeri negativi come JSON number, non stringhe."""
+    if value is None:
+        return None
+    rendered = str(value).strip()
+    if rendered.lstrip("-").isdigit():
+        return int(rendered)
+    return rendered or None
+
+
 def _base_url_allowed(base_url: str) -> bool:
     try:
         parsed = urlsplit(base_url)
@@ -107,7 +117,7 @@ def _chat_payload(
         "options": {"temperature": 0, **(options or {})},
     }
     if keep_alive:
-        payload["keep_alive"] = keep_alive
+        payload["keep_alive"] = _keep_alive_value(keep_alive)
     return payload
 
 
@@ -226,7 +236,7 @@ def warmup(
         return
     payload: dict = {"model": model}
     if keep_alive:
-        payload["keep_alive"] = keep_alive
+        payload["keep_alive"] = _keep_alive_value(keep_alive)
     try:
         _request(url, payload, timeout)
         logger.info("Warm-up Ollama completato: modello %s residente", model)

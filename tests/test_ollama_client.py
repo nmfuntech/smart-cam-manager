@@ -168,6 +168,18 @@ class WarmupTests(unittest.TestCase):
         self.assertTrue(captured["url"].endswith("/api/generate"))
         self.assertEqual(captured["payload"], {"model": "m", "keep_alive": "30m"})
 
+    def test_negative_keep_alive_is_sent_as_json_number(self):
+        captured = {}
+
+        def fake_urlopen(req, timeout):
+            captured["payload"] = json.loads(req.data)
+            return _fake_response("")
+
+        with mock.patch.object(ollama_client.urllib.request, "urlopen", fake_urlopen):
+            ollama_client.warmup("http://127.0.0.1", "m", keep_alive="-1")
+
+        self.assertEqual(captured["payload"]["keep_alive"], -1)
+
     def test_errors_are_swallowed(self):
         def fake_urlopen(req, timeout):
             raise urllib.error.URLError(ConnectionRefusedError("refused"))
