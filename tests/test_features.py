@@ -555,6 +555,32 @@ class TelegramCommandBotTests(unittest.TestCase):
         self._handle(bot, "/devices")
         self.assertIn("luce", self.messages[0][1])
 
+    def test_inventory_command_lists_cameras_and_devices(self):
+        from blackframe.commands.registry import execute
+
+        _, services = self._bot()
+        services.features.camera_profiles = SimpleNamespace(
+            list_profiles=lambda: [
+                {"id": "front", "name": "Ingresso", "active": True}
+            ]
+        )
+
+        result = execute("inventory", None, services)
+
+        self.assertIn("Ingresso", result.text)
+        self.assertIn("luce", result.text)
+
+    def test_entity_status_reads_device_state(self):
+        from blackframe.commands.registry import execute
+
+        _, services = self._bot()
+        services.automation_registry.devices["luce"].turn_on()
+
+        result = execute("entity_status", "luce", services)
+
+        self.assertIn("luce", result.text)
+        self.assertIn("acceso", result.text.lower())
+
     def test_device_on_turns_on(self):
         bot, services = self._bot()
         self._handle(bot, "/device_on luce")

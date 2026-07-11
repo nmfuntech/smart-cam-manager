@@ -84,6 +84,22 @@ class ServiceAnswerTests(unittest.TestCase):
         compose.assert_not_called()
         self.assertIsNone(proposal.answer)
 
+    def test_inventory_question_uses_local_renderer(self):
+        proposal, compose = self._propose(
+            "che dispositivi hai?", command="inventory", readonly_result="Inventario sistema"
+        )
+        compose.assert_not_called()
+        self.assertIsNone(proposal.answer)
+
+    def test_entity_status_question_uses_local_renderer(self):
+        proposal, compose = self._propose(
+            "la lampada è accesa?",
+            command="entity_status",
+            readonly_result="Stato lampada: acceso",
+        )
+        compose.assert_not_called()
+        self.assertIsNone(proposal.answer)
+
     def test_natural_answers_disabled_via_env(self):
         with mock.patch.dict(os.environ, {"AGENT_NATURAL_ANSWERS": "false"}):
             proposal, compose = self._propose("le luci sono accese?")

@@ -71,6 +71,19 @@ class ServiceContextTests(unittest.TestCase):
         self.assertEqual(turn.user_text, "accendi la lampada")
         self.assertEqual(turn.command, "device_on")
 
+    def test_device_confirmation_description_contains_resolved_name(self):
+        with mock.patch(
+            "blackframe.agent.service.interpret",
+            return_value=Suggestion(
+                ok=True,
+                command="device_off",
+                arg="lampada_ingresso",
+            ),
+        ):
+            proposal = self.agent.propose("spegni la lampada", "web", "sess")
+
+        self.assertEqual(proposal.description, "Spegni dispositivo “lampada_ingresso”")
+
     def test_failed_interpretation_does_not_overwrite_context(self):
         responses = [
             Suggestion(ok=True, command="device_on", arg="lampada_ingresso"),

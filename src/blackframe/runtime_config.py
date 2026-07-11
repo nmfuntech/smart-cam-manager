@@ -276,6 +276,9 @@ class RuntimeConfigManager:
                 "AGENT_DOMAIN_GATE", "bool", internal_only=True
             ),
             "AGENT_CACHE": ConfigField("AGENT_CACHE", "bool", internal_only=True),
+            "CAPABILITY_STATE_TTL_SEC": ConfigField(
+                "CAPABILITY_STATE_TTL_SEC", "float", minimum=0, internal_only=True
+            ),
             "STREAM_MAX_WIDTH": ConfigField(
                 "STREAM_MAX_WIDTH", "int", minimum=0, internal_only=True
             ),

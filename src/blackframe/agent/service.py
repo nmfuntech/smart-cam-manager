@@ -44,6 +44,23 @@ def _run_warmup_once(base_url: str, model: str, keep_alive: str | None) -> None:
 # non li propone nemmeno all'LLM (restano disponibili solo via Telegram).
 WEB_EXCLUDED_COMMANDS = frozenset({"snapshot", "latest"})
 
+# Tool con risposta già leggibile e ancorata a dati strutturati. Una seconda
+# inferenza aggiungerebbe solo latenza e rischio di alterare l'inventario.
+LOCALLY_RENDERED_READ_COMMANDS = frozenset({"entity_status", "inventory"})
+
+_DEVICE_CONFIRMATION_LABELS = {
+    "device_on": "Accendi dispositivo",
+    "device_off": "Spegni dispositivo",
+}
+
+
+def _proposal_description(command: str, arg: str | None, fallback: str) -> str:
+    """Descrizione conferma ancorata all'entità già validata dal registry."""
+    label = _DEVICE_CONFIRMATION_LABELS.get(command)
+    if label is not None and arg:
+        return f"{label} “{arg}”"
+    return fallback
+
 
 @dataclass
 class ProposalResult:
@@ -136,6 +153,7 @@ class AgentService:
             answer = None
             if (
                 _env_bool("AGENT_NATURAL_ANSWERS", True)
+                and suggestion.command not in LOCALLY_RENDERED_READ_COMMANDS
                 and result is not None
                 and result.text
                 and looks_like_question(text)
@@ -157,7 +175,11 @@ class AgentService:
             executed=False,
             readonly=False,
             command=suggestion.command,
-            description=spec.description,
+            description=_proposal_description(
+                suggestion.command,
+                suggestion.arg,
+                spec.description,
+            ),
             pending_id=pending_id,
         )
 

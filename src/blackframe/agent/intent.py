@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from blackframe.automation.rules_store import load_rules_raw
+from blackframe.capabilities import build_services_registry
 from blackframe.commands import COMMAND_REGISTRY, validate_arg
 from blackframe.commands.naming import normalize_identifier
 from blackframe.envutil import env_bool as _env_bool
@@ -61,6 +62,9 @@ _DOMAIN_TOKENS = frozenset(
         "foto",
         "scatto",
         "dispositivi",
+        "device",
+        "apparecchi",
+        "inventario",
         "luci",
         "regola",
         "regole",
@@ -76,7 +80,17 @@ _DESTRUCTIVE_TOKENS = frozenset({"cancella", "elimina", "formatta", "distruggi"}
 _COMMAND_FAMILIES = {
     "ptz": frozenset({"ptz_left", "ptz_right", "ptz_up", "ptz_down", "ptz_stop", "ptz_home"}),
     "automation": frozenset(
-        {"devices", "device_on", "device_off", "rules", "rule_run", "rule_on", "rule_off"}
+        {
+            "inventory",
+            "entity_status",
+            "devices",
+            "device_on",
+            "device_off",
+            "rules",
+            "rule_run",
+            "rule_on",
+            "rule_off",
+        }
     ),
     "motion": frozenset(
         {
@@ -127,7 +141,37 @@ def _known_names(services: Any) -> dict[str, list[str]]:
         ]
     except Exception:
         logger.exception("Impossibile leggere i nomi regola per il grounding del prompt")
+    if services is not None:
+        try:
+            inventory = build_services_registry(services).snapshot()
+            names["entity"] = [entity.name for entity in inventory.entities]
+        except Exception:
+            logger.exception("Impossibile leggere le entità per il grounding del prompt")
     return names
+
+
+def _capability_exclude(services: Any, base: frozenset[str]) -> frozenset[str]:
+    """Rimuove dal catalogo tool impossibili nella configurazione corrente."""
+    if services is None:
+        return base
+    try:
+        entities = build_services_registry(services).snapshot().entities
+    except Exception:
+        logger.exception("Capability routing non disponibile")
+        return base
+    capability_ids = {
+        capability.id for entity in entities for capability in entity.capabilities
+    }
+    excluded = set(base)
+    if "state.read" not in capability_ids:
+        excluded.add("entity_status")
+    if not capability_ids & {"power.on", "power.off", "state.set"}:
+        excluded.update({"devices", "device_on", "device_off"})
+    if "ptz.move" not in capability_ids:
+        excluded.update(
+            {"ptz_left", "ptz_right", "ptz_up", "ptz_down", "ptz_stop", "ptz_home"}
+        )
+    return frozenset(excluded)
 
 
 def _should_consult_llm(
@@ -189,7 +233,17 @@ def _route_exclude(text: str, base: frozenset[str]) -> frozenset[str]:
     family = None
     if tokens & {"sinistra", "destra", "alto", "basso", "giu", "ptz", "inquadra"}:
         family = "ptz"
-    elif tokens & {"regola", "regole", "dispositivo", "dispositivi", "lampada", "presa"}:
+    elif tokens & {
+        "apparecchi",
+        "device",
+        "dispositivo",
+        "dispositivi",
+        "inventario",
+        "lampada",
+        "presa",
+        "regola",
+        "regole",
+    }:
         family = "automation"
     elif tokens & {
         "movimento",
@@ -272,7 +326,7 @@ def interpret(
     ):
         return Suggestion(ok=False, reason="Richiesta fuori ambito o non supportata.")
 
-    effective_exclude = _route_exclude(text, exclude)
+    effective_exclude = _route_exclude(text, _capability_exclude(services, exclude))
     schema = (
         build_response_schema(effective_exclude)
         if _env_bool("AGENT_SCHEMA_FORMAT", True)

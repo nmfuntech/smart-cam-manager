@@ -22,8 +22,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Literal
 
-from blackframe.automation import DeviceError
+from blackframe.agent.entities import resolve_entity
 from blackframe.automation.rules_store import load_rules_raw, set_rule_enabled
+from blackframe.capabilities import ActionRequest, build_services_registry
 from blackframe.envutil import env_bool as _env_bool
 from blackframe.envutil import env_int
 
@@ -85,6 +86,13 @@ def _known_names_for(spec: CommandArgSpec, services: Any) -> list[str] | None:
         return registry.device_names()
     if spec.name_source == "rule":
         return [r.get("name") for r in load_rules_raw() if isinstance(r, dict) and r.get("name")]
+    if spec.name_source == "entity":
+        inventory = build_services_registry(services).snapshot()
+        return [
+            entity.name
+            for entity in inventory.entities
+            if any(capability.id == "state.read" for capability in entity.capabilities)
+        ]
     return None
 
 
@@ -381,6 +389,52 @@ def _devices(services: Any, arg: str | None) -> CommandResult:
     return CommandResult(text="🏠 Dispositivi:\n" + "\n".join(f"- {name}" for name in names))
 
 
+def _inventory(services: Any, arg: str | None) -> CommandResult:
+    """Vista generica delle entità disponibili, senza dettagli dei provider."""
+    inventory = build_services_registry(services).snapshot()
+    if not inventory.entities:
+        return CommandResult(text="Nessuna entità configurata.")
+    groups: dict[str, list[str]] = {}
+    for entity in inventory.entities:
+        capabilities = ", ".join(item.id for item in entity.capabilities) or "sola lettura"
+        groups.setdefault(entity.type, []).append(
+            f"- {entity.name} · {entity.availability} · {capabilities}"
+        )
+    labels = {"camera": "Camere", "light": "Luci", "smart_device": "Dispositivi"}
+    lines = ["Inventario sistema"]
+    for entity_type, items in sorted(groups.items()):
+        lines.extend(("", f"{labels.get(entity_type, entity_type.title())}:", *items))
+    return CommandResult(text="\n".join(lines))
+
+
+def _entity_status(services: Any, arg: str | None) -> CommandResult:
+    registry = build_services_registry(services)
+    resolution = resolve_entity(
+        arg or "",
+        registry.snapshot().entities,
+        capability_id="state.read",
+    )
+    if resolution.entity is None:
+        if resolution.suggestions:
+            return CommandResult(
+                text="Entità ambigua. Specifica una tra: "
+                + ", ".join(resolution.suggestions)
+            )
+        return CommandResult(text="Entità non trovata o stato non disponibile.")
+    state = registry.read_state(resolution.entity.id)
+    lines = [
+        f"Stato {resolution.entity.name}",
+        f"Disponibilità: {state.availability}",
+    ]
+    power = state.values.get("power")
+    if isinstance(power, bool):
+        lines.append(f"Alimentazione: {'acceso' if power else 'spento'}")
+    connected = state.values.get("connected")
+    if isinstance(connected, bool):
+        lines.append(f"Connessione: {'attiva' if connected else 'non attiva'}")
+    return CommandResult(text="\n".join(lines))
+
+
 def _make_device_action(action: str) -> Callable[[Any, str | None], CommandResult]:
     verb = "acceso" if action == "turn_on" else "spento"
     usage = f"Uso: /device_{'on' if action == 'turn_on' else 'off'} <nome>"
@@ -400,10 +454,26 @@ def _make_device_action(action: str) -> Callable[[Any, str | None], CommandResul
                     f"Forse intendevi: {', '.join(suggestions)}?"
                 )
             return CommandResult(text=f"Dispositivo '{normalized}' non trovato. Usa /devices.")
-        try:
-            getattr(registry.get(name), action)()
-        except DeviceError as exc:
-            return CommandResult(text=f"Errore dispositivo '{name}': {exc}")
+        capability_id = "power.on" if action == "turn_on" else "power.off"
+        capabilities = build_services_registry(services)
+        entity = next(
+            (
+                item
+                for item in capabilities.snapshot().entities
+                if item.name == name and item.type != "camera"
+            ),
+            None,
+        )
+        if entity is None:
+            return CommandResult(text=f"Dispositivo '{name}' non disponibile.")
+        # Questo handler viene raggiunto dopo conferma agente oppure tramite
+        # comando esplicito Telegram: entrambe sono intenzioni già confermate.
+        result = capabilities.execute(
+            ActionRequest(entity.id, capability_id),
+            confirmed=True,
+        )
+        if not result.ok:
+            return CommandResult(text=f"Errore dispositivo '{name}': azione fallita")
         return CommandResult(text=f"Dispositivo '{name}' {verb}.")
 
     return handler
@@ -481,10 +551,21 @@ def _make_rule_enabled(enabled: bool) -> Callable[[Any, str | None], CommandResu
 
 _NONE_ARG = CommandArgSpec(kind="none")
 _DEVICE_NAME_ARG = CommandArgSpec(kind="name", required=True, name_source="device")
+_ENTITY_NAME_ARG = CommandArgSpec(kind="name", required=True, name_source="entity")
 _RULE_NAME_ARG = CommandArgSpec(kind="name", required=True, name_source="rule")
 
 COMMAND_REGISTRY: dict[str, CommandSpec] = {
     "status": CommandSpec("status", "Stato camera e movimento", None, True, _status),
+    "inventory": CommandSpec(
+        "inventory", "Elenca entità e capacità disponibili", None, True, _inventory
+    ),
+    "entity_status": CommandSpec(
+        "entity_status",
+        "Leggi stato di una specifica entità",
+        _ENTITY_NAME_ARG,
+        True,
+        _entity_status,
+    ),
     "config": CommandSpec("config", "Riepilogo impostazioni", None, True, _config),
     "snapshot": CommandSpec("snapshot", "Invia foto live", None, True, _snapshot),
     "latest": CommandSpec("latest", "Invia ultimo evento", None, True, _latest),

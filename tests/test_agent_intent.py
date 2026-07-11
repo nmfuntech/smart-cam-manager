@@ -2,6 +2,7 @@ import json
 import os
 import time
 import unittest
+from types import SimpleNamespace
 from unittest import mock
 
 from blackframe.agent import intent
@@ -252,6 +253,20 @@ class InterpretLlmWiringTests(unittest.TestCase):
         enum = call.kwargs["response_schema"]["properties"]["command"]["anyOf"][0]["enum"]
         self.assertIn("motion_off", enum)
         self.assertNotIn("ptz_left", enum)
+
+    def test_runtime_capabilities_remove_unavailable_tools(self):
+        services = SimpleNamespace(
+            features=SimpleNamespace(
+                camera_profiles=SimpleNamespace(list_profiles=lambda: [])
+            ),
+            automation_registry=None,
+        )
+
+        excluded = intent._capability_exclude(services, frozenset())
+
+        self.assertIn("device_on", excluded)
+        self.assertIn("entity_status", excluded)
+        self.assertIn("ptz_left", excluded)
 
 
 class ResponseSchemaTests(unittest.TestCase):

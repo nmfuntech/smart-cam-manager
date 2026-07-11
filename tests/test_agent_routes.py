@@ -165,6 +165,42 @@ class AgentRoutesAuthTests(AgentRouteTestBase):
         resp = self._post_json("/api/agente/interpret", {"text": "ciao"}, authed=False)
         self.assertEqual(resp.status_code, 401)
 
+    def test_inventory_requires_auth(self):
+        resp = self.client.get("/api/agente/inventory")
+        self.assertEqual(resp.status_code, 401)
+
+    def test_inventory_is_redacted(self):
+        class Registry:
+            def list_devices(self):
+                return [
+                    {
+                        "name": "luce_studio",
+                        "driver": "test",
+                        "local_key": "must-not-leak",
+                        "ip": "192.0.2.10",
+                    }
+                ]
+
+        self.services.automation_registry = Registry()
+        authenticate_client(self.client)
+
+        resp = self.client.get("/api/agente/inventory")
+        payload = resp.get_json()
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(payload["ok"])
+        self.assertIn("luce_studio", str(payload))
+        self.assertNotIn("must-not-leak", str(payload))
+        self.assertNotIn("192.0.2.10", str(payload))
+
+    def test_entity_state_requires_auth_and_rejects_unknown_entity(self):
+        unauthenticated = self.client.get("/api/agente/entities/light.unknown/state")
+        self.assertEqual(unauthenticated.status_code, 401)
+
+        authenticate_client(self.client)
+        missing = self.client.get("/api/agente/entities/light.unknown/state")
+        self.assertEqual(missing.status_code, 404)
+
 
 # ── Interpret / confirm / cancel ───────────────────────────────────────────
 

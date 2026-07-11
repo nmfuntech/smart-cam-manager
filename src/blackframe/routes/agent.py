@@ -4,6 +4,7 @@ from flask import Blueprint, current_app, jsonify, render_template, request, ses
 
 from blackframe.agent.service import ProposalResult
 from blackframe.auth import AUTH_SESSION_KEY, rate_limit, require_auth, require_csrf
+from blackframe.capabilities import build_services_registry
 
 agent_bp = Blueprint("agent", __name__)
 
@@ -74,6 +75,27 @@ def agente_page():
 def agente_status():
     agent = get_services().agent
     return jsonify({"ok": True, "enabled": agent is not None and agent.enabled})
+
+
+@agent_bp.get("/api/agente/inventory")
+@require_auth(api=True)
+@rate_limit("agente-inventory", limit=30, window_seconds=60, api=True)
+def agente_inventory():
+    """Inventario redatto usato dall'harness; mai espone config provider grezza."""
+    inventory = build_services_registry(get_services()).snapshot().to_public_dict()
+    return jsonify({"ok": True, **inventory})
+
+
+@agent_bp.get("/api/agente/entities/<path:entity_id>/state")
+@require_auth(api=True)
+@rate_limit("agente-entity-state", limit=20, window_seconds=60, api=True)
+def agente_entity_state(entity_id: str):
+    registry = build_services_registry(get_services())
+    try:
+        state = registry.read_state(entity_id)
+    except ValueError:
+        return jsonify({"ok": False, "error": "Entità o stato non disponibile"}), 404
+    return jsonify({"ok": True, "state": state.to_public_dict()})
 
 
 @agent_bp.patch("/api/agente/toggle")

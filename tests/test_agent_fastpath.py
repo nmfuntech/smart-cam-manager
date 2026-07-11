@@ -24,6 +24,18 @@ class MatchTests(unittest.TestCase):
         self.assertEqual(fastpath.match("Eventi"), {"command": "events", "arg": None})
         self.assertEqual(fastpath.match("come va?"), {"command": "status", "arg": None})
 
+    def test_generic_inventory_phrases(self):
+        for text in (
+            "che dispositivi hai?",
+            "mostrami tutti i device",
+            "quali apparecchi sono configurati",
+            "fammi vedere l'inventario del sistema",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(
+                    fastpath.match(text), {"command": "inventory", "arg": None}
+                )
+
     def test_keyword_does_not_match_substrings(self):
         # "stato" dentro una frase piu' lunga non deve scattare: decide l'LLM.
         self.assertIsNone(fastpath.match("stato della lampada"))
@@ -38,6 +50,16 @@ class MatchTests(unittest.TestCase):
         services = FakeServices(["lampada_ingresso", "presa_salotto"])
         result = fastpath.match("spegni la presa del salotto", services=services)
         self.assertEqual(result, {"command": "device_off", "arg": "presa_salotto"})
+
+    def test_entity_status_resolves_unique_runtime_entity(self):
+        services = FakeServices(["lampada_ingresso", "presa_salotto"])
+
+        result = fastpath.match("la lampada ingresso è accesa?", services=services)
+
+        self.assertEqual(
+            result,
+            {"command": "entity_status", "arg": "lampada_ingresso"},
+        )
 
     def test_ambiguous_device_falls_through(self):
         services = FakeServices(["lampada_ingresso", "lampada_salotto"])

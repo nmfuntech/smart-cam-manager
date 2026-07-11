@@ -24,7 +24,10 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from blackframe.capabilities import build_services_registry
 from blackframe.commands.naming import normalize_identifier, resolve_name
+
+from .entities import resolve_entity
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +107,39 @@ _PTZ_DIRECTIONS: dict[str, str] = {
     "basso": "ptz_down",
     "giu": "ptz_down",
 }
+
+_INVENTORY_QUERY_WORDS = {"che", "elenca", "fammi", "mostra", "mostrami", "quali", "vedere"}
+_INVENTORY_ENTITY_WORDS = {
+    "apparecchi",
+    "device",
+    "dispositivi",
+    "entita",
+    "inventario",
+}
+
+
+def _match_inventory(normalized: str) -> dict | None:
+    """Riconosce richieste d'inventario senza enumerare ogni frase possibile."""
+    tokens = set(normalized.split("_"))
+    if tokens & _INVENTORY_QUERY_WORDS and tokens & _INVENTORY_ENTITY_WORDS:
+        return {"command": "inventory", "arg": None}
+    return None
+
+
+def _match_entity_status(normalized: str, services: Any) -> dict | None:
+    tokens = set(normalized.split("_"))
+    state_tokens = {"accesa", "acceso", "spenta", "spento", "sta", "stato", "status"}
+    if not tokens & state_tokens or services is None:
+        return None
+    inventory = build_services_registry(services).snapshot()
+    resolution = resolve_entity(
+        normalized,
+        inventory.entities,
+        capability_id="state.read",
+    )
+    if resolution.entity is None:
+        return None
+    return {"command": "entity_status", "arg": resolution.entity.name}
 
 
 def _device_names(services: Any) -> list[str]:
@@ -238,6 +274,14 @@ def match(
     if exact is not None:
         command, arg = exact
         return {"command": command, "arg": arg} if command not in exclude else None
+
+    inventory = _match_inventory(normalized)
+    if inventory is not None:
+        return inventory if inventory["command"] not in exclude else None
+
+    entity_status = _match_entity_status(normalized, services)
+    if entity_status is not None:
+        return entity_status if entity_status["command"] not in exclude else None
 
     sensitivity = _match_sensitivity(normalized)
     if sensitivity is not None:

@@ -50,6 +50,7 @@ profiles:
       AGENT_WARMUP: false
       AGENT_DOMAIN_GATE: true
       AGENT_CACHE: true
+      CAPABILITY_STATE_TTL_SEC: 30
 
   balanced:
     label: "Bilanciato — 4/8 GB RAM"
@@ -114,6 +115,7 @@ profiles:
       AGENT_WARMUP: false
       AGENT_DOMAIN_GATE: true
       AGENT_CACHE: true
+      CAPABILITY_STATE_TTL_SEC: 15
 
   performance:
     label: "Prestazioni — 8+ GB RAM"
@@ -164,3 +166,4 @@ profiles:
       AGENT_WARMUP: true
       AGENT_DOMAIN_GATE: true
       AGENT_CACHE: true
+      CAPABILITY_STATE_TTL_SEC: 5

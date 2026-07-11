@@ -74,8 +74,14 @@ def _describe_arg(
         names = (known_names or {}).get(spec.name_source or "") if spec.name_source else None
         if names:
             shown = ", ".join(names[:_MAX_KNOWN_NAMES])
-            label = "dispositivo" if spec.name_source == "device" else "regola"
+            label = {
+                "device": "dispositivo",
+                "entity": "entità",
+                "rule": "regola",
+            }.get(spec.name_source, "entità")
             return f"argomento: nome {label} esatto tra: {shown}"
+        if spec.name_source == "entity":
+            return "argomento: nome dell'entità"
         return "argomento: nome del dispositivo/regola"
     if spec.kind in ("int", "float"):
         return "argomento: numero" + ("" if spec.required else " (opzionale)")

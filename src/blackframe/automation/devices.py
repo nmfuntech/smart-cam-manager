@@ -41,6 +41,8 @@ class SmartDevice(Protocol):
 
     def set_state(self, state: dict) -> None: ...
 
+    def get_state(self) -> dict: ...
+
 
 class TuyaLanDevice:
     """Device Tuya controllato in rete locale via ``tinytuya``.
@@ -111,6 +113,15 @@ class TuyaLanDevice:
         response = client.set_multiple_values({str(k): v for k, v in state.items()})
         self._check_response(response, self.name, "set_state")
 
+    def get_state(self) -> dict:
+        response = self._get_client().status()
+        self._check_response(response, self.name, "status")
+        if not isinstance(response, dict):
+            raise DeviceError(f"Device Tuya '{self.name}': risposta stato non valida")
+        dps = response.get("dps") or {}
+        power = dps.get(str(self._switch_dp), dps.get(self._switch_dp))
+        return {"power": power if isinstance(power, bool) else None}
+
 
 class MockDevice:
     """Device finto per i test: registra le chiamate, opzionalmente fallisce.
@@ -144,6 +155,10 @@ class MockDevice:
         self.calls.append(("set_state", dict(state)))
         self._maybe_fail("set_state")
         self.last_state = dict(state)
+
+    def get_state(self) -> dict:
+        self._maybe_fail("status")
+        return {"power": self.is_on}
 
 
 def build_device(config: dict) -> SmartDevice:
