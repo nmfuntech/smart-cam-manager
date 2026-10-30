@@ -1010,8 +1010,11 @@ class RecordingConfigTests(unittest.TestCase):
             started_at=__import__("time").time(),
         )
         writer.release()
+        from blackframe.mediatools import ffprobe_bin
         from blackframe.recording import _video_duration_sec
 
+        if ffprobe_bin() is None:
+            self.skipTest("ffprobe richiesto per misurare la durata")
         duration = _video_duration_sec(path) or 0.0
         # 5 unique frames/sec for 0.5s -> ~2-3 frames, not 25 duplicates of the same frame.
         self.assertGreaterEqual(duration, 0.2)

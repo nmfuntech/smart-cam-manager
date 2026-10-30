@@ -215,12 +215,18 @@ class WifiService:
         }
 
     def _run_command(self, command: list[str]) -> str:
-        completed = subprocess.run(
-            command,
-            check=False,
-            capture_output=True,
-            text=True,
-        )
+        # Wi-Fi tools differ per distro (iwgetid is often missing): a missing
+        # binary must mean "unknown", never a 500 on the camera pages.
+        try:
+            completed = subprocess.run(
+                command,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return ""
         if completed.returncode != 0:
             return ""
         return completed.stdout.strip()
