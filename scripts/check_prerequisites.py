@@ -44,6 +44,14 @@ def check_classification_models() -> list[str]:
         return []
 
     backend = os.getenv("CLASSIFICATION_BACKEND", "local").strip().lower()
+    if backend == "yolox":
+        model = _env_path("CLASSIFICATION_YOLOX_MODEL_PATH", "models/yolox_tiny.onnx")
+        if model.is_file():
+            return []
+        return [
+            f"Classificazione YOLOX abilitata ma manca il modello {model.name}. "
+            "Esegui: make fetch-model"
+        ]
     if backend != "detection":
         return []
 

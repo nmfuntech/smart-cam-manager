@@ -34,6 +34,8 @@ _UI_EDITABLE_KEYS = frozenset(
         "CLASSIFICATION_ENABLED",
         "CLASSIFICATION_BACKEND",
         "CLASSIFICATION_MIN_CONFIDENCE",
+        "CLASSIFICATION_PERSON_MIN_CONFIDENCE",
+        "CLASSIFICATION_PET_MIN_CONFIDENCE",
         "CLASSIFICATION_SAMPLE_POLICY",
         "CLASSIFICATION_DETECT_PERSON",
         "CLASSIFICATION_DETECT_PET",
@@ -123,6 +125,12 @@ class RuntimeConfigManager:
             ),
             "CLASSIFICATION_ENABLED": ConfigField("CLASSIFICATION_ENABLED", "bool"),
             "CLASSIFICATION_BACKEND": ConfigField("CLASSIFICATION_BACKEND", "str"),
+            "CLASSIFICATION_PERSON_MIN_CONFIDENCE": ConfigField(
+                "CLASSIFICATION_PERSON_MIN_CONFIDENCE", "float", minimum=0.0
+            ),
+            "CLASSIFICATION_PET_MIN_CONFIDENCE": ConfigField(
+                "CLASSIFICATION_PET_MIN_CONFIDENCE", "float", minimum=0.0
+            ),
             "CLASSIFICATION_MIN_CONFIDENCE": ConfigField(
                 "CLASSIFICATION_MIN_CONFIDENCE",
                 "float",
@@ -418,6 +426,7 @@ class RuntimeConfigManager:
             raise ValueError("STREAM_JPEG_QUALITY deve essere <= 100")
 
         if key == "CLASSIFICATION_BACKEND" and value not in {
+            "yolox",
             "detection",
             "local",
             "teachable_machine",
@@ -425,8 +434,14 @@ class RuntimeConfigManager:
         }:
             raise ValueError(
                 "CLASSIFICATION_BACKEND deve essere uno tra: "
-                "detection, local, teachable_machine, cloud"
+                "yolox, detection, local, teachable_machine, cloud"
             )
+
+        if key in {
+            "CLASSIFICATION_PERSON_MIN_CONFIDENCE",
+            "CLASSIFICATION_PET_MIN_CONFIDENCE",
+        } and value > 1:
+            raise ValueError(f"{key} deve essere <= 1")
 
         if field.must_be_odd and isinstance(value, int) and value % 2 == 0:
             value += 1

@@ -334,7 +334,7 @@ SECTIONS: tuple[EnvSection, ...] = (
                 "CLASSIFICATION_BACKEND",
                 "Backend classificazione",
                 parse_text,
-                default="detection",
+                default="yolox",
             ),
             EnvField(
                 "CLASSIFICATION_MIN_CONFIDENCE",

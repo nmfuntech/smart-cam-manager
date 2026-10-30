@@ -179,6 +179,16 @@ def get_motion_config() -> dict:
     classification_detection_input_size = int(
         os.getenv("CLASSIFICATION_DETECTION_INPUT_SIZE", "300")
     )
+    classification_yolox_model_path = os.getenv(
+        "CLASSIFICATION_YOLOX_MODEL_PATH", "models/yolox_tiny.onnx"
+    ).strip()
+    classification_yolox_input_size = int(os.getenv("CLASSIFICATION_YOLOX_INPUT_SIZE", "416"))
+    classification_person_min_confidence = float(
+        os.getenv("CLASSIFICATION_PERSON_MIN_CONFIDENCE", "0.35")
+    )
+    classification_pet_min_confidence = float(
+        os.getenv("CLASSIFICATION_PET_MIN_CONFIDENCE", "0.15")
+    )
     classification_crop_to_motion = (
         os.getenv("CLASSIFICATION_CROP_TO_MOTION", "true").lower() == "true"
     )
@@ -241,6 +251,10 @@ def get_motion_config() -> dict:
         "classification_detection_model_path": classification_detection_model_path,
         "classification_detection_config_path": classification_detection_config_path,
         "classification_detection_input_size": classification_detection_input_size,
+        "classification_yolox_model_path": classification_yolox_model_path,
+        "classification_yolox_input_size": classification_yolox_input_size,
+        "classification_person_min_confidence": classification_person_min_confidence,
+        "classification_pet_min_confidence": classification_pet_min_confidence,
         "classification_crop_to_motion": classification_crop_to_motion,
         "classification_crop_padding": classification_crop_padding,
         "classification_detect_person": classification_detect_person,
@@ -2067,6 +2081,14 @@ class MotionDetector:
                     self.config["classification_detection_config_path"] = str(value).strip()
                 elif key == "CLASSIFICATION_DETECTION_INPUT_SIZE":
                     self.config["classification_detection_input_size"] = int(value)
+                elif key == "CLASSIFICATION_YOLOX_MODEL_PATH":
+                    self.config["classification_yolox_model_path"] = str(value).strip()
+                elif key == "CLASSIFICATION_YOLOX_INPUT_SIZE":
+                    self.config["classification_yolox_input_size"] = int(value)
+                elif key == "CLASSIFICATION_PERSON_MIN_CONFIDENCE":
+                    self.config["classification_person_min_confidence"] = float(value)
+                elif key == "CLASSIFICATION_PET_MIN_CONFIDENCE":
+                    self.config["classification_pet_min_confidence"] = float(value)
                 elif key == "CLASSIFICATION_CROP_TO_MOTION":
                     self.config["classification_crop_to_motion"] = bool(value)
                 elif key == "CLASSIFICATION_CROP_PADDING":
@@ -2088,6 +2110,10 @@ class MotionDetector:
                     "CLASSIFICATION_DETECTION_MODEL_PATH",
                     "CLASSIFICATION_DETECTION_CONFIG_PATH",
                     "CLASSIFICATION_DETECTION_INPUT_SIZE",
+                    "CLASSIFICATION_YOLOX_MODEL_PATH",
+                    "CLASSIFICATION_YOLOX_INPUT_SIZE",
+                    "CLASSIFICATION_PERSON_MIN_CONFIDENCE",
+                    "CLASSIFICATION_PET_MIN_CONFIDENCE",
                     "CLASSIFICATION_DETECT_PERSON",
                     "CLASSIFICATION_DETECT_PET",
                 }

@@ -121,6 +121,149 @@ class OpenCvDnnClassifierBackend:
         return Path(self.model_path).exists() and Path(self.labels_path).exists()
 
 
+class YoloxDetectorBackend:
+    """Object detection with YOLOX (Apache-2.0) ONNX models through OpenCV DNN.
+
+    Replaces MobileNet-SSD v2 (2018) as the default detector: on real events of
+    this installation SSD labelled half-visible people as "cat" and missed the
+    dog in IR night frames. YOLOX-Tiny is far more accurate at a similar cost on
+    the mini PC CPU, YOLOX-Nano is the low-end fallback. No new dependency:
+    OpenCV's DNN module runs the ONNX graph.
+
+    The exported graph returns raw head outputs ``[1, N, 85]`` (cx, cy, w, h on
+    the stride grid, objectness, 80 class scores): the grid decode and NMS
+    happen here. COCO-80 indices: person=0, cat=15, dog=16.
+    """
+
+    COCO_LABELS = {0: "person", 15: "cat", 16: "dog"}
+    STRIDES = (8, 16, 32)
+
+    def __init__(
+        self,
+        model_path: str,
+        input_size: int = 416,
+        min_score: float = 0.45,
+        nms_threshold: float = 0.45,
+        num_threads: int = 0,
+    ):
+        self.model_path = model_path
+        self.input_size = int(input_size)
+        self.min_score = float(min_score)
+        self.nms_threshold = float(nms_threshold)
+        self.num_threads = int(num_threads)
+        self.model_name = f"yolox:{Path(model_path).name}"
+        self.net = None
+        self._loaded = False
+        self._grids = None
+        self._strides = None
+        self.last_detections: list[tuple[str, float, tuple[float, float, float, float]]] = []
+
+    def is_ready(self) -> bool:
+        return Path(self.model_path).exists()
+
+    def _ensure_loaded(self) -> None:
+        if self._loaded:
+            return
+        self._loaded = True
+        if not self.is_ready():
+            logger.warning("Modello YOLOX non trovato: %s", self.model_path)
+            return
+        try:
+            self.net = cv2.dnn.readNetFromONNX(self.model_path)
+            self.net.setPreferableBackend(cv2.dnn.DNN_BACKEND_OPENCV)
+            self.net.setPreferableTarget(cv2.dnn.DNN_TARGET_CPU)
+        except Exception:
+            logger.exception("Impossibile caricare il modello YOLOX: %s", self.model_path)
+            self.net = None
+            return
+        grids, strides = [], []
+        for stride in self.STRIDES:
+            size = self.input_size // stride
+            ys, xs = np.meshgrid(np.arange(size), np.arange(size), indexing="ij")
+            grids.append(np.stack((xs, ys), axis=-1).reshape(-1, 2))
+            strides.append(np.full((size * size, 1), stride))
+        self._grids = np.concatenate(grids).astype(np.float32)
+        self._strides = np.concatenate(strides).astype(np.float32)
+
+    def _letterbox(self, frame: np.ndarray) -> tuple[np.ndarray, float]:
+        height, width = frame.shape[:2]
+        ratio = min(self.input_size / height, self.input_size / width)
+        resized = cv2.resize(
+            frame,
+            (int(width * ratio), int(height * ratio)),
+            interpolation=cv2.INTER_LINEAR,
+        )
+        padded = np.full((self.input_size, self.input_size, 3), 114, dtype=np.uint8)
+        padded[: resized.shape[0], : resized.shape[1]] = resized
+        return padded, ratio
+
+    def detect(
+        self, frame: np.ndarray
+    ) -> list[tuple[str, float, tuple[float, float, float, float]]]:
+        """Person/cat/dog detections as (label, score, (x, y, w, h)) in frame pixels."""
+        self._ensure_loaded()
+        if self.net is None or frame is None or frame.size == 0:
+            return []
+        if frame.ndim == 2:
+            frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+        padded, ratio = self._letterbox(frame)
+        blob = cv2.dnn.blobFromImage(padded, 1.0, swapRB=False, crop=False)
+        if self.num_threads > 0:
+            cv2.setNumThreads(self.num_threads)
+        self.net.setInput(blob)
+        output = np.array(self.net.forward())[0]
+        if output.shape[0] != self._grids.shape[0]:
+            logger.warning("Output YOLOX inatteso: %s", output.shape)
+            return []
+        boxes_xy = (output[:, :2] + self._grids) * self._strides
+        boxes_wh = np.exp(np.clip(output[:, 2:4], -10, 10)) * self._strides
+        objectness = output[:, 4:5]
+        wanted = list(self.COCO_LABELS)
+        scores = objectness * output[:, 5:][:, wanted]
+
+        detections = []
+        for column, class_id in enumerate(wanted):
+            class_scores = scores[:, column]
+            keep = np.where(class_scores >= self.min_score)[0]
+            if keep.size == 0:
+                continue
+            rects = []
+            for index in keep:
+                cx, cy = boxes_xy[index]
+                w, h = boxes_wh[index]
+                rects.append(
+                    [float((cx - w / 2) / ratio), float((cy - h / 2) / ratio),
+                     float(w / ratio), float(h / ratio)]
+                )
+            selected = cv2.dnn.NMSBoxes(
+                rects, class_scores[keep].tolist(), self.min_score, self.nms_threshold
+            )
+            kept_scores = class_scores[keep]
+            label = self.COCO_LABELS[class_id]
+            for pick in np.array(selected).reshape(-1):
+                detections.append((label, float(kept_scores[pick]), tuple(rects[pick])))
+        detections.sort(key=lambda item: item[1], reverse=True)
+        return detections
+
+    def classify(self, frame: np.ndarray) -> ClassificationResult | None:
+        start = time.perf_counter()
+        detections = self.detect(frame)
+        inference_ms = (time.perf_counter() - start) * 1000.0
+        self.last_detections = detections
+        if not detections:
+            return None
+        # Security first: if a person is confidently in the frame, the event is
+        # about a person even when the dog scores higher (owner walking the dog).
+        people = [d for d in detections if d[0] == "person"]
+        best = people[0] if people else detections[0]
+        return ClassificationResult(
+            label=best[0],
+            confidence=best[1],
+            model_name=self.model_name,
+            inference_ms=round(inference_ms, 2),
+        )
+
+
 class UnsupportedBackend:
     def __init__(self, backend_name: str):
         self.backend_name = backend_name
@@ -438,6 +581,8 @@ class PersonPetClassifier:
         # outside this set is reported as "ignored" so callers can skip notifying.
         # Defaults to both for backwards compatibility.
         self.targets = targets if targets is not None else {self.LABEL_PERSONA, self.LABEL_PET}
+        # Optional per-class thresholds (YOLOX); fall back to min_confidence.
+        self.class_min_confidence: dict[str, float] = {}
 
     @property
     def ready(self) -> bool:
@@ -486,6 +631,20 @@ class PersonPetClassifier:
                 input_width=int(config.get("classification_tm_input_width", 224)),
                 input_height=int(config.get("classification_tm_input_height", 224)),
             )
+        elif backend_name == "yolox":
+            backend = YoloxDetectorBackend(
+                model_path=str(
+                    config.get("classification_yolox_model_path", "models/yolox_tiny.onnx")
+                ),
+                input_size=int(config.get("classification_yolox_input_size", 416)),
+                # The backend keeps anything above the lower of the two class
+                # thresholds; the classifier then applies the per-class one.
+                min_score=min(
+                    float(config.get("classification_person_min_confidence", 0.35)),
+                    float(config.get("classification_pet_min_confidence", 0.15)),
+                ),
+                num_threads=int(config.get("classification_num_threads", 0) or 0),
+            )
         elif backend_name == "detection":
             backend = MobileNetSsdDetectorBackend(
                 model_path=str(
@@ -511,7 +670,7 @@ class PersonPetClassifier:
         else:
             backend = UnsupportedBackend("unknown")
 
-        return cls(
+        classifier = cls(
             enabled=enabled,
             backend_name=backend_name,
             min_confidence=min_confidence,
@@ -519,6 +678,15 @@ class PersonPetClassifier:
             backend=backend,
             targets=targets,
         )
+        if backend_name == "yolox":
+            # Measured on real events: people are unambiguous above 0.35, while
+            # the dog in IR night frames often scores 0.15-0.35 (see
+            # docs/rilevamento.md). One global threshold cannot serve both.
+            classifier.class_min_confidence = {
+                cls.LABEL_PERSONA: float(config.get("classification_person_min_confidence", 0.35)),
+                cls.LABEL_PET: float(config.get("classification_pet_min_confidence", 0.15)),
+            }
+        return classifier
 
     def classify(self, frame: np.ndarray) -> dict | None:
         if not self.enabled:
@@ -539,7 +707,8 @@ class PersonPetClassifier:
 
         normalized = self._normalize_label(result.label)
         is_person_or_pet = normalized in {self.LABEL_PERSONA, self.LABEL_PET}
-        confident = result.confidence >= self.min_confidence
+        threshold = self.class_min_confidence.get(normalized, self.min_confidence)
+        confident = result.confidence >= threshold
         in_targets = normalized in self.targets
         accepted = is_person_or_pet and confident and in_targets
 
