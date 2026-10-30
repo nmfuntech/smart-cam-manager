@@ -110,7 +110,7 @@ class WindowsWizardTests(unittest.TestCase):
 class CheckPrerequisitesTests(unittest.TestCase):
     def test_check_ffmpeg_missing(self):
         mod = __import__("scripts.check_prerequisites", fromlist=["check_ffmpeg"])
-        with mock.patch("shutil.which", return_value=None):
+        with mock.patch("blackframe.mediatools.find_tool", return_value=None):
             issues = mod.check_ffmpeg()
         self.assertTrue(any("ffmpeg" in item for item in issues))
 
