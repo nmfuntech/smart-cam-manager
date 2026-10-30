@@ -61,6 +61,7 @@ class SetupConfigTests(unittest.TestCase):
 
         self.assertIn('TAPO_CAMERA_NAME="Camera salotto"', content)
 
+    @unittest.skipIf(os.name == "nt", "POSIX file modes; Windows usa ACL (vedi fsperms)")
     def test_write_env_file_sets_private_permissions(self):
         env_path = Path(self.tmpdir) / ".env"
 

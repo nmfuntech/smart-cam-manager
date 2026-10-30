@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import shutil
 import sys
 from pathlib import Path
 
@@ -26,14 +25,16 @@ def _env_path(name: str, default: str) -> Path:
 
 def check_ffmpeg() -> list[str]:
     issues: list[str] = []
-    if shutil.which("ffmpeg") is None:
+    from blackframe.mediatools import ffmpeg_bin, ffprobe_bin
+
+    if ffmpeg_bin() is None:
         issues.append(
-            "ffmpeg non trovato in PATH: le clip MP4 restano in codec mp4v e non "
-            "si riproducono nel browser. Installa ffmpeg e riavvia il terminale."
+            "ffmpeg non trovato (né FFMPEG_BIN, né PATH, né percorsi winget/Chocolatey): "
+            "le clip MP4 restano in codec mp4v e non si riproducono nel browser."
         )
-    if shutil.which("ffprobe") is None:
+    if ffprobe_bin() is None:
         issues.append(
-            "ffprobe non trovato in PATH: la transcodifica/verifica clip non è disponibile."
+            "ffprobe non trovato: la transcodifica/verifica clip non è disponibile."
         )
     return issues
 

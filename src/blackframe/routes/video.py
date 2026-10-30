@@ -5,6 +5,7 @@ import time
 from flask import Blueprint, Response, abort, current_app, redirect, render_template, url_for
 
 from blackframe.auth import require_auth
+from blackframe.version import get_version
 
 video_bp = Blueprint("video", __name__)
 
@@ -173,7 +174,7 @@ def camera_snapshot(profile_id: str):
 
 @video_bp.route("/health")
 def health():
-    return {"status": "ok"}
+    return {"status": "ok", "version": get_version()}
 
 
 @video_bp.route("/stream_status")

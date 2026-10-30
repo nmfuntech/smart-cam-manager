@@ -25,6 +25,7 @@ from blackframe.automation import (
 from blackframe.classification import PersonPetClassifier
 from blackframe.continuous_recording import ContinuousRecorder
 from blackframe.envutil import env_float, env_int
+from blackframe.fsperms import IS_WINDOWS, harden_windows_paths
 from blackframe.motion_events import MotionEventStore
 from blackframe.notifications import TelegramNotifier
 from blackframe.recording import EventRecorder
@@ -729,6 +730,10 @@ def harden_captures_permissions() -> None:
         os.getenv("MOTION_SAVE_DIR", ""),
         os.getenv("CONTINUOUS_RECORD_DIR", ""),
     ]
+    if IS_WINDOWS:
+        # chmod is a no-op on Windows: restrict the directory ACLs instead.
+        harden_windows_paths([Path(c) for c in candidates if c])
+        return
     seen: set[Path] = set()
     for base in candidates:
         if not base:
@@ -764,6 +769,10 @@ def harden_private_runtime_files() -> None:
         Path("data/tinytuya.json"),
         Path(os.getenv("TELEGRAM_GUESTS_FILE", "data/telegram_guests.json")),
     }
+    if IS_WINDOWS:
+        # data/ holds the Fernet key, the guest list and the Tuya local keys.
+        harden_windows_paths([Path("data"), Path("logs"), *sorted(candidates)])
+        return
     for path in candidates:
         if not path.is_file():
             continue

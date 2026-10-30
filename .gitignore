@@ -6,6 +6,10 @@ __pycache__/
 
 # Runtime artifacts
 captures/
+logs/
+*.log
+# Stray temp files left by older setup runs (may contain .env secrets)
+/tmp*
 # Modelli scaricati con `make fetch-model` (non versionati, vedi scripts/fetch_model.py)
 models/
 data/camera_profiles.json

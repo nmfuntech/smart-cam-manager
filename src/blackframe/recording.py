@@ -8,7 +8,6 @@ detection loop so it cannot drop detection frames.
 """
 
 import logging
-import shutil
 import subprocess
 import sys
 import threading
@@ -17,6 +16,8 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+
+from blackframe.mediatools import ffmpeg_bin, ffprobe_bin
 
 logger = logging.getLogger(__name__)
 
@@ -38,12 +39,13 @@ def _writer_fourcc_tags() -> tuple[str, ...]:
 
 def _video_codec(path: "Path | str") -> str | None:
     """Return the video stream codec name (e.g. "h264", "mpeg4") via ffprobe, or None."""
-    if shutil.which("ffprobe") is None:
+    ffprobe = ffprobe_bin()
+    if ffprobe is None:
         return None
     try:
         result = subprocess.run(
             [
-                "ffprobe",
+                ffprobe,
                 "-v",
                 "error",
                 "-select_streams",
@@ -67,12 +69,13 @@ def _video_codec(path: "Path | str") -> str | None:
 
 def _video_duration_sec(path: "Path | str") -> float | None:
     """Return the media duration in seconds via ffprobe, or None if unavailable."""
-    if shutil.which("ffprobe") is None:
+    ffprobe = ffprobe_bin()
+    if ffprobe is None:
         return None
     try:
         result = subprocess.run(
             [
-                "ffprobe",
+                ffprobe,
                 "-v",
                 "error",
                 "-show_entries",
@@ -110,7 +113,8 @@ def finalize_recording(path: "Path | str", transcode: bool = False) -> None:
       continuous segments so the mini PC is not pinned re-encoding every segment.
     """
     path = Path(path)
-    if not path.is_file() or shutil.which("ffmpeg") is None:
+    ffmpeg = ffmpeg_bin()
+    if not path.is_file() or ffmpeg is None:
         return
 
     codec = _video_codec(path)
@@ -134,7 +138,7 @@ def finalize_recording(path: "Path | str", transcode: bool = False) -> None:
 
     try:
         result = subprocess.run(
-            ["ffmpeg", "-y", "-v", "error", "-i", str(path), *ffmpeg_args, str(tmp)],
+            [ffmpeg, "-y", "-v", "error", "-i", str(path), *ffmpeg_args, str(tmp)],
             capture_output=True,
             timeout=300,
         )

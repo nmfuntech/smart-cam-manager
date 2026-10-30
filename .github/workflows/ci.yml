@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "feat/**"]
+  pull_request:
+
+jobs:
+  test:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # windows-latest mirrors the production mini PC; ubuntu covers the
+        # Linux/Raspberry install path.
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install Poetry
+        run: pipx install "poetry>=2.1"
+      - name: Install dependencies
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            poetry install --with windows --no-interaction
+          else
+            poetry install --no-interaction
+          fi
+      - name: Lint
+        run: poetry run ruff check .
+      - name: Tests
+        run: poetry run python -m pytest -q -p no:cacheprovider

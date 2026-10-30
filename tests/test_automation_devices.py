@@ -1,3 +1,4 @@
+import os
 import shutil
 import tempfile
 import unittest
@@ -199,6 +200,7 @@ class DeviceRegistryTests(unittest.TestCase):
         self.assertNotIn("top-secret", raw)
         self.assertIn("enc::", raw)
 
+    @unittest.skipIf(os.name == "nt", "POSIX file modes; Windows usa ACL (vedi fsperms)")
     def test_store_file_is_private(self):
         self._save_lamp()
         mode = self.store.stat().st_mode & 0o777

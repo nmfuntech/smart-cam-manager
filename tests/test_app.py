@@ -1173,8 +1173,9 @@ class CameraProfileServiceTests(unittest.TestCase):
         self.assertIn("enc::", raw_text)
         self.assertEqual(loaded["password"], "super-secret-pass")
         self.assertEqual(loaded["onvif_password"], "super-secret-onvif")
-        self.assertEqual(self.store_path.stat().st_mode & 0o777, 0o600)
-        self.assertEqual(self.key_path.stat().st_mode & 0o777, 0o600)
+        if os.name != "nt":  # POSIX modes; Windows relies on directory ACLs
+            self.assertEqual(self.store_path.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(self.key_path.stat().st_mode & 0o777, 0o600)
 
     def test_edit_keeps_existing_password_when_blank(self):
         service = self._build_service()
@@ -1818,7 +1819,9 @@ class AppFactoryTests(unittest.TestCase):
         self.assertEqual(payload["profiles"][0]["host"], "192.168.1.88")
         self.assertNotIn("password", payload["profiles"][0])
         self.assertEqual(fake_runtime.last_updates["TAPO_HOST"], "192.168.1.88")
-        self.assertIn("captures/motion", fake_runtime.last_updates["MOTION_SAVE_DIR"])
+        self.assertIn(
+            "captures/motion", fake_runtime.last_updates["MOTION_SAVE_DIR"].replace("\\", "/")
+        )
         self.assertEqual(fake_runtime.last_updates["TAPO_ONVIF_PASSWORD"], "pass")
         self.assertEqual(fake_camera.last_updates["TAPO_PASSWORD"], "pass")
         self.assertEqual(fake_ptz.last_updates["TAPO_ONVIF_USERNAME"], "user")
@@ -1945,7 +1948,9 @@ class AppFactoryTests(unittest.TestCase):
         self.assertEqual(viewer_response.status_code, 200)
         self.assertEqual(training_response.status_code, 404)
         self.assertEqual(fake_camera.last_updates["TAPO_HOST"], "192.168.1.40")
-        self.assertIn("captures/motion", fake_motion.last_updates["MOTION_SAVE_DIR"])
+        self.assertIn(
+            "captures/motion", fake_motion.last_updates["MOTION_SAVE_DIR"].replace("\\", "/")
+        )
 
     def test_viewer_route_does_not_mutate_runtime_state(self):
         class FakeCamera:
@@ -2807,6 +2812,7 @@ class OnvifAndFootageHardeningTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 transport.load(url)
 
+    @unittest.skipIf(os.name == "nt", "POSIX file modes; Windows usa ACL (vedi fsperms)")
     def test_harden_captures_permissions_makes_footage_private(self):
         tmp = Path(tempfile.mkdtemp(prefix="footage-"))
         try:
@@ -2827,6 +2833,7 @@ class NetworkAndCredentialHardeningTests(unittest.TestCase):
     def setUp(self):
         self.app_module = load_app_module()
 
+    @unittest.skipIf(os.name == "nt", "POSIX file modes; Windows usa ACL (vedi fsperms)")
     def test_private_runtime_file_permissions_are_hardened(self):
         with tempfile.TemporaryDirectory() as tmp:
             guests = Path(tmp) / "guests.json"
@@ -3424,6 +3431,7 @@ class EventSummaryCacheTests(unittest.TestCase):
         self.assertIn("frames", events[0])
 
 
+@unittest.skipIf(os.name == "nt", "POSIX file modes; Windows usa ACL (vedi fsperms)")
 class HardenPermissionsMarkerTests(unittest.TestCase):
     def setUp(self):
         self.app_module = load_app_module()

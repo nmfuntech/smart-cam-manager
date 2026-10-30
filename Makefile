@@ -5,7 +5,7 @@ ifeq ($(MINIMAL),1)
 SETUP_FLAGS += --minimal
 endif
 
-.PHONY: setup install lock run serve hash-password fetch-model check-prerequisites install-windows install-ubuntu build-windows-installer test lint lint-fix audit clean bf help
+.PHONY: deploy deploy-status setup install lock run serve hash-password fetch-model check-prerequisites install-windows install-ubuntu build-windows-installer test lint lint-fix audit clean bf help
 
 help:
 	@echo "Targets:"
@@ -27,12 +27,20 @@ help:
 	@echo "  make audit         - SCA: scan dependencies for known CVEs (pip-audit)"
 	@echo "  make clean         - remove local caches and generated local state"
 	@echo "  make bf ARGS='...' - run the BLACKFRAME CLI (es: make bf ARGS='status')"
+	@echo "  make deploy        - test, push and safely update the Windows mini PC (REF=..., SKIP_TESTS=1)"
+	@echo "  make deploy-status - show commit, service state and /health on the mini PC"
 
 setup:
 	$(SETUP_PYTHON) scripts/setup_config.py $(SETUP_FLAGS)
 
 install:
 	poetry install
+
+deploy:
+	REF=$(REF) SKIP_TESTS=$(SKIP_TESTS) bash scripts/deploy_minipc.sh
+
+deploy-status:
+	bash scripts/deploy_minipc.sh status
 
 lock:
 	poetry lock
@@ -68,7 +76,7 @@ install-ubuntu:
 	bash scripts/install_ubuntu.sh $(ARGS)
 
 test:
-	$(PYTHON) -m pytest -v
+	$(PYTHON) -m pytest -q
 
 lint:
 	poetry run ruff check .

@@ -55,6 +55,7 @@ class AgentTranscriptStoreTests(unittest.TestCase):
         self.assertEqual(store.list(), [])
         self.assertEqual(self._store().list(), [])
 
+    @unittest.skipIf(os.name == "nt", "POSIX file modes; Windows usa ACL (vedi fsperms)")
     def test_file_written_private(self):
         self._store().append("user", "segreto in chiaro")
         mode = stat.S_IMODE(os.stat(self.path).st_mode)

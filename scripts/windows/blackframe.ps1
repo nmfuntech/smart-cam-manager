@@ -47,6 +47,7 @@ BLACKFRAME — comandi Windows (senza make)
   .\blackframe.ps1 env-example        Rigenera .env.windows-minipc.example
   .\blackframe.ps1 build-installer    Crea BLACKFRAME-Setup-x.y.z.exe (Inno Setup)
   .\blackframe.ps1 test                Esegue pytest
+  .\blackframe.ps1 update [ref]        Aggiorna in sicurezza (test, restart, rollback)
   .\blackframe.ps1 hash-password       Genera APP_ADMIN_PASSWORD_HASH
 
 Equivalenti diretti (se preferisci):
@@ -95,6 +96,12 @@ switch ($Command.ToLower()) {
     }
     "build-installer" {
         & "$Root\scripts\build_windows_installer.ps1" @Rest
+    }
+    "update" {
+        $updateRef = "main"
+        if ($Rest -and $Rest.Count -gt 0) { $updateRef = $Rest[0] }
+        & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "update.ps1") -Ref $updateRef
+        exit $LASTEXITCODE
     }
     "test" {
         $poetry = Find-Poetry
