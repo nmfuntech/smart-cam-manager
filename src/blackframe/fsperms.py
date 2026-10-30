@@ -36,23 +36,23 @@ _CREATE_NO_WINDOW = 0x08000000
 
 
 def _run_icacls(args: list[str]) -> bool:
+    # No pipes: on Windows, captured output makes subprocess spawn reader
+    # threads, and hardening must never be able to break startup.
     try:
         result = subprocess.run(
             ["icacls", *args],
-            capture_output=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
             timeout=60,
             check=False,
             creationflags=_CREATE_NO_WINDOW if IS_WINDOWS else 0,
         )
-    except (OSError, subprocess.SubprocessError) as exc:
+    except Exception as exc:  # best effort by design
         logger.warning("icacls non eseguibile: %s", exc)
         return False
     if result.returncode != 0:
-        logger.warning(
-            "icacls %s fallito: %s",
-            " ".join(args[:2]),
-            result.stderr.decode(errors="ignore").strip() or result.returncode,
-        )
+        logger.warning("icacls %s fallito (exit %s)", " ".join(args[:2]), result.returncode)
         return False
     return True
 

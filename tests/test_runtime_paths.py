@@ -38,10 +38,18 @@ class RuntimePathsTests(unittest.TestCase):
 
     def test_configure_runtime_uses_cwd_when_not_installed(self):
         with mock.patch.object(runtime_paths, "installed_data_home", return_value=None):
-            with mock.patch("dotenv.load_dotenv") as load_dotenv:
-                cwd = runtime_paths.configure_runtime_environment()
-                load_dotenv.assert_called_once()
-                self.assertEqual(cwd, Path.cwd())
+            with mock.patch.dict(os.environ, {"BLACKFRAME_SKIP_DOTENV": ""}):
+                with mock.patch("dotenv.load_dotenv") as load_dotenv:
+                    cwd = runtime_paths.configure_runtime_environment()
+                    load_dotenv.assert_called_once()
+                    self.assertEqual(cwd, Path.cwd())
+
+    def test_configure_runtime_skips_dotenv_in_tests(self):
+        with mock.patch.object(runtime_paths, "installed_data_home", return_value=None):
+            with mock.patch.dict(os.environ, {"BLACKFRAME_SKIP_DOTENV": "1"}):
+                with mock.patch("dotenv.load_dotenv") as load_dotenv:
+                    runtime_paths.configure_runtime_environment()
+                    load_dotenv.assert_not_called()
 
 
 if __name__ == "__main__":

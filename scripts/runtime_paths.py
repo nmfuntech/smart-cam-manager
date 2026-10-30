@@ -28,9 +28,11 @@ def configure_runtime_environment() -> Path:
     """Imposta cwd e .env per installazione Windows; altrimenti solo load_dotenv()."""
     from dotenv import load_dotenv
 
+    skip_dotenv = os.getenv("BLACKFRAME_SKIP_DOTENV", "").strip() == "1"  # set by tests
     home = installed_data_home()
     if home is None:
-        load_dotenv()
+        if not skip_dotenv:
+            load_dotenv()
         return Path.cwd()
 
     home.mkdir(parents=True, exist_ok=True)

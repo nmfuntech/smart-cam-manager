@@ -24,7 +24,7 @@ def get_version() -> str:
             sha = result.stdout.decode(errors="ignore").strip()
             if result.returncode == 0 and sha:
                 return sha[:12]
-        except (OSError, subprocess.SubprocessError):
+        except Exception:  # version is informational, never fatal
             pass
     try:
         from importlib.metadata import version

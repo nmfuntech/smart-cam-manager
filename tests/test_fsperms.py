@@ -27,10 +27,14 @@ class RestrictWindowsAclTests(unittest.TestCase):
 
     def test_failure_is_reported_not_raised(self):
         with mock.patch.object(
-            fsperms.subprocess, "run", return_value=mock.Mock(returncode=5, stderr=b"denied")
+            fsperms.subprocess, "run", return_value=mock.Mock(returncode=5)
         ):
             self.assertFalse(fsperms.restrict_windows_acl(Path("data")))
         with mock.patch.object(fsperms.subprocess, "run", side_effect=OSError("no icacls")):
+            self.assertFalse(fsperms.restrict_windows_acl(Path("data")))
+        with mock.patch.object(
+            fsperms.subprocess, "run", side_effect=RuntimeError("cannot join thread")
+        ):
             self.assertFalse(fsperms.restrict_windows_acl(Path("data")))
 
 
