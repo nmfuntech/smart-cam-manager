@@ -292,6 +292,17 @@ class MotionEventStore:
         meta = self._load_event_meta(event_dir)
         return bool(meta.get("notified"))
 
+    def mark_false_alarm(self, event_id: str) -> bool:
+        """Persist user feedback that an event was a false alarm."""
+        event_dir = self.find_event_dir(event_id)
+        if event_dir is None:
+            return False
+        self.save_event_meta(
+            event_dir.name,
+            {"feedback": {"false_alarm": True, "at": datetime.now().isoformat(timespec="seconds")}},
+        )
+        return True
+
     def mark_event_notified(self, event_id: str) -> None:
         """Persist that a notification was sent for this event."""
         event_dir = self.find_event_dir(event_id)

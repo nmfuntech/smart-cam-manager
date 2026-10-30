@@ -26,6 +26,8 @@ from blackframe.classification import PersonPetClassifier
 from blackframe.continuous_recording import ContinuousRecorder
 from blackframe.envutil import env_float, env_int
 from blackframe.fsperms import IS_WINDOWS, harden_windows_paths
+from blackframe.health import HealthMonitor
+from blackframe.modes import ModeManager, get_mode_manager, set_mode_manager
 from blackframe.motion_events import MotionEventStore
 from blackframe.notifications import TelegramNotifier
 from blackframe.recording import EventRecorder
@@ -596,6 +598,14 @@ class CameraStream:
         """
         with self.lock:
             if self.raw_frame is None:
+                return None, self.raw_sequence
+            return self.raw_frame.copy(), self.raw_sequence
+
+    def get_raw_frame_if_new(self, last_sequence: int) -> tuple:
+        """Like get_raw_frame_packet, but skips the full-frame copy when the
+        sequence has not advanced (returns ``(None, sequence)``)."""
+        with self.lock:
+            if self.raw_frame is None or self.raw_sequence == last_sequence:
                 return None, self.raw_sequence
             return self.raw_frame.copy(), self.raw_sequence
 
@@ -1753,7 +1763,9 @@ class MotionDetector:
         store = self._get_event_store()
         early_id, early_dir = store.open_event(early_ts)
         if early_id:
-            self.last_event_id = early_id
+            # Written on the worker thread, read by _run under the same lock.
+            with self.lock:
+                self.last_event_id = early_id
             logger.info("Evento movimento aperto: %s", early_id)
         self._start_event_recording(early_dir)
 
@@ -1813,11 +1825,15 @@ class MotionDetector:
                 self.recorder.stop_event()
 
     def _run(self) -> None:
+        last_sequence = -1
         while not self._stopped.is_set():
-            if not self.config["enabled"]:
+            disarmed = not get_mode_manager().allows_detection()
+            if not self.config["enabled"] or disarmed:
                 with self.lock:
                     self.motion_detected = False
-                    self.last_error = "Rilevamento movimento disabilitato"
+                    self.last_error = (
+                        "Sistema disarmato" if disarmed else "Rilevamento movimento disabilitato"
+                    )
                     self.trigger_streak = 0
                     self.clear_streak = 0
                 time.sleep(1)
@@ -1826,10 +1842,20 @@ class MotionDetector:
             if self._needs_subtractor_rebuild:
                 self._build_subtractor()
 
-            frame, _frame_sequence = self.camera_stream.get_raw_frame_packet()
+            get_if_new = getattr(self.camera_stream, "get_raw_frame_if_new", None)
+            if callable(get_if_new):
+                frame, frame_sequence = get_if_new(last_sequence)
+            else:
+                frame, frame_sequence = self.camera_stream.get_raw_frame_packet()
             if frame is None:
                 time.sleep(self.config["min_interval"])
                 continue
+            if frame_sequence == last_sequence:
+                # Same frame as last iteration (stream slower than the loop, or
+                # stalled): re-running MOG2 on it only burns CPU on the mini PC.
+                time.sleep(self.config["min_interval"])
+                continue
+            last_sequence = frame_sequence
 
             try:
                 motion_now, largest_usable_area, frame_area = self._detect_motion(frame)
@@ -2093,6 +2119,9 @@ class MotionDetector:
                 self.clear_streak = 0
                 self.last_capture_saved_at = None
 
+    def mark_false_alarm(self, event_id: str) -> bool:
+        return self._get_event_store().mark_false_alarm(event_id)
+
     def list_events(self, limit: int = 8, include_frames: bool = False) -> list[dict]:
         return self._get_event_store().list_events(
             limit=limit,
@@ -2305,6 +2334,7 @@ class AppServices:
     automation_engine: AutomationEngine | None = None
     automation_registry: DeviceRegistry | None = None
     agent: AgentService | None = None
+    health: HealthMonitor | None = None
     # Transcript della chat web /agente: esiste anche ad agente spento, così
     # la history resta leggibile dalla UI.
     agent_transcript: AgentTranscriptStore = field(default_factory=AgentTranscriptStore)
@@ -2534,7 +2564,23 @@ def build_services() -> AppServices:
     services.telegram_commands = TelegramCommandBot(services)
     services.telegram_commands.start()
     services.agent = _build_agent(services)
+    services.health = HealthMonitor(services)
+    _install_mode_manager(services)
+    services.health.start()
     return services
+
+
+def _install_mode_manager(services: AppServices) -> ModeManager:
+    """Mode manager whose scheduled switches are announced on Telegram."""
+
+    def on_change(previous: str, current: str, by: str) -> None:
+        if by == "programmazione" and services.health is not None:
+            services.health.send(f"🛡 Modalità cambiata da programmazione: {current}", silent=True)
+
+    manager = ModeManager(on_change=on_change)
+    set_mode_manager(manager)
+    manager.start()
+    return manager
 
 
 def create_app(services: AppServices | None = None) -> Flask:

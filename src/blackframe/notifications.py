@@ -9,21 +9,20 @@ import json
 import logging
 import threading
 import time
-import urllib.error
-import urllib.parse
-import urllib.request
-import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
 
+from blackframe import telegram_client
 from blackframe.envutil import env_bool as _env_bool
 from blackframe.envutil import env_str as _env
+from blackframe.modes import get_mode_manager
 from blackframe.service_layer import _write_private_text
+from blackframe.telegram_client import TELEGRAM_API_BASE  # noqa: F401  (re-export)
+from blackframe.timewindows import in_window, parse_window
 
 logger = logging.getLogger(__name__)
 
-TELEGRAM_API_BASE = "https://api.telegram.org"
 # Limite prudente per sendVideo (Telegram accetta ~50MB; oltre ~20MB spesso fallisce).
 DEFAULT_MAX_VIDEO_BYTES = 20 * 1024 * 1024
 
@@ -57,27 +56,8 @@ class _DeliveryJob:
 
 
 def telegram_api_call(token: str, method: str, params: dict | None = None) -> dict:
-    """Call a Telegram Bot API method. Returns the parsed JSON response.
-
-    On network/HTTP failure returns a dict shaped like the Telegram error
-    response: ``{"ok": False, "description": "..."}``.
-    """
-    url = f"{TELEGRAM_API_BASE}/bot{token}/{method}"
-    data = urllib.parse.urlencode(params or {}).encode() if params else None
-    req = urllib.request.Request(url, data=data, method="POST" if data else "GET")
-    try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8", "replace")
-        try:
-            return json.loads(body)
-        except json.JSONDecodeError:
-            return {"ok": False, "description": f"HTTP {exc.code}: {body}"}
-    except (urllib.error.URLError, OSError) as exc:
-        return {"ok": False, "description": f"Errore di rete: {exc}"}
-    except json.JSONDecodeError:
-        return {"ok": False, "description": "Risposta Telegram non valida"}
+    """Call a Telegram Bot API method (thin wrapper kept for existing callers)."""
+    return telegram_client.api_call(token, method, params)
 
 
 def discover_telegram_chats(token: str) -> tuple[bool, list[dict], str | None]:
@@ -110,35 +90,6 @@ def send_telegram_test(
     return False, result.get("description") or "Invio fallito"
 
 
-def _build_multipart(
-    fields: dict[str, str],
-    file_field: str | None,
-    file_path: str | None,
-    file_content_type: str = "image/jpeg",
-):
-    """Encode a multipart/form-data body. Returns (content_type, body_bytes)."""
-    boundary = f"----blackframe{uuid.uuid4().hex}"
-    crlf = b"\r\n"
-    body = bytearray()
-    for name, value in fields.items():
-        body += b"--" + boundary.encode() + crlf
-        body += f'Content-Disposition: form-data; name="{name}"'.encode() + crlf + crlf
-        body += str(value).encode("utf-8") + crlf
-    if file_field and file_path:
-        filename = Path(file_path).name
-        with open(file_path, "rb") as fh:
-            file_bytes = fh.read()
-        body += b"--" + boundary.encode() + crlf
-        body += (
-            f'Content-Disposition: form-data; name="{file_field}"; filename="{filename}"'
-        ).encode() + crlf
-        body += f"Content-Type: {file_content_type}".encode() + crlf + crlf
-        body += file_bytes + crlf
-    body += b"--" + boundary.encode() + b"--" + crlf
-    content_type = f"multipart/form-data; boundary={boundary}"
-    return content_type, bytes(body)
-
-
 class TelegramNotifier:
     def __init__(self, queue_path: Path | None = None) -> None:
         self._lock = threading.Lock()
@@ -147,6 +98,8 @@ class TelegramNotifier:
         self._pending: list[_DeliveryJob] = []
         self._worker_running = False
         self._queue_path = queue_path or _QUEUE_PATH
+        self._state_path = self._queue_path.with_name("notify_state.json")
+        self._load_mute_state()
         self._load_queue()
         # Se ci sono notifiche ripristinate dal disco, avvia subito il worker:
         # altrimenti resterebbero in coda finché un nuovo evento non lo accende.
@@ -314,10 +267,12 @@ class TelegramNotifier:
                     job.token, job.chat_id, job.event_id, job.class_label, job.video_path
                 ):
                     return True
-                # Invio video fallito (timeout/rete), non un problema di dimensione:
-                # provo il fallback a foto, ma il job verrà comunque ri-tentato se anche
-                # questo fallisce (il chiamante gestisce il retry).
-                reason = "invio video non riuscito"
+                # Invio video fallito per rete/timeout: ritenta il video con backoff.
+                # Il ripiego sulla foto di copertina avviene solo all'ultimo tentativo,
+                # altrimenti un blip di rete costava per sempre la clip.
+                if job.attempts + 1 < self._max_attempts():
+                    return False
+                reason = "invio video non riuscito dopo i tentativi"
             else:
                 reason = f"clip troppo grande ({size // (1024 * 1024)} MB)"
             cover = Path(job.video_path).parent / "cover.jpg"
@@ -335,6 +290,7 @@ class TelegramNotifier:
     def mute(self, seconds: float) -> float:
         """Silenzia temporaneamente le notifiche. seconds<=0 annulla la pausa.
 
+        La pausa sopravvive a un riavvio (salvata in notify_state.json).
         Ritorna i secondi residui di pausa (0 se non in pausa).
         """
         with self._lock:
@@ -342,7 +298,27 @@ class TelegramNotifier:
                 self._muted_until = time.monotonic() + seconds
             else:
                 self._muted_until = None
+        self._save_mute_state(seconds if seconds > 0 else 0)
         return self.muted_remaining()
+
+    def _save_mute_state(self, seconds: float) -> None:
+        until = time.time() + seconds if seconds > 0 else None
+        try:
+            _write_private_text(self._state_path, json.dumps({"muted_until": until}))
+        except Exception:
+            logger.warning("Stato pausa notifiche non salvato")
+
+    def _load_mute_state(self) -> None:
+        try:
+            data = json.loads(self._state_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return
+        until = data.get("muted_until") if isinstance(data, dict) else None
+        if isinstance(until, (int, float)):
+            remaining = until - time.time()
+            if remaining > 0:
+                self._muted_until = time.monotonic() + remaining
+                logger.info("Pausa notifiche ripristinata: %.0f min residui", remaining / 60)
 
     def muted_remaining(self) -> float:
         with self._lock:
@@ -383,6 +359,9 @@ class TelegramNotifier:
         """Accoda una notifica. ``on_delivered`` è chiamato solo dopo invio riuscito."""
         if not self.enabled or self._is_muted():
             return False
+        if not get_mode_manager().allows_alerts():
+            logger.info("Avviso %s non inviato: modalità %s", event_id, get_mode_manager().mode)
+            return False
         token = self._bot_token()
         chat_id = self._chat_id()
         if not token or not chat_id:
@@ -405,6 +384,39 @@ class TelegramNotifier:
             )
         )
 
+    def _alert_markup(self, event_id: str) -> dict | None:
+        """Bottoni rapidi sotto l'avviso (gestiti dal bot comandi Telegram)."""
+        if not _env_bool("NOTIFY_ALERT_BUTTONS", True):
+            return None
+        if not _env_bool("TELEGRAM_COMMANDS_ENABLED", False):
+            return None  # nessuno risponderebbe ai bottoni
+        base = event_id.replace("motion_event_", "").split("__", 1)[0]
+        return {
+            "inline_keyboard": [
+                [
+                    {"text": "📸 Live", "callback_data": "/snapshot"},
+                    {"text": "🎬 Clip 10s", "callback_data": "/clip 10"},
+                ],
+                [
+                    {"text": "🔕 Pausa 1h", "callback_data": "/mute 60"},
+                    {"text": "❌ Falso allarme", "callback_data": f"/false_alarm {base}"[:64]},
+                ],
+            ]
+        }
+
+    def _is_quiet(self, class_label: str | None) -> bool:
+        """Notifica silenziosa (senza suono) negli orari di quiete.
+
+        Le persone non vengono mai silenziate di default: le categorie che
+        diventano silenziose sono in NOTIFY_QUIET_CLASSES.
+        """
+        window = parse_window(_env("NOTIFY_QUIET_HOURS"))
+        if window is None or not in_window(window):
+            return False
+        raw = _env("NOTIFY_QUIET_CLASSES", "animale_domestico,movimento")
+        quiet_classes = {item.strip() for item in raw.split(",") if item.strip()}
+        return (class_label or "movimento") in quiet_classes
+
     # Emoji per categoria classificata, mostrata accanto all'etichetta.
     _CLASS_EMOJI = {"persona": "🧍", "animale_domestico": "🐕"}
 
@@ -425,29 +437,24 @@ class TelegramNotifier:
         image_path: str | None,
     ) -> bool:
         caption = self._caption(event_id, class_label)
+        options = {
+            "reply_markup": self._alert_markup(event_id),
+            "silent": self._is_quiet(class_label),
+        }
         try:
             if image_path and Path(image_path).is_file():
-                url = f"{TELEGRAM_API_BASE}/bot{token}/sendPhoto"
-                content_type, body = _build_multipart(
-                    {"chat_id": chat_id, "caption": caption},
-                    "photo",
-                    image_path,
+                result = telegram_client.send_photo(
+                    token, chat_id, path=image_path, caption=caption, timeout=30, **options
                 )
             else:
-                url = f"{TELEGRAM_API_BASE}/bot{token}/sendMessage"
-                content_type, body = _build_multipart(
-                    {"chat_id": chat_id, "text": caption}, None, None
-                )
-            req = urllib.request.Request(url, data=body, method="POST")
-            req.add_header("Content-Type", content_type)
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                resp.read()
-            return True
-        except (urllib.error.URLError, OSError) as exc:
-            logger.warning("Invio Telegram fallito: %s", exc)
+                result = telegram_client.send_message(token, chat_id, caption, **options)
         except Exception:
             logger.exception("Errore inatteso invio Telegram")
-        return False
+            return False
+        if not result.get("ok"):
+            logger.warning("Invio Telegram fallito: %s", result.get("description"))
+            return False
+        return True
 
     def notify_event_video(
         self,
@@ -458,6 +465,9 @@ class TelegramNotifier:
     ) -> bool:
         """Accoda un video. ``on_delivered`` è chiamato solo dopo invio riuscito."""
         if not self.enabled or self._is_muted():
+            return False
+        if not get_mode_manager().allows_alerts():
+            logger.info("Avviso %s non inviato: modalità %s", event_id, get_mode_manager().mode)
             return False
         token = self._bot_token()
         chat_id = self._chat_id()
@@ -490,30 +500,24 @@ class TelegramNotifier:
         video_path: str | None,
     ) -> bool:
         caption = self._caption(event_id, class_label)
+        options = {
+            "reply_markup": self._alert_markup(event_id),
+            "silent": self._is_quiet(class_label),
+        }
         try:
             if video_path and Path(video_path).is_file():
-                url = f"{TELEGRAM_API_BASE}/bot{token}/sendVideo"
-                content_type, body = _build_multipart(
-                    {"chat_id": chat_id, "caption": caption, "supports_streaming": "true"},
-                    "video",
-                    video_path,
-                    file_content_type="video/mp4",
+                result = telegram_client.send_video(
+                    token, chat_id, path=video_path, caption=caption, **options
                 )
             else:
-                url = f"{TELEGRAM_API_BASE}/bot{token}/sendMessage"
-                content_type, body = _build_multipart(
-                    {"chat_id": chat_id, "text": caption}, None, None
-                )
-            req = urllib.request.Request(url, data=body, method="POST")
-            req.add_header("Content-Type", content_type)
-            with urllib.request.urlopen(req, timeout=120) as resp:
-                resp.read()
-            return True
-        except (urllib.error.URLError, OSError) as exc:
-            logger.warning("Invio video Telegram fallito: %s", exc)
+                result = telegram_client.send_message(token, chat_id, caption, **options)
         except Exception:
             logger.exception("Errore inatteso invio video Telegram")
-        return False
+            return False
+        if not result.get("ok"):
+            logger.warning("Invio video Telegram fallito: %s", result.get("description"))
+            return False
+        return True
 
     def status(self) -> dict:
         return {

@@ -22,11 +22,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Literal
 
-from blackframe.agent.entities import resolve_entity
 from blackframe.automation.rules_store import load_rules_raw, set_rule_enabled
 from blackframe.capabilities import ActionRequest, build_services_registry
 from blackframe.envutil import env_bool as _env_bool
 from blackframe.envutil import env_int
+from blackframe.modes import MODE_LABELS, get_mode_manager
 
 from .naming import normalize_identifier, resolve_name
 
@@ -205,9 +205,11 @@ def _status(services: Any, arg: str | None) -> CommandResult:
     moving = "sì" if motion.get("motion_detected") else "no"
     ptz_state = "ok" if ptz.get("available") else (ptz.get("error") or "non disponibile")
 
+    mode = get_mode_manager().mode
     lines = [
         "🎥 BLACKFRAME — Stato",
         "",
+        MODE_LABELS.get(mode, mode).split(" — ")[0] + f" (modalità {mode})",
         f"📹 Stream: {stream_state}",
         f"👁 Movimento: {'attivo' if motion_on else 'spento'} (in corso: {moving})",
     ]
@@ -236,6 +238,12 @@ def _status(services: Any, arg: str | None) -> CommandResult:
             f"🕓 Ultimo evento: {motion.get('last_motion_at') or '-'}",
         ]
     )
+    health = getattr(services, "health", None)
+    if health is not None:
+        warnings = health.active_warnings()
+        if warnings:
+            lines.append("")
+            lines.extend(f"⚠️ {item}" for item in warnings)
     return CommandResult(text="\n".join(lines))
 
 
@@ -355,6 +363,38 @@ def _resume(services: Any, arg: str | None) -> CommandResult:
     return CommandResult(text="Notifiche riprese.")
 
 
+# --- handler: modalità / feedback ------------------------------------------------
+
+
+def _mode_status(services: Any, arg: str | None) -> CommandResult:
+    return CommandResult(text=get_mode_manager().describe())
+
+
+def _make_set_mode(mode: str) -> Callable[[Any, str | None], CommandResult]:
+    def handler(services: Any, arg: str | None) -> CommandResult:
+        manager = get_mode_manager()
+        changed = manager.set_mode(mode, by="comando")
+        prefix = "" if changed else "Già in questa modalità.\n"
+        return CommandResult(text=prefix + MODE_LABELS[mode])
+
+    return handler
+
+
+def _false_alarm(services: Any, arg: str | None) -> CommandResult:
+    """Segna un evento come falso allarme (feedback per tarare il rilevamento)."""
+    base = (arg or "").strip().replace("motion_event_", "").split("__", 1)[0]
+    if not re.fullmatch(r"\d{8}_\d{6}", base):
+        return CommandResult(text="Uso: /false_alarm <AAAAMMGG_HHMMSS>")
+    motions = [services.motion, *(rt.motion for rt in getattr(services, "monitors", {}).values())]
+    for motion in motions:
+        mark = getattr(motion, "mark_false_alarm", None)
+        if callable(mark) and mark(base):
+            return CommandResult(
+                text="Segnato come falso allarme. Grazie: serve a tarare zone e soglie."
+            )
+    return CommandResult(text="Evento non trovato (forse già eliminato dalla retention).")
+
+
 # --- handler: PTZ --------------------------------------------------------------
 
 
@@ -408,6 +448,10 @@ def _inventory(services: Any, arg: str | None) -> CommandResult:
 
 
 def _entity_status(services: Any, arg: str | None) -> CommandResult:
+    # Local import: blackframe.agent imports this registry, so a module-level
+    # import would be circular whenever commands is imported first.
+    from blackframe.agent.entities import resolve_entity
+
     registry = build_services_registry(services)
     resolution = resolve_entity(
         arg or "",
@@ -567,6 +611,37 @@ COMMAND_REGISTRY: dict[str, CommandSpec] = {
         _entity_status,
     ),
     "config": CommandSpec("config", "Riepilogo impostazioni", None, True, _config),
+    "modalita": CommandSpec(
+        "modalita", "Mostra la modalità di sicurezza attuale", None, True, _mode_status
+    ),
+    "arma": CommandSpec(
+        "arma",
+        "Modalità armato: rilevamento, registrazione e avvisi attivi",
+        None,
+        False,
+        _make_set_mode("armato"),
+    ),
+    "casa": CommandSpec(
+        "casa",
+        "Modalità casa: rilevamento e registrazione attivi, avvisi silenziati",
+        None,
+        False,
+        _make_set_mode("casa"),
+    ),
+    "disarma": CommandSpec(
+        "disarma",
+        "Modalità disarmato: rilevamento in pausa",
+        None,
+        False,
+        _make_set_mode("disarmato"),
+    ),
+    "false_alarm": CommandSpec(
+        "false_alarm",
+        "Segna un evento di movimento come falso allarme",
+        CommandArgSpec(kind="name", required=True),
+        False,
+        _false_alarm,
+    ),
     "snapshot": CommandSpec("snapshot", "Invia foto live", None, True, _snapshot),
     "latest": CommandSpec("latest", "Invia ultimo evento", None, True, _latest),
     "events": CommandSpec("events", "Elenca ultimi eventi", None, True, _events),

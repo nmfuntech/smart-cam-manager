@@ -12,20 +12,17 @@ import logging
 import tempfile
 import threading
 import time
-import urllib.error
-import urllib.parse
-import urllib.request
-import uuid
 from collections import defaultdict, deque
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
+from blackframe import audit, telegram_client, telegram_invites
 from blackframe.commands import COMMAND_REGISTRY, CommandResult
 from blackframe.commands import execute as registry_execute
 from blackframe.envutil import env_bool as _env_bool
 from blackframe.envutil import env_float, env_int
 from blackframe.envutil import env_str as _env
-from blackframe.notifications import TELEGRAM_API_BASE, telegram_api_call
 from blackframe.recording import record_clip
 from blackframe.service_layer import _write_private_text
 
@@ -47,6 +44,15 @@ HELP_SECTIONS = [
             ("clip", "Registra e invia clip (default 10s)"),
             ("latest", "Invia ultimo evento"),
             ("events", "Elenca ultimi eventi"),
+        ],
+    ),
+    (
+        "🛡 Modalità",
+        [
+            ("modalita", "Mostra la modalità attuale"),
+            ("arma", "Armato: rilevamento e avvisi"),
+            ("casa", "Casa: registra ma senza avvisi"),
+            ("disarma", "Disarmato: rilevamento in pausa"),
         ],
     ),
     (
@@ -115,9 +121,11 @@ COMMANDS.append(("help", "Mostra comandi"))
 # Le etichette non sono /comandi, quindi vengono mappate al comando reale.
 MAIN_KEYBOARD_ROWS = [
     ["📊 Stato", "📸 Snapshot"],
-    ["🎬 Clip", "📋 Menu"],
+    ["🎬 Clip", "🛡 Modalità"],
+    ["📋 Menu"],
 ]
 REPLY_BUTTON_COMMANDS = {
+    "🛡 Modalità": "/modalita",
     "📊 Stato": "/status",
     "📸 Snapshot": "/snapshot",
     "🎬 Clip": "/clip",
@@ -126,6 +134,7 @@ REPLY_BUTTON_COMMANDS = {
 
 # Inline keyboard del /menu: tutto il resto. callback_data = comando (+ args).
 INLINE_MENU_ROWS = [
+    [("🛡 Armato", "/arma"), ("🏠 Casa", "/casa"), ("💤 Disarmato", "/disarma")],
     [("👁 Movimento ON", "/motion_on"), ("👁 Movimento OFF", "/motion_off")],
     [
         ("🎚 Sens. bassa", "/sensitivity bassa"),
@@ -181,52 +190,56 @@ def _inline_menu_markup() -> str:
     )
 
 
-def _build_multipart_bytes(
-    fields: dict[str, str],
-    file_field: str,
-    filename: str,
-    file_bytes: bytes,
-    file_content_type: str,
-) -> tuple[str, bytes]:
-    boundary = f"----blackframe{uuid.uuid4().hex}"
-    crlf = b"\r\n"
-    body = bytearray()
-    for name, value in fields.items():
-        body += b"--" + boundary.encode() + crlf
-        body += f'Content-Disposition: form-data; name="{name}"'.encode() + crlf + crlf
-        body += str(value).encode("utf-8") + crlf
-    body += b"--" + boundary.encode() + crlf
-    body += (
-        f'Content-Disposition: form-data; name="{file_field}"; filename="{filename}"'
-    ).encode() + crlf
-    body += f"Content-Type: {file_content_type}".encode() + crlf + crlf
-    body += file_bytes + crlf
-    body += b"--" + boundary.encode() + b"--" + crlf
-    return f"multipart/form-data; boundary={boundary}", bytes(body)
-
-
 def _bot_api_call(
     token: str,
     method: str,
     params: dict | None = None,
     timeout: float = 15,
 ) -> dict:
-    url = f"{TELEGRAM_API_BASE}/bot{token}/{method}"
-    data = urllib.parse.urlencode(params or {}).encode() if params else None
-    req = urllib.request.Request(url, data=data, method="POST" if data else "GET")
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8", "replace")
-        try:
-            return json.loads(body)
-        except json.JSONDecodeError:
-            return {"ok": False, "description": f"HTTP {exc.code}: {body}"}
-    except (urllib.error.URLError, OSError) as exc:
-        return {"ok": False, "description": f"Errore di rete: {exc}"}
-    except json.JSONDecodeError:
-        return {"ok": False, "description": "Risposta Telegram non valida"}
+    return telegram_client.api_call(token, method, params, timeout=timeout)
+
+
+class PerChatExecutor:
+    """Run updates concurrently across chats, in order within each chat.
+
+    The polling loop used to execute every command inline: one slow call (an
+    LLM answer on the mini PC, a photo upload on a bad connection, an ONVIF
+    timeout) froze the bot for everyone. Now the loop only enqueues; a small
+    pool drains one queue per chat, so order is kept per user.
+    """
+
+    def __init__(self, max_workers: int = 3, max_queue: int = 20) -> None:
+        self._pool = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="tg-cmd")
+        self._lock = threading.Lock()
+        self._queues: dict[str, deque] = {}
+        self._active: set[str] = set()
+        self._max_queue = max_queue
+
+    def submit(self, key: str, fn) -> bool:
+        with self._lock:
+            queue = self._queues.setdefault(key, deque())
+            if len(queue) >= self._max_queue:
+                return False
+            queue.append(fn)
+            if key in self._active:
+                return True
+            self._active.add(key)
+        self._pool.submit(self._drain, key)
+        return True
+
+    def _drain(self, key: str) -> None:
+        while True:
+            with self._lock:
+                queue = self._queues.get(key)
+                if not queue:
+                    self._active.discard(key)
+                    self._queues.pop(key, None)
+                    return
+                fn = queue.popleft()
+            try:
+                fn()
+            except Exception:
+                logger.exception("Gestione comando Telegram fallita")
 
 
 class TelegramCommandBot:
@@ -242,6 +255,10 @@ class TelegramCommandBot:
         self._bot_username_token: str = ""
         self._clip_lock = threading.Lock()
         self._active_clips = 0
+        self._executor: PerChatExecutor | None = None
+        # The Telegram user behind the update being handled (per worker thread):
+        # in group chats the chat id alone does not identify who pressed a button.
+        self._ctx = threading.local()
 
     @property
     def enabled(self) -> bool:
@@ -280,7 +297,35 @@ class TelegramCommandBot:
         return ids
 
     def _is_admin(self, chat_id: str) -> bool:
-        return chat_id in self._admin_chat_ids()
+        if chat_id not in self._admin_chat_ids():
+            return False
+        if not chat_id.startswith("-"):
+            return True  # private chat: chat id == user id
+        # Group chat: every member shares the chat id. When admin user ids are
+        # configured, only those users get admin rights inside the group.
+        admin_users = {
+            item.strip()
+            for item in _env("TELEGRAM_ADMIN_USER_IDS").split(",")
+            if item.strip()
+        }
+        if not admin_users:
+            return True
+        return str(getattr(self._ctx, "user_id", "") or "") in admin_users
+
+    def _guest_role(self, chat_id: str) -> str | None:
+        with self._guests_lock:
+            info = self._load_guests().get(chat_id)
+        if info is None:
+            return None
+        role = info.get("role") or telegram_invites.ROLE_FAMILY
+        return role if role in telegram_invites.ROLES else telegram_invites.ROLE_FAMILY
+
+    def _actor(self, chat_id: str) -> str:
+        if chat_id in self._admin_chat_ids():
+            return f"admin:{chat_id}"
+        with self._guests_lock:
+            info = self._load_guests().get(chat_id) or {}
+        return f"{info.get('name') or 'ospite'}:{chat_id}"
 
     def configured(self) -> bool:
         return bool(self.enabled and self._token() and self._allowed_chat_ids())
@@ -317,6 +362,11 @@ class TelegramCommandBot:
     def _run(self) -> None:
         self._forget_pending_updates()
         self._set_commands_menu()
+        if self._executor is None:
+            self._executor = PerChatExecutor(
+                max_workers=_env_int("TELEGRAM_COMMANDS_WORKERS", 3, 1)
+            )
+        failures = 0
         while not self._stop.is_set():
             token = self._token()
             if not self.enabled or not token or not self._allowed_chat_ids():
@@ -339,24 +389,42 @@ class TelegramCommandBot:
 
             result = _bot_api_call(token, "getUpdates", params, timeout=poll_timeout + 5)
             if not result.get("ok"):
+                failures += 1
+                # Exponential backoff (5 s .. 60 s): during an internet outage
+                # the old fixed 5 s retry wrote thousands of identical warnings.
+                delay = min(60.0, 5.0 * (2 ** min(failures - 1, 4)))
                 logger.warning(
                     "Polling comandi Telegram fallito: %s",
                     result.get("description") or "errore sconosciuto",
                 )
-                time.sleep(5)
+                self._stop.wait(delay)
                 continue
+            if failures:
+                logger.info("Polling comandi Telegram ripristinato dopo %d errori", failures)
+                failures = 0
 
             for update in result.get("result", []):
                 update_id = update.get("update_id")
                 if isinstance(update_id, int):
                     self._last_update_id = update_id
-                try:
-                    if "callback_query" in update:
-                        self._handle_callback(update["callback_query"])
-                    else:
-                        self._handle_update(update)
-                except Exception:
-                    logger.exception("Gestione comando Telegram fallita")
+                self._submit_update(update)
+
+    def _submit_update(self, update: dict) -> None:
+        if "callback_query" in update:
+            chat = ((update["callback_query"].get("message") or {}).get("chat")) or {}
+            handler = self._handle_callback
+            payload = update["callback_query"]
+        else:
+            chat = (update.get("message") or {}).get("chat") or {}
+            handler = self._handle_update
+            payload = update
+        key = str(chat.get("id", "")) or "unknown"
+        executor = self._executor
+        if executor is None:
+            handler(payload)
+            return
+        if not executor.submit(key, lambda: handler(payload)):
+            logger.warning("Coda comandi piena per la chat %s: update scartato", key)
 
     def _forget_pending_updates(self) -> None:
         token = self._token()
@@ -405,11 +473,11 @@ class TelegramCommandBot:
         chat = message.get("chat") or {}
         chat_id = str(chat.get("id", "")).strip()
         raw_text = str(message.get("text") or "").strip()
+        self._ctx.user_id = str((message.get("from") or {}).get("id", "") or "")
 
         if chat_id not in self._allowed_chat_ids():
-            invite_code = _env("TELEGRAM_INVITE_CODE")
-            if raw_text.startswith("/start") and invite_code:
-                self._handle_invite(chat_id, message, raw_text, invite_code)
+            if raw_text.startswith("/start"):
+                self._handle_invite(chat_id, message, raw_text)
             return
         if not self._allow_command(chat_id):
             self._send_message(chat_id, "Troppi comandi. Riprova tra poco.")
@@ -486,6 +554,10 @@ class TelegramCommandBot:
         proposal = agent.confirm(args[0], "telegram", chat_id)
         if not proposal.ok:
             return proposal.error or "Richiesta non valida o scaduta."
+        audit.record(
+            "telegram-agente", self._actor(chat_id), getattr(proposal, "command", None) or "agent",
+            getattr(proposal, "arg", None),
+        )
         response = self._send_result(chat_id, proposal.result) if proposal.result else None
         return f"🤖 {response}" if response else None
 
@@ -499,6 +571,7 @@ class TelegramCommandBot:
         chat = (callback.get("message") or {}).get("chat") or {}
         chat_id = str(chat.get("id", "")).strip()
         callback_id = str(callback.get("id", ""))
+        self._ctx.user_id = str((callback.get("from") or {}).get("id", "") or "")
         if chat_id not in self._allowed_chat_ids():
             self._answer_callback(callback_id)
             return
@@ -516,13 +589,27 @@ class TelegramCommandBot:
         if response:
             self._send_message(chat_id, response)
 
-    def _handle_invite(self, chat_id: str, message: dict, text: str, invite_code: str) -> None:
+    def _legacy_invite_code(self) -> str:
+        # The static TELEGRAM_INVITE_CODE never expires and can be reused: it is
+        # ignored unless explicitly re-enabled. /invite mints one-time codes.
+        if not _env_bool("TELEGRAM_INVITE_LEGACY", False):
+            return ""
+        return _env("TELEGRAM_INVITE_CODE")
+
+    def _handle_invite(self, chat_id: str, message: dict, text: str) -> None:
         parts = text.split(maxsplit=1)
         provided = parts[1].strip() if len(parts) > 1 else ""
-        if not provided or not hmac.compare_digest(provided, invite_code):
+        legacy = self._legacy_invite_code()
+        if not legacy and telegram_invites.pending_count() == 0:
+            return  # no invite open: stay silent towards unknown chats
+        role = telegram_invites.redeem_invite(provided) if provided else None
+        if role is None and legacy and provided and hmac.compare_digest(provided, legacy):
+            role = telegram_invites.ROLE_FAMILY
+        if role is None:
             self._send_message(
-                chat_id, "Codice non valido. Chiedi il link di invito a un amministratore."
+                chat_id, "Codice non valido o scaduto. Chiedi un nuovo invito a un amministratore."
             )
+            audit.record("telegram", f"sconosciuto:{chat_id}", "invite_rejected", ok=False)
             return
         sender = message.get("from") or {}
         name = (
@@ -532,12 +619,17 @@ class TelegramCommandBot:
         )
         with self._guests_lock:
             guests = self._load_guests()
-            guests[chat_id] = {"name": name, "joined_at": time.strftime("%Y-%m-%dT%H:%M:%S")}
+            guests[chat_id] = {
+                "name": name,
+                "role": role,
+                "joined_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            }
             self._save_guests(guests)
-        logger.info("Nuovo ospite Telegram autorizzato: %s (%s)", name, chat_id)
+        logger.info("Nuovo ospite Telegram autorizzato: %s (%s, %s)", name, chat_id, role)
+        audit.record("telegram", f"{name}:{chat_id}", "invite_accepted", role)
         self._send_message(
             chat_id,
-            f"Benvenuto, {name}! Sei autorizzato. Usa /help per i comandi.",
+            f"Benvenuto, {name}! Sei autorizzato ({role}). Usa /help per i comandi.",
             reply_markup=_reply_keyboard_markup(),
         )
 
@@ -581,13 +673,18 @@ class TelegramCommandBot:
         if command == "/clip":
             if not self._is_admin(chat_id):
                 return "Comando riservato agli amministratori."
+            audit.record("telegram", self._actor(chat_id), "clip", args[0] if args else None)
             return self._send_clip(args, chat_id)
         if command == "/agent_confirm":
             return self._agent_confirm(args, chat_id)
         if command == "/agent_cancel":
             return self._agent_cancel(args, chat_id)
         if command == "/invite":
-            return self._invite_info(chat_id)
+            return self._invite_info(chat_id, args)
+        if command == "/log":
+            if not self._is_admin(chat_id):
+                return "Comando riservato agli amministratori."
+            return audit.format_recent(15)
         if command == "/guests":
             return self._guests_text(chat_id)
         if command == "/revoke":
@@ -600,10 +697,19 @@ class TelegramCommandBot:
         spec = COMMAND_REGISTRY.get(name)
         if spec is None or spec.handler is None:
             return "Comando non riconosciuto. Usa /help."
-        if not self._is_admin(chat_id) and not spec.readonly:
+        is_admin = self._is_admin(chat_id)
+        if not is_admin and not spec.readonly:
             return "Comando riservato agli amministratori."
+        if (
+            not is_admin
+            and name in telegram_invites.MEDIA_COMMANDS
+            and self._guest_role(chat_id) == telegram_invites.ROLE_STATUS
+        ):
+            return "Il tuo accesso non include immagini della camera."
         arg = args[0] if args else None
         result = registry_execute(name, arg, self.services)
+        if not spec.readonly:
+            audit.record("telegram", self._actor(chat_id), name, arg)
         return self._send_result(chat_id, result)
 
     def _send_result(self, chat_id: str, result: CommandResult) -> str | None:
@@ -625,9 +731,10 @@ class TelegramCommandBot:
         if chat_id and self._is_admin(chat_id):
             lines.append("")
             lines.append("🔑 Admin")
-            lines.append("/invite - Link di invito familiare")
+            lines.append("/invite [stato] - Invito monouso (24h); 'stato' = senza immagini")
             lines.append("/guests - Lista ospiti autorizzati")
             lines.append("/revoke <chat_id> - Rimuovi ospite")
+            lines.append("/log - Ultime azioni eseguite")
         return "\n".join(lines)
 
     def _send_clip(self, args: list[str], chat_id: str) -> str | None:
@@ -689,15 +796,25 @@ class TelegramCommandBot:
             with self._clip_lock:
                 self._active_clips = max(0, self._active_clips - 1)
 
-    def _invite_info(self, chat_id: str) -> str:
+    def _invite_info(self, chat_id: str, args: list[str] | None = None) -> str:
         if not self._is_admin(chat_id):
             return "Comando riservato agli amministratori."
-        code = _env("TELEGRAM_INVITE_CODE")
-        if not code:
-            return "Inviti disabilitati (TELEGRAM_INVITE_CODE non impostato)."
-        lines = [f"Codice di invito: {code}"]
+        role = telegram_invites.ROLE_FAMILY
+        if args and args[0].strip().lower() in telegram_invites.ROLES:
+            role = args[0].strip().lower()
+        code, expires_at = telegram_invites.create_invite(role, created_by=chat_id)
+        audit.record("telegram", self._actor(chat_id), "invite_created", role)
+        expiry = time.strftime("%d/%m %H:%M", time.localtime(expires_at))
+        lines = [
+            f"Invito monouso ({role}), valido fino al {expiry}:",
+            f"Codice: {code}",
+        ]
         if self._bot_username:
             lines.append(f"Link: https://t.me/{self._bot_username}?start={code}")
+        if role == telegram_invites.ROLE_FAMILY:
+            lines.append("Accesso: comandi di sola lettura, incluse foto della camera.")
+        else:
+            lines.append("Accesso: solo stato ed elenco eventi, nessuna immagine.")
         return "\n".join(lines)
 
     def _guests_text(self, chat_id: str) -> str:
@@ -711,7 +828,8 @@ class TelegramCommandBot:
         for gid, info in guests.items():
             name = info.get("name") or gid
             joined = info.get("joined_at") or "?"
-            lines.append(f"- {name} ({gid}) — {joined}")
+            role = info.get("role") or telegram_invites.ROLE_FAMILY
+            lines.append(f"- {name} ({gid}) — {role} — {joined}")
         return "\n".join(lines)
 
     def _revoke_guest(self, args: list[str], chat_id: str) -> str:
@@ -727,15 +845,13 @@ class TelegramCommandBot:
             name = guests.pop(target_id).get("name") or target_id
             self._save_guests(guests)
         logger.info("Ospite Telegram rimosso: %s (%s)", name, target_id)
+        audit.record("telegram", self._actor(chat_id), "revoke", target_id)
         return f"Ospite {name} ({target_id}) rimosso."
 
     def _send_message(
         self, chat_id: str, text: str, reply_markup: str | None = None
     ) -> tuple[bool, str | None]:
-        params = {"chat_id": chat_id, "text": text}
-        if reply_markup is not None:
-            params["reply_markup"] = reply_markup
-        result = telegram_api_call(self._token(), "sendMessage", params)
+        result = telegram_client.send_message(self._token(), chat_id, text, reply_markup)
         if result.get("ok"):
             return True, None
         return False, result.get("description") or "Invio fallito"
@@ -746,9 +862,10 @@ class TelegramCommandBot:
         photo: bytes,
         caption: str,
     ) -> tuple[bool, str | None]:
-        return self._send_media_bytes(
-            "sendPhoto", "photo", "blackframe.jpg", "image/jpeg", chat_id, photo, caption
-        )
+        result = telegram_client.send_photo(self._token(), chat_id, data=photo, caption=caption)
+        if result.get("ok"):
+            return True, None
+        return False, result.get("description") or "Invio fallito"
 
     def _send_video_bytes(
         self,
@@ -756,45 +873,9 @@ class TelegramCommandBot:
         video: bytes,
         caption: str,
     ) -> tuple[bool, str | None]:
-        return self._send_media_bytes(
-            "sendVideo", "video", "clip.mp4", "video/mp4", chat_id, video, caption, timeout=60
+        result = telegram_client.send_video(
+            self._token(), chat_id, data=video, caption=caption, timeout=60
         )
-
-    def _send_media_bytes(
-        self,
-        method: str,
-        field: str,
-        filename: str,
-        media_content_type: str,
-        chat_id: str,
-        data: bytes,
-        caption: str,
-        timeout: float = 20,
-    ) -> tuple[bool, str | None]:
-        url = f"{TELEGRAM_API_BASE}/bot{self._token()}/{method}"
-        content_type, body = _build_multipart_bytes(
-            {"chat_id": chat_id, "caption": caption},
-            field,
-            filename,
-            data,
-            media_content_type,
-        )
-        req = urllib.request.Request(url, data=body, method="POST")
-        req.add_header("Content-Type", content_type)
-        try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                payload = json.loads(resp.read().decode("utf-8"))
-        except urllib.error.HTTPError as exc:
-            body_text = exc.read().decode("utf-8", "replace")
-            try:
-                payload = json.loads(body_text)
-            except json.JSONDecodeError:
-                return False, f"HTTP {exc.code}: {body_text}"
-        except (urllib.error.URLError, OSError) as exc:
-            return False, f"Errore di rete: {exc}"
-        except json.JSONDecodeError:
-            return False, "Risposta Telegram non valida"
-
-        if payload.get("ok"):
+        if result.get("ok"):
             return True, None
-        return False, payload.get("description") or "Invio fallito"
+        return False, result.get("description") or "Invio fallito"

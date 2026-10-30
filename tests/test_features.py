@@ -2,6 +2,7 @@ import json
 import os
 import shutil
 import tempfile
+import threading
 import time
 import unittest
 from datetime import datetime
@@ -752,7 +753,11 @@ class TelegramCommandBotTests(unittest.TestCase):
     def test_invite_wrong_code_sends_error(self):
         with tempfile.TemporaryDirectory() as tmp:
             guests_file = os.path.join(tmp, "guests.json")
-            bot, _ = self._bot(TELEGRAM_INVITE_CODE="secret", TELEGRAM_GUESTS_FILE=guests_file)
+            bot, _ = self._bot(
+                TELEGRAM_INVITE_CODE="secret",
+                TELEGRAM_INVITE_LEGACY="true",
+                TELEGRAM_GUESTS_FILE=guests_file,
+            )
 
             self._handle(bot, "/start wrong", chat_id=999)
 
@@ -769,7 +774,11 @@ class TelegramCommandBotTests(unittest.TestCase):
     def test_invite_correct_code_adds_guest_and_welcomes(self):
         with tempfile.TemporaryDirectory() as tmp:
             guests_file = os.path.join(tmp, "guests.json")
-            bot, _ = self._bot(TELEGRAM_INVITE_CODE="secret", TELEGRAM_GUESTS_FILE=guests_file)
+            bot, _ = self._bot(
+                TELEGRAM_INVITE_CODE="secret",
+                TELEGRAM_INVITE_LEGACY="true",
+                TELEGRAM_GUESTS_FILE=guests_file,
+            )
             update = {
                 "update_id": 1,
                 "message": {
@@ -801,14 +810,96 @@ class TelegramCommandBotTests(unittest.TestCase):
             self.assertIn("riservato", self.messages[1][1])
             self.assertEqual(services.runtime_config.updates, [])
 
-    def test_admin_invite_shows_code(self):
+    def test_admin_invite_mints_one_time_code(self):
         bot, _ = self._bot(TELEGRAM_INVITE_CODE="mysecret")
         bot._bot_username = "BlackframeBot"
 
         self._handle(bot, "/invite")
 
-        self.assertIn("mysecret", self.messages[0][1])
-        self.assertIn("t.me/BlackframeBot", self.messages[0][1])
+        text = self.messages[0][1]
+        self.assertNotIn("mysecret", text)  # the static code is never shown
+        self.assertIn("monouso", text)
+        self.assertIn("t.me/BlackframeBot?start=", text)
+
+    def test_one_time_invite_works_once_and_sets_role(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            guests_file = os.path.join(tmp, "guests.json")
+            bot, _ = self._bot(TELEGRAM_GUESTS_FILE=guests_file)
+            self._handle(bot, "/invite stato")
+            code = self.messages[0][1].split("Codice: ", 1)[1].split()[0]
+
+            self._handle(bot, f"/start {code}", chat_id=777)
+            self._handle(bot, f"/start {code}", chat_id=888)
+
+            data = json.loads(Path(guests_file).read_text())
+            self.assertEqual(data["777"]["role"], "stato")
+            self.assertNotIn("888", data)
+            # No invite left open: the bot stays silent towards unknown chats.
+            self.assertFalse([m for m in self.messages if m[0] == "888"])
+
+    def test_status_role_guest_gets_no_camera_images(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            guests_file = os.path.join(tmp, "guests.json")
+            Path(guests_file).write_text(
+                json.dumps({"456": {"name": "Zia", "role": "stato", "joined_at": "x"}})
+            )
+            bot, _ = self._bot(TELEGRAM_GUESTS_FILE=guests_file)
+
+            self._handle(bot, "/snapshot", chat_id=456)
+            self._handle(bot, "/status", chat_id=456)
+
+            self.assertEqual(self.photos, [])
+            self.assertIn("immagini", self.messages[0][1])
+            self.assertIn("BLACKFRAME", self.messages[1][1])
+
+    def test_legacy_static_code_is_ignored_by_default(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            guests_file = os.path.join(tmp, "guests.json")
+            bot, _ = self._bot(TELEGRAM_INVITE_CODE="secret", TELEGRAM_GUESTS_FILE=guests_file)
+
+            self._handle(bot, "/start secret", chat_id=999)
+
+            self.assertEqual(self.messages, [])
+            self.assertFalse(os.path.exists(guests_file))
+
+    def test_group_admin_actions_require_listed_user(self):
+        bot, services = self._bot(
+            NOTIFY_TELEGRAM_CHAT_ID="-100500", TELEGRAM_ADMIN_USER_IDS="42"
+        )
+        group = {"id": -100500, "type": "supergroup"}
+
+        bot._handle_update(
+            {"message": {"chat": group, "from": {"id": 7}, "text": "/motion_off"}}
+        )
+        bot._handle_update(
+            {"message": {"chat": group, "from": {"id": 42}, "text": "/motion_off"}}
+        )
+
+        self.assertIn("riservato", self.messages[0][1])
+        self.assertEqual(len(services.runtime_config.updates), 1)
+
+    def test_mode_commands_and_audit_log(self):
+        bot, _ = self._bot()
+
+        self._handle(bot, "/casa")
+        self._handle(bot, "/modalita")
+        self._handle(bot, "/log")
+
+        self.assertIn("Casa", self.messages[0][1])
+        self.assertIn("Casa", self.messages[1][1])
+        self.assertIn("casa", self.messages[2][1])
+
+    def test_per_chat_executor_keeps_order_per_chat(self):
+        from blackframe.telegram_commands import PerChatExecutor
+
+        executor = PerChatExecutor(max_workers=2)
+        seen: list[str] = []
+        done = threading.Event()
+        for index in range(5):
+            executor.submit("a", lambda i=index: seen.append(f"a{i}"))
+        executor.submit("a", done.set)
+        self.assertTrue(done.wait(2))
+        self.assertEqual(seen, [f"a{i}" for i in range(5)])
 
     def test_non_admin_invite_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
