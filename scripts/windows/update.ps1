@@ -137,13 +137,24 @@ function Set-WindowsServiceLogging {
     $logFile = Join-Path $LogDir "blackframe.log"
     $current = (& $nssm get $ServiceName AppStdout 2>$null | Out-String).Trim() -replace "`0", ""
     if ($current -ne $logFile) {
-        Write-Step "NSSM: logs -> $logFile (online rotation at 10 MB)"
+        Write-Step "NSSM: logs -> $logFile (rotated at each start)"
         & $nssm set $ServiceName AppStdout $logFile | Out-Null
         & $nssm set $ServiceName AppStderr $logFile | Out-Null
     }
+    # Rotation only at service start. NEVER enable AppRotateOnline: in NSSM 2.24
+    # the online rotation thread can stop draining the app's stdout pipe, which
+    # blocks every log call (and so every HTTP request) and then hangs the
+    # service in STOP_PENDING. Size-based rotation is done by the app instead.
     & $nssm set $ServiceName AppRotateFiles 1 | Out-Null
-    & $nssm set $ServiceName AppRotateOnline 1 | Out-Null
+    & $nssm set $ServiceName AppRotateOnline 0 | Out-Null
     & $nssm set $ServiceName AppRotateBytes 10485760 | Out-Null
+
+    # The app writes its own size-rotated log; NSSM's file keeps warnings/crashes.
+    $envFile = Join-Path $RepoDir ".env"
+    if ((Test-Path $envFile) -and -not (Select-String -Path $envFile -Pattern '^\s*LOG_FILE\s*=' -Quiet)) {
+        Add-Content -Path $envFile -Value "`r`n# Log applicativo con rotazione per dimensione (aggiunto da update.ps1)`r`nLOG_FILE=logs/app.log" -Encoding ASCII
+        Write-Step "Added LOG_FILE=logs/app.log to .env"
+    }
 
     # One-off: move the logs that NSSM used to rotate into the repo root.
     $archive = Join-Path $LogDir "archive"
@@ -184,12 +195,21 @@ function Wait-Healthy([string]$ExpectedSha) {
 }
 
 function Restart-App {
+    # Bounded restart: a hung stop must not hang the deploy (and the rollback).
     $nssm = Find-Nssm
     if ($nssm) {
-        & $nssm restart $ServiceName 2>&1 | Out-Null
+        $proc = Start-Process -FilePath $nssm -ArgumentList @("restart", $ServiceName) -PassThru -WindowStyle Hidden
     } else {
-        Restart-Service -Name $ServiceName -Force
+        $proc = Start-Process -FilePath "sc.exe" -ArgumentList @("stop", $ServiceName) -PassThru -WindowStyle Hidden
     }
+    if (-not $proc.WaitForExit(90000)) {
+        Write-Step "WARN: restart command still running after 90 s (service stuck stopping?)"
+        $svc = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+        if ($svc) { Write-Step ("Service status: {0}" -f $svc.Status) }
+        return $false
+    }
+    if (-not $nssm) { Start-Service -Name $ServiceName -ErrorAction SilentlyContinue }
+    return $true
 }
 
 function Checkout-Ref([string]$Target) {
@@ -256,8 +276,8 @@ if ($NoRestart) {
 }
 
 Write-Step "Restarting service $ServiceName"
-Restart-App
-if (Wait-Healthy $newSha) {
+$restarted = Restart-App
+if ($restarted -and (Wait-Healthy $newSha)) {
     Write-Step "=== Update OK: $prevSha -> $newSha ==="
     exit 0
 }
@@ -265,8 +285,8 @@ if (Wait-Healthy $newSha) {
 Write-Step "Service not healthy within $HealthTimeoutSec s: ROLLBACK to $prevRef"
 Invoke-Native git @("checkout", "-q", $prevRef) -AllowFail | Out-Null
 try { Sync-Dependencies $newSha $prevSha } catch { Write-Step "WARN: dependency restore failed: $_" }
-Restart-App
-if (Wait-Healthy $prevSha) {
+$restarted = Restart-App
+if ($restarted -and (Wait-Healthy $prevSha)) {
     Write-Step "Rollback OK: running $prevSha again"
 } else {
     Write-Step "CRITICAL: service not healthy after rollback, check logs\blackframe.log"

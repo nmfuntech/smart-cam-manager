@@ -13,6 +13,13 @@ Start with:  poetry run gunicorn -c deploy/gunicorn.conf.py blackframe.app:app
 
 import os
 
+from dotenv import load_dotenv
+
+from blackframe.logging_setup import configure_logging
+
+load_dotenv()
+configure_logging()  # inherited by the (single) forked worker
+
 bind = f"{os.getenv('APP_BIND_HOST', '127.0.0.1')}:{os.getenv('APP_PORT', '8000')}"
 workers = 1
 threads = int(os.getenv("APP_GUNICORN_THREADS", "8"))

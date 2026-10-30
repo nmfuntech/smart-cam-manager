@@ -29,6 +29,10 @@ from scripts.runtime_paths import configure_runtime_environment  # noqa: E402
 
 configure_runtime_environment()
 
+from blackframe.logging_setup import configure_logging  # noqa: E402
+
+configure_logging()
+
 from waitress import serve  # noqa: E402
 
 from blackframe.app import app  # noqa: E402
