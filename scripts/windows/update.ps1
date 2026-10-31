@@ -108,6 +108,22 @@ function Sync-Dependencies([string]$FromSha, [string]$ToSha) {
     Invoke-Native $poetry @("sync", "--with", "windows", "--no-interaction", "--no-ansi") | Out-Null
 }
 
+function Ensure-Models {
+    # The YOLOX detector model is not in git: download it when the backend
+    # needs it (checksum-verified by scripts\fetch_model.py).
+    $envFile = Join-Path $RepoDir ".env"
+    $backend = ""
+    if (Test-Path $envFile) {
+        $line = Select-String -Path $envFile -Pattern '^\s*CLASSIFICATION_BACKEND\s*=\s*(\S+)' | Select-Object -First 1
+        if ($line) { $backend = $line.Matches[0].Groups[1].Value.Trim().ToLower() }
+    }
+    if ($backend -ne "yolox") { return }
+    if (Test-Path (Join-Path $RepoDir "models\yolox_tiny.onnx")) { return }
+    Write-Step "Downloading YOLOX-Tiny model"
+    $python = Join-Path $RepoDir ".venv\Scripts\python.exe"
+    Invoke-Native $python @("scripts\fetch_model.py") -AllowFail | Out-Null
+}
+
 function Invoke-TestsInWorktree([string]$Sha) {
     $worktree = Join-Path (Split-Path $RepoDir -Parent) "bf-deploy-test"
     if (Test-Path $worktree) {
@@ -253,6 +269,7 @@ try {
 
     Checkout-Ref $Ref
     Sync-Dependencies $prevSha $newSha
+    Ensure-Models
 
     if (-not $SkipTests) {
         if (-not (Invoke-TestsInWorktree $newSha)) {

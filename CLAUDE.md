@@ -13,6 +13,8 @@ make install   # install dependencies via Poetry
 make run       # start app on localhost:8000 (Flask dev)
 make serve     # production server (gunicorn, single worker — see Gotchas)
 make test      # run full test suite (pytest)
+make deploy    # lint+test, push, safe update of the Windows mini PC (see docs/deploy.md)
+make deploy-status
 ```
 
 Run a single test or class:
@@ -27,23 +29,31 @@ Lint: `make lint` (ruff, line-length 100, rules E/F/I); `make lint-fix` to autof
 
 Application code lives in **`src/blackframe/`** (Poetry package). User-editable config (e.g. automation rules YAML) is under **`config/`**. Runtime data: `data/`, `models/`, `captures/`. Tooling: `scripts/`, `deploy/`, `tests/`.
 
-Entrypoints: `make run` / `poetry run python -m blackframe` (dev), `make serve` / `blackframe.app:app` (prod).
+Entrypoints: `make run` / `poetry run python -m blackframe` (dev), `make serve` / `blackframe.app:app` (prod, gunicorn) and `deploy/serve_waitress.py` (Windows service). `blackframe.app` is the **composition root** (`AppServices`, `build_services`, `create_app`); `app` is a lazy PEP 562 module attribute, so importing the module builds nothing. Building blocks live in `camera_stream.py`, `ptz.py`, `motion_detector.py`, `retention.py`, `hardening.py`, `env_config.py` and are re-exported from `blackframe.app` (tests patch names there — keep composition functions in app.py).
 
-Three daemon threads run alongside Flask (all use `threading.Lock`, no `RLock`):
+Logging is configured only by entrypoints (`logging_setup.configure_logging`): timestamps, optional size-rotated `LOG_FILE`, and a `RepeatFilter` that collapses repeated warnings.
 
-- **CameraStream** — reads RTSP frames with exponential backoff reconnection. Sets global FFMPEG env vars at module load that affect all `cv2.VideoCapture` calls in the process.
+Main daemon threads alongside Flask (plus HealthMonitor, mode schedule, Telegram polling/workers, notification and retention workers) (all use `threading.Lock`, no `RLock`):
+
+- **CameraStream** — reads RTSP frames with exponential backoff reconnection. The motion loop uses `get_raw_frame_if_new(seq)` to skip already-processed frames without copying them. Sets global FFMPEG env vars at module load that affect all `cv2.VideoCapture` calls in the process.
 - **MotionDetector** — MOG2 background subtraction (`cv2.createBackgroundSubtractorMOG2`). Interdependent state: `trigger_streak`, `clear_streak`, `motion_detected`, `processed_frames` (+ `warmup_frames` from config). Threshold changes set `_needs_subtractor_rebuild`; the subtractor is rebuilt on the detection thread (MOG2 is stateful), not inside `apply_runtime_config`.
 - **PTZController** — lazy-initialized on first move request via ONVIF. Errors are not surfaced until a button is pressed.
+
+**Health & modes**: `HealthMonitor` (`health.py`) sends Telegram alerts for camera offline/online, stalled detection, low disk, startup, a daily silent digest (`DIGEST_TIME`) and pings `HEARTBEAT_URL`; undelivered alerts are retried. `ModeManager` (`modes.py`, process-wide via `get_mode_manager()`) gates detection (`disarmato` pauses it) and alerts (`casa` mutes them) without rewriting env toggles; `MODE_SCHEDULE` switches daily. State in `data/mode.json`.
+
+**Detection**: default backend `yolox` (YOLOX-Tiny ONNX via cv2.dnn, per-class thresholds `CLASSIFICATION_PERSON/PET_MIN_CONFIDENCE`; person wins over pet). Benchmark and tuning in `docs/rilevamento.md`, tool `scripts/benchmark_detectors.py`. Motion exclusion zones (`motion_zones.py`, `data/motion_zones.json`, normalized polygons) mask MOG2 foreground; edited in Impostazioni → Zone. False-alarm feedback is stored in event `meta.json` (`feedback`).
 
 **Motion events** are saved as directories: `captures/motion/motion_event_YYYYMMDD_HHMMSS/`. On close the directory is renamed with a `__<category>` suffix (`persona`/`animale_domestico`/`movimento`) once the clip is finalized — the `motion_event_` prefix is preserved so globbing/retention keep working. An event is hidden from the API until a `.closed` marker file exists. Stale events are auto-closed based on file `mtime`. The API exposes a resolved `category` field (from `classification.detected_label`, then `class_label`, then the dir suffix) used by the UI event filter.
 
 **Multi-camera**: the active profile uses the main camera/motion pair; profiles flagged `monitored` run background `CameraRuntime` workers. `/camera/<id>` renders a live-only view for a monitor via `/cam/<id>/...` endpoints; non-active, non-monitored profiles redirect to the active camera.
 
-**Classification** is pluggable (Protocol): `local` (ONNX via `cv2.dnn`), `teachable_machine` (ONNX, `[-1,1]` input normalization), `cloud` (HTTP POST, http(s)-only SSRF guard). No model ships in-repo (`models/` absent), so `local` returns `unavailable` until a model is provided. Classification and notification dedup are persisted per-event in `meta.json` (`classification` / `notified` keys) and survive restarts; in-memory sets are only a fast path.
+**Classification** is pluggable (Protocol): `yolox` (default, see Detection above), `detection` (legacy MobileNet-SSD), `local` (ONNX via `cv2.dnn`), `teachable_machine` (ONNX, `[-1,1]` input normalization), `cloud` (HTTP POST, http(s)-only SSRF guard). No model ships in-repo (`models/` is gitignored): `make fetch-model` downloads YOLOX-Tiny (the Windows deploy does it automatically); a missing model makes the classifier report `unavailable`. Classification and notification dedup are persisted per-event in `meta.json` (`classification` / `notified` keys) and survive restarts; in-memory sets are only a fast path.
 
 **Camera profiles** are stored as encrypted JSON (`data/camera_profiles.json`). Passwords use Fernet encryption with a fallback key chain: env var → keyfile → generated.
 
 **RuntimeConfigManager** writes validated changes back to `.env`. Sensitive fields are redacted from the public API; `internal_only` fields reject API updates.
+
+**Telegram**: all Bot API calls go through `telegram_client.py`. The command bot executes updates on a per-chat worker pool (`PerChatExecutor`), uses one-time expiring invites with roles (`telegram_invites.py`; the static `TELEGRAM_INVITE_CODE` is ignored unless `TELEGRAM_INVITE_LEGACY=true`), checks `from.id` in group chats (`TELEGRAM_ADMIN_USER_IDS`) and writes state-changing actions to `audit.py` (`/log`). Alerts carry inline buttons and respect `NOTIFY_QUIET_HOURS` (people are never silenced by default).
 
 **Command registry** (`src/blackframe/commands/registry.py`) is the single source of truth for the ~35 channel-agnostic actions (status, toggles, PTZ, device/rule control...) usable by both Telegram slash commands and the agentic layer: `COMMAND_REGISTRY` maps a name to a `CommandSpec` (description, arg schema, `readonly` flag, handler). `TelegramCommandBot._dispatch` looks up commands here instead of hardcoding per-command branches; only Telegram-only meta commands (`start`/`help`/`menu`/`invite`/`guests`/`revoke`) and the async `clip` recording stay outside the registry.
 
@@ -63,6 +73,8 @@ All configuration is via environment variables. Required at startup: `APP_ADMIN_
 - `save_frame()` returns `(None, None)` when `save_frames=false`; callers must check.
 - Recordings: OpenCV often lacks an H.264 encoder and writes mp4v (not browser-playable). `finalize_recording(transcode=True)` re-encodes event & on-demand clips to H.264 via ffmpeg; continuous segments stay mp4v. Needs `ffmpeg`/`ffprobe` on PATH.
 - **Windows**: OpenCV's bundled OpenH264 DLL is broken (`Incorrect library version loaded`); recording uses mp4v only and relies on ffmpeg transcode for browser playback. Install ffmpeg with `winget install Gyan.FFmpeg` or `.\blackframe.ps1 install-windows`. Run `.\blackframe.ps1 check-prerequisites` after install. On Windows use `blackframe.ps1` instead of `make`. Build installer: `.\blackframe.ps1 build-installer` (requires Inno Setup 6).
+- Tests are hermetic (`tests/conftest.py`): `.env` is not loaded (`BLACKFRAME_SKIP_DOTENV=1`), the session runs from a temp cwd with a copy of `config/`, and invite/audit/mode/health files go to per-test temp paths. Never make a test depend on the developer's `.env` or `data/`.
+- Windows: `chmod` is a no-op; `fsperms.py` restricts directory ACLs once (marker file). The NSSM service runs as LocalSystem (no user PATH: `mediatools.py` finds ffmpeg in winget/Chocolatey paths or `FFMPEG_BIN`). Never enable NSSM `AppRotateOnline` (hangs the service in STOP_PENDING). `.ps1` files must stay ASCII (PowerShell 5.1).
 - No database — all state is files + in-memory in one process. Gunicorn must stay single-worker (`deploy/gunicorn.conf.py`); extra workers spawn duplicate camera/motion threads and corrupt event dirs.
 
 ## Git
