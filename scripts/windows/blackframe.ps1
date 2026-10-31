@@ -35,7 +35,7 @@ function Invoke-PoetryPython {
 
 function Show-Help {
     Write-Host @"
-BLACKFRAME — comandi Windows (senza make)
+BLACKFRAME - comandi Windows (senza make)
 
   .\blackframe.ps1 install-windows     Wizard installazione completa mini PC
   .\blackframe.ps1 install             poetry install --with windows
@@ -48,6 +48,7 @@ BLACKFRAME — comandi Windows (senza make)
   .\blackframe.ps1 build-installer    Crea BLACKFRAME-Setup-x.y.z.exe (Inno Setup)
   .\blackframe.ps1 test                Esegue pytest
   .\blackframe.ps1 update [ref]        Aggiorna in sicurezza (test, restart, rollback)
+  .\blackframe.ps1 recover             Sblocca il servizio bloccato e lo riavvia (admin)
   .\blackframe.ps1 hash-password       Genera APP_ADMIN_PASSWORD_HASH
 
 Equivalenti diretti (se preferisci):
@@ -101,6 +102,10 @@ switch ($Command.ToLower()) {
         $updateRef = "main"
         if ($Rest -and $Rest.Count -gt 0) { $updateRef = $Rest[0] }
         & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "update.ps1") -Ref $updateRef
+        exit $LASTEXITCODE
+    }
+    "recover" {
+        & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "recover-service.ps1")
         exit $LASTEXITCODE
     }
     "test" {

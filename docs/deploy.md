@@ -73,14 +73,14 @@ Succede se NSSM smette di rispondere (è capitato con `AppRotateOnline=1`).
 Da un prompt **amministratore** sul mini PC:
 
 ```powershell
-sc queryex BLACKFRAME            # annota il PID
-taskkill /F /PID <PID>
-C:\Tools\nssm\nssm.exe set BLACKFRAME AppRotateOnline 0
-C:\Tools\nssm\nssm.exe start BLACKFRAME
+cd C:\Users\nikom\smart-cam-manager
+.\blackframe.ps1 recover
 ```
 
-In alternativa basta riavviare il mini PC. Dopo, dal Mac, `make deploy`
-riporta il servizio sulla versione voluta con tutti i controlli.
+Lo script termina il processo NSSM bloccato, disattiva la rotazione online,
+riavvia il servizio e controlla `/health`; se la versione corrente non torna
+sana, rimette l'ultima versione sicura conosciuta. In alternativa basta
+riavviare il mini PC.
 
 ## Aggiornare a mano sul mini PC
 

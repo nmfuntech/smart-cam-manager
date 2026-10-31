@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 import threading
 import time
 from logging.handlers import RotatingFileHandler
@@ -83,6 +84,14 @@ def configure_logging(force: bool = False) -> None:
         burst=int(os.getenv("LOG_REPEAT_BURST", "3") or 3),
         window_sec=float(os.getenv("LOG_REPEAT_WINDOW_SEC", "600") or 600),
     )
+
+    # Under the Windows service, stdout/stderr are files encoded as cp1252:
+    # an emoji in a message must degrade to an escape, not a logging error.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="backslashreplace")
+        except (AttributeError, ValueError):
+            pass
 
     root = logging.getLogger()
     for handler in list(root.handlers):
