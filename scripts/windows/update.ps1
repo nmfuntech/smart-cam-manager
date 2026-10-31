@@ -109,15 +109,41 @@ function Sync-Dependencies([string]$FromSha, [string]$ToSha) {
     Invoke-Native $poetry @("sync", "--with", "windows", "--no-interaction", "--no-ansi") | Out-Null
 }
 
+function Get-DotEnvValue([string]$Name) {
+    $envFile = Join-Path $RepoDir ".env"
+    if (-not (Test-Path $envFile)) { return "" }
+    $line = Select-String -Path $envFile -Pattern ('^\s*' + $Name + '\s*=\s*(\S+)') | Select-Object -First 1
+    if ($line) { return $line.Matches[0].Groups[1].Value.Trim() }
+    return ""
+}
+
+function Ensure-EmbeddingModel {
+    # The agent's semantic classifier needs its embedding model in Ollama.
+    # Pull it through the REST API (the ollama CLI may not be on PATH).
+    if ((Get-DotEnvValue "AGENT_ENABLED").ToLower() -ne "true") { return }
+    if ((Get-DotEnvValue "AGENT_SEMANTIC").ToLower() -eq "false") { return }
+    $model = Get-DotEnvValue "AGENT_EMBED_MODEL"
+    if (-not $model) { return }
+    $base = Get-DotEnvValue "AGENT_OLLAMA_URL"
+    if (-not $base) { $base = "http://127.0.0.1:11434" }
+    try {
+        $tags = Invoke-RestMethod -Uri ($base.TrimEnd('/') + "/api/tags") -TimeoutSec 10
+        $names = @($tags.models | ForEach-Object { $_.name })
+        if ($names -contains $model -or $names -contains ($model + ":latest")) { return }
+        Write-Step "Pulling embedding model $model into Ollama"
+        $body = @{ model = $model; stream = $false } | ConvertTo-Json
+        Invoke-RestMethod -Uri ($base.TrimEnd('/') + "/api/pull") -Method Post -Body $body `
+            -ContentType "application/json" -TimeoutSec 1800 | Out-Null
+    } catch {
+        Write-Step "WARNING: embedding model $model not pulled: $($_.Exception.Message) (agent falls back to the LLM)"
+    }
+}
+
 function Ensure-Models {
     # The YOLOX detector model is not in git: download it when the backend
     # needs it (checksum-verified by scripts\fetch_model.py).
-    $envFile = Join-Path $RepoDir ".env"
-    $backend = ""
-    if (Test-Path $envFile) {
-        $line = Select-String -Path $envFile -Pattern '^\s*CLASSIFICATION_BACKEND\s*=\s*(\S+)' | Select-Object -First 1
-        if ($line) { $backend = $line.Matches[0].Groups[1].Value.Trim().ToLower() }
-    }
+    Ensure-EmbeddingModel
+    $backend = (Get-DotEnvValue "CLASSIFICATION_BACKEND").ToLower()
     if ($backend -ne "yolox") { return }
     if (Test-Path (Join-Path $RepoDir "models\yolox_tiny.onnx")) { return }
     Write-Step "Downloading YOLOX-Tiny model"

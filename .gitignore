@@ -29,6 +29,11 @@ data/health_state.json
 data/audit.jsonl*
 data/telegram_invites.json
 data/motion_zones.json
+# Agente: messaggi liberi registrati, vettori degli esempi, test da messaggi reali.
+data/agent_messages.jsonl
+data/agent_messages.tmp
+data/agent_embed_cache.npz
+data/agent_real_cases.json
 # Smart-home automation: registry device cifrato + keyfile Fernet dedicato.
 data/tuya_devices.json
 data/.tuya_devices.key

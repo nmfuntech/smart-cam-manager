@@ -14,7 +14,7 @@ import json
 import logging
 import threading
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from blackframe.automation.rules_store import load_rules_raw
@@ -26,7 +26,7 @@ from blackframe.envutil import env_float as _env_float
 from blackframe.envutil import env_int as _env_int
 from blackframe.envutil import env_str as _env
 
-from . import fastpath, ollama_client
+from . import fastpath, ollama_client, semantic
 from .catalog import (
     NO_COMMAND_SENTINEL,
     build_example_messages,
@@ -131,6 +131,8 @@ class Suggestion:
     command: str | None = None
     arg: str | None = None
     reason: str | None = None
+    # Which layer decided: fastpath, semantic, cache, gate, llm (for the log).
+    source: str = ""
 
 
 def _known_names(services: Any) -> dict[str, list[str]]:
@@ -181,15 +183,8 @@ def _capability_exclude(services: Any, base: frozenset[str]) -> frozenset[str]:
     return frozenset(excluded)
 
 
-def _should_consult_llm(
-    text: str, known_names: dict[str, list[str]], last_turn: LastTurn | None
-) -> bool:
-    """Cheap fail-closed domain gate before expensive inference."""
-    normalized = normalize_identifier(text)
-    tokens = set(normalized.split("_"))
-    if tokens & _DESTRUCTIVE_TOKENS:
-        return False
-    if last_turn is not None and tokens & {
+_FOLLOWUP_TOKENS = frozenset(
+    {
         "ora",
         "poi",
         "nuovo",
@@ -200,7 +195,87 @@ def _should_consult_llm(
         "riaccendile",
         "spegnila",
         "accendila",
-    }:
+    }
+)
+
+
+def _semantic_suggestion(
+    text: str,
+    services: Any,
+    known_names: dict[str, list[str]],
+    exclude: frozenset[str],
+    last_turn: LastTurn | None,
+) -> tuple[Suggestion | None, frozenset[str] | None]:
+    """Embedding classifier step.
+
+    Returns (suggestion, shortlist): a confident suggestion skips the LLM;
+    otherwise the shortlist (commands of the closest topics) narrows the
+    LLM's choice and lets the message past the keyword domain gate.
+    """
+    classifier = semantic.get_classifier()
+    if not classifier.enabled():
+        return None, None
+    if not classifier.ready():
+        # Built in the background (warm-up, or a model change from the UI).
+        classifier.preload_async()
+        return None, None
+    tokens = set(normalize_identifier(text).split("_"))
+    if tokens & _DESTRUCTIVE_TOKENS:
+        return None, None
+    # Follow-ups ("ora spegnila") need the previous turn: leave them to the LLM.
+    if last_turn is not None and tokens & _FOLLOWUP_TOKENS:
+        return None, None
+    allowed = {
+        name
+        for name, spec in COMMAND_REGISTRY.items()
+        if spec.handler is not None and name not in exclude
+    }
+    analysis = classifier.analyze(text, allowed, known_names)
+    if analysis is None:
+        return None, None
+    match = analysis.match
+    if match is None:
+        return None, analysis.shortlist
+    if match.command == semantic.NO_COMMAND:
+        rejected = Suggestion(
+            ok=False, reason="Richiesta fuori ambito o non supportata.", source="semantic"
+        )
+        return rejected, None
+    result = _validate_response({"command": match.command, "arg": match.arg}, exclude, services)
+    if result.ok:
+        return replace(result, source="semantic"), None
+    return None, analysis.shortlist
+
+
+def _correct_variant(response: Any, text: str, exclude: frozenset[str]) -> Any:
+    """Fix on/off, direction and mode mix-ups of the small LLM.
+
+    When the model picks e.g. ``motion_on`` and the words clearly say "off"
+    ("basta rilevamento"), the deterministic resolver of that topic wins. The
+    argument (device/rule name) chosen by the model is kept.
+    """
+    if not isinstance(response, dict):
+        return response
+    command = response.get("command")
+    topic = semantic.TOPIC_OF.get(command) if isinstance(command, str) else None
+    if topic is None:
+        return response
+    fixed = semantic.resolve_in_topic(topic, text)
+    if fixed is None or fixed == command or fixed in exclude:
+        return response
+    logger.info("Agente: %s corretto in %s dalle regole lessicali", command, fixed)
+    return {**response, "command": fixed}
+
+
+def _should_consult_llm(
+    text: str, known_names: dict[str, list[str]], last_turn: LastTurn | None
+) -> bool:
+    """Cheap fail-closed domain gate before expensive inference."""
+    normalized = normalize_identifier(text)
+    tokens = set(normalized.split("_"))
+    if tokens & _DESTRUCTIVE_TOKENS:
+        return False
+    if last_turn is not None and tokens & _FOLLOWUP_TOKENS:
         return True
     if tokens & _DOMAIN_TOKENS:
         return True
@@ -280,6 +355,9 @@ _MUTATING_COMMANDS = frozenset(
     for name, spec in COMMAND_REGISTRY.items()
     if spec.handler is not None and not spec.readonly
 )
+_READONLY_COMMANDS = frozenset(
+    name for name, spec in COMMAND_REGISTRY.items() if spec.handler is not None and spec.readonly
+)
 # Openings that turn a question into a request ("puoi accendere la luce?").
 _REQUEST_OPENERS = frozenset(
     {"puoi", "potresti", "riesci", "vuoi", "mi", "ci", "ti", "per", "dai", "fammi", "fai"}
@@ -353,7 +431,7 @@ def interpret(
     if _env_bool("AGENT_FASTPATH", True):
         fast = fastpath.match(text, exclude=exclude, services=services, last_turn=last_turn)
         if fast is not None:
-            return _validate_response(fast, exclude, services)
+            return replace(_validate_response(fast, exclude, services), source="fastpath")
 
     base_url = _env("AGENT_OLLAMA_URL", "http://127.0.0.1:11434")
     model = _env("AGENT_OLLAMA_MODEL", "qwen2.5:0.5b")
@@ -388,18 +466,36 @@ def interpret(
         )
 
     known_names = _known_names(services)
-    if _env_bool("AGENT_DOMAIN_GATE", True) and not _should_consult_llm(
-        text, known_names, last_turn
-    ):
-        return Suggestion(ok=False, reason="Richiesta fuori ambito o non supportata.")
-
     # The system prompt only depends on the configuration, never on the
     # message: Ollama then reuses the cached prefix (~1.5 s instead of 8-15 s
     # on the N95). Per-message narrowing lives only in the JSON schema enum.
     capability_exclude = _capability_exclude(services, exclude)
-    effective_exclude = _route_exclude(text, capability_exclude)
-    if _is_info_question(text):
-        effective_exclude = effective_exclude | _MUTATING_COMMANDS
+    question_exclude = _MUTATING_COMMANDS if _is_info_question(text) else frozenset()
+
+    # Embedding classifier: tens of ms instead of an LLM call when confident.
+    sem, short = _semantic_suggestion(
+        text, services, known_names, capability_exclude | question_exclude, last_turn
+    )
+    if sem is not None:
+        return sem
+
+    if short is None and _env_bool("AGENT_DOMAIN_GATE", True) and not _should_consult_llm(
+        text, known_names, last_turn
+    ):
+        return Suggestion(
+            ok=False, reason="Richiesta fuori ambito o non supportata.", source="gate"
+        )
+
+    if short is not None:
+        # The classifier already knows the likely topics: the LLM picks among
+        # their commands only (a much easier choice for a small model).
+        effective_exclude = (
+            frozenset(n for n in _MUTATING_COMMANDS | _READONLY_COMMANDS if n not in short)
+            | capability_exclude
+            | question_exclude
+        )
+    else:
+        effective_exclude = _route_exclude(text, capability_exclude) | question_exclude
     schema = (
         build_response_schema(effective_exclude)
         if _env_bool("AGENT_SCHEMA_FORMAT", True)
@@ -416,7 +512,7 @@ def interpret(
     if _env_bool("AGENT_CACHE", True):
         cached = _cache_get(cache_key)
         if cached is not None:
-            return cached
+            return replace(cached, source="cache")
 
     if not _LLM_SLOT.acquire(blocking=False):
         return Suggestion(ok=False, reason="Assistente occupato, riprova tra poco.")
@@ -437,7 +533,8 @@ def interpret(
     if response is None:
         return Suggestion(ok=False, reason="Assistente non disponibile al momento.")
 
-    result = _validate_response(response, effective_exclude, services)
+    response = _correct_variant(response, text, effective_exclude)
+    result = replace(_validate_response(response, effective_exclude, services), source="llm")
     if result.ok and _env_bool("AGENT_CACHE", True):
         _cache_put(cache_key, result)
     return result

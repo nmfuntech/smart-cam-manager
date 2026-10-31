@@ -31,6 +31,7 @@ import json
 import os
 import statistics
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -39,7 +40,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from blackframe.agent import catalog, intent  # noqa: E402
+from blackframe.agent import catalog, intent, semantic  # noqa: E402
 from blackframe.commands import registry as commands_registry  # noqa: E402
 
 _CASES_PATH = Path(__file__).resolve().parent / "agent_benchmark_cases.json"
@@ -136,6 +137,8 @@ def _run_model(model: str, dataset: dict, repeats: int) -> dict:
     supports_context = "last_turn" in inspect.signature(intent.interpret).parameters
 
     os.environ["AGENT_OLLAMA_MODEL"] = model
+    if semantic.get_classifier().enabled() and not semantic.get_classifier().build():
+        print("  classificatore semantico non disponibile: si usa solo l'LLM")
 
     cold_start = time.perf_counter()
     intent.interpret(_COLD_PROBE, services=services)
@@ -221,6 +224,10 @@ def main() -> None:
     os.environ["AGENT_OLLAMA_URL"] = args.url
     # Each model must answer by itself, never from another model's cache.
     os.environ["AGENT_CACHE"] = "false"
+    # Semantic classifier vectors go to a temp file, never to the real data/.
+    os.environ.setdefault(
+        "AGENT_EMBED_CACHE_PATH", str(Path(tempfile.gettempdir()) / "bf_bench_embed_cache.npz")
+    )
     if args.no_fastpath:
         os.environ["AGENT_FASTPATH"] = "false"
     if args.no_schema:

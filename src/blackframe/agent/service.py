@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -18,6 +19,7 @@ from blackframe.commands import COMMAND_REGISTRY, CommandResult
 from blackframe.commands import execute as registry_execute
 from blackframe.envutil import env_bool as _env_bool
 
+from . import message_log, semantic
 from .answer import compose_answer, looks_like_question
 from .context import ConversationContextStore
 from .intent import interpret
@@ -98,6 +100,7 @@ class AgentService:
         mode = os.getenv("AGENT_RESIDENCY_MODE", "auto").strip().lower()
         if not self.enabled or mode == "off":
             return
+        semantic.get_classifier().preload_async()
         if mode == "idle" and not _env_bool("AGENT_WARMUP", True):
             return
         self._residency.preload_async()
@@ -108,7 +111,20 @@ class AgentService:
 
         exclude = WEB_EXCLUDED_COMMANDS if channel == "web" else frozenset()
         last_turn = self._context.get(channel, channel_key)
+        started = time.monotonic()
         suggestion = interpret(text, exclude=exclude, services=self.services, last_turn=last_turn)
+        log_fields = {
+            "channel": channel,
+            "text": text,
+            "command": suggestion.command,
+            "arg": suggestion.arg,
+            "ok": suggestion.ok,
+            "source": suggestion.source,
+            "reason": None if suggestion.ok else suggestion.reason,
+            "ms": round((time.monotonic() - started) * 1000),
+        }
+        if not suggestion.ok or COMMAND_REGISTRY[suggestion.command].readonly:
+            message_log.record("proposal", **log_fields)
         if not suggestion.ok:
             return ProposalResult(ok=False, error=suggestion.reason or "Non ho capito.")
 
@@ -149,6 +165,7 @@ class AgentService:
             )
 
         pending_id = self._pending.create(channel, channel_key, suggestion.command, suggestion.arg)
+        message_log.record("proposal", pending_id=pending_id, **log_fields)
         return ProposalResult(
             ok=True,
             executed=False,
@@ -166,6 +183,7 @@ class AgentService:
         item = self._pending.pop(pending_id, channel, channel_key)
         if item is None:
             return ProposalResult(ok=False, error="Richiesta scaduta o non trovata.")
+        message_log.record("confirm", pending_id=pending_id)
         try:
             result = registry_execute(item.command, item.arg, self.services)
         except Exception:
@@ -181,4 +199,7 @@ class AgentService:
         )
 
     def cancel(self, pending_id: str, channel: str, channel_key: str) -> bool:
-        return self._pending.pop(pending_id, channel, channel_key) is not None
+        cancelled = self._pending.pop(pending_id, channel, channel_key) is not None
+        if cancelled:
+            message_log.record("cancel", pending_id=pending_id)
+        return cancelled

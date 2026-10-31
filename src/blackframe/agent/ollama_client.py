@@ -253,3 +253,33 @@ def warmup(
         logger.info("Warm-up Ollama completato: modello %s residente", model)
     except (urllib.error.URLError, OSError, json.JSONDecodeError) as exc:
         logger.warning("Warm-up Ollama fallito (%s): %s", base_url, exc)
+
+
+def embed(
+    base_url: str,
+    model: str,
+    texts: list[str],
+    *,
+    timeout: float = 10.0,
+    keep_alive: str | None = None,
+) -> list[list[float]] | None:
+    """Sentence embeddings via ``POST /api/embed``. None on any failure.
+
+    Errors are logged at debug level only: the semantic classifier treats a
+    failure as "not available" and the LLM path takes over.
+    """
+    url = _api_url(base_url, "/api/embed")
+    if url is None or not model or not texts:
+        return None
+    payload: dict = {"model": model, "input": texts}
+    if keep_alive:
+        payload["keep_alive"] = _keep_alive_value(keep_alive)
+    try:
+        body = _request_with_retry(url, payload, timeout)
+    except (urllib.error.URLError, OSError, json.JSONDecodeError) as exc:
+        logger.debug("Embedding Ollama fallito (%s): %s", base_url, exc)
+        return None
+    vectors = body.get("embeddings")
+    if not isinstance(vectors, list) or not all(isinstance(v, list) for v in vectors):
+        return None
+    return vectors

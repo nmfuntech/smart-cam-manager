@@ -38,6 +38,8 @@ def _isolated_state_files(tmp_path, monkeypatch):
     monkeypatch.setenv("AUDIT_LOG_PATH", str(tmp_path / "audit.jsonl"))
     monkeypatch.setenv("MODE_STATE_PATH", str(tmp_path / "mode.json"))
     monkeypatch.setenv("HEALTH_STATE_PATH", str(tmp_path / "health_state.json"))
+    monkeypatch.setenv("AGENT_MESSAGE_LOG_PATH", str(tmp_path / "agent_messages.jsonl"))
+    monkeypatch.setenv("AGENT_EMBED_CACHE_PATH", str(tmp_path / "agent_embed_cache.npz"))
     from blackframe import modes
 
     modes.set_mode_manager(None)

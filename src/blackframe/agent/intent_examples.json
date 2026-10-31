@@ -1,0 +1,427 @@
+{
+ "status": [
+  "stato",
+  "come va la telecamera",
+  "tutto bene con la camera?",
+  "la telecamera e' online?",
+  "stato del sistema",
+  "come sta andando",
+  "e' tutto a posto?",
+  "check della camera",
+  "funziona tutto?",
+  "report stato",
+  "la cam e' connessa?",
+  "dimmi come sta il sistema",
+  "situazione attuale",
+  "va tutto bene?"
+ ],
+ "snapshot": [
+  "foto",
+  "fammi una foto",
+  "manda uno scatto",
+  "fammi vedere la camera",
+  "cosa vede la telecamera adesso",
+  "immagine live",
+  "voglio vedere cosa succede",
+  "mostrami il live",
+  "scatto adesso",
+  "una foto del giardino",
+  "fammi vedere fuori",
+  "cosa c'e' davanti alla camera ora",
+  "c'e' qualcuno adesso?",
+  "dammi un'immagine in diretta"
+ ],
+ "latest": [
+  "ultimo evento",
+  "mandami l'ultimo evento",
+  "fammi vedere l'ultima registrazione",
+  "l'ultimo video",
+  "ultima clip",
+  "cosa ha registrato per ultimo",
+  "fammi vedere l'ultimo rilevamento",
+  "ultimo allarme scattato",
+  "l'ultima cosa che hai visto"
+ ],
+ "events": [
+  "eventi",
+  "ultimi eventi",
+  "cosa e' successo oggi",
+  "elenco eventi",
+  "storico movimenti",
+  "ci sono stati movimenti?",
+  "e' passato qualcuno?",
+  "qualcuno e' entrato oggi?",
+  "movimenti di stanotte",
+  "quanti eventi ci sono stati",
+  "hai visto qualcosa mentre non c'ero?",
+  "registro degli allarmi",
+  "il gatto e' passato?",
+  "e' venuto qualcuno ieri?"
+ ],
+ "config": [
+  "impostazioni",
+  "configurazione",
+  "riepilogo impostazioni",
+  "come e' configurato il sistema",
+  "che impostazioni hai",
+  "parametri attuali",
+  "mostrami la configurazione",
+  "quali funzioni sono accese",
+  "cosa e' abilitato"
+ ],
+ "modalita": [
+  "modalita",
+  "che modalita e' attiva",
+  "in che modalita siamo",
+  "il sistema e' armato?",
+  "e' inserito l'allarme?",
+  "modalita attuale",
+  "sei in modalita casa?",
+  "l'allarme e' attivo?"
+ ],
+ "arma": [
+  "arma",
+  "arma il sistema",
+  "attiva l'allarme",
+  "inserisci l'allarme",
+  "sto uscendo",
+  "stiamo uscendo",
+  "modalita armato",
+  "esco, sorveglia casa",
+  "proteggi la casa",
+  "vado via, attiva la sorveglianza",
+  "attiva la protezione",
+  "modalita assente"
+ ],
+ "casa": [
+  "sono a casa",
+  "siamo a casa",
+  "sono tornato",
+  "modalita casa",
+  "siamo rientrati",
+  "ci sono io in casa",
+  "metti modalita casa",
+  "sono a casa, non avvisarmi",
+  "rientrato adesso",
+  "siamo dentro casa"
+ ],
+ "disarma": [
+  "disarma",
+  "disarma il sistema",
+  "disattiva l'allarme",
+  "togli l'allarme",
+  "modalita disarmato",
+  "metti in pausa tutto",
+  "disinserisci l'allarme",
+  "sospendi la sorveglianza",
+  "spegni la sorveglianza",
+  "pausa al sistema"
+ ],
+ "motion_on": [
+  "attiva il rilevamento movimento",
+  "accendi il rilevamento",
+  "attiva il motion",
+  "riprendi a rilevare il movimento",
+  "rileva il movimento",
+  "rilevamento movimento on",
+  "accendi il sensore di movimento",
+  "comincia a rilevare"
+ ],
+ "motion_off": [
+  "spegni il movimento",
+  "disattiva il rilevamento movimento",
+  "spegni il rilevamento",
+  "non rilevare il movimento",
+  "motion off",
+  "ferma il rilevamento",
+  "rilevamento movimento off",
+  "smettila di rilevare"
+ ],
+ "sensitivity": [
+  "sensibilita alta",
+  "sensibilita bassa",
+  "sensibilita media",
+  "metti la sensibilita bassa",
+  "aumenta la sensibilita",
+  "riduci la sensibilita",
+  "cambia la sensibilita",
+  "meno sensibile",
+  "piu sensibile",
+  "regola la sensibilita"
+ ],
+ "classification_on": [
+  "attiva il riconoscimento",
+  "accendi il riconoscimento persone e animali",
+  "riconoscimento on",
+  "attiva l'ai",
+  "riconosci persone e animali",
+  "attiva la classificazione"
+ ],
+ "classification_off": [
+  "disattiva il riconoscimento",
+  "spegni il riconoscimento",
+  "riconoscimento off",
+  "disattiva l'ai",
+  "non classificare piu",
+  "disattiva la classificazione"
+ ],
+ "detect_person_on": [
+  "avvisami quando vedi una persona",
+  "notifica le persone",
+  "segnalami le persone",
+  "voglio gli avvisi per le persone",
+  "rileva le persone",
+  "persone on"
+ ],
+ "detect_person_off": [
+  "ignora le persone",
+  "non notificare le persone",
+  "niente avvisi per le persone",
+  "persone off",
+  "non segnalarmi le persone"
+ ],
+ "detect_pet_on": [
+  "avvisami se c'e' il cane",
+  "notifica gli animali",
+  "segnalami gli animali",
+  "voglio gli avvisi per il cane",
+  "rileva gli animali",
+  "animali on"
+ ],
+ "detect_pet_off": [
+  "ignora gli animali",
+  "non notificare gli animali",
+  "niente avvisi per il cane",
+  "animali off",
+  "non segnalarmi il cane",
+  "ignora il gatto"
+ ],
+ "notifications_on": [
+  "attiva le notifiche",
+  "accendi le notifiche",
+  "riattiva gli avvisi telegram",
+  "notifiche on",
+  "mandami le notifiche",
+  "voglio ricevere gli avvisi"
+ ],
+ "notifications_off": [
+  "spegni le notifiche",
+  "disattiva le notifiche",
+  "notifiche off",
+  "non voglio piu avvisi",
+  "disattiva gli avvisi telegram",
+  "smetti di mandarmi messaggi"
+ ],
+ "mute": [
+  "silenzia",
+  "silenzia per 10 minuti",
+  "muto per un po'",
+  "zitto per un po'",
+  "silenzia le notifiche per un'ora",
+  "pausa notifiche 30 minuti",
+  "non disturbare per mezz'ora",
+  "silenzio per 15 minuti",
+  "niente avvisi per un'ora",
+  "metti in muto"
+ ],
+ "resume": [
+  "riprendi le notifiche",
+  "riattiva le notifiche",
+  "togli il muto",
+  "fine pausa notifiche",
+  "riprendi gli avvisi",
+  "basta silenzio"
+ ],
+ "record_on": [
+  "attiva le clip video degli eventi",
+  "registra le clip degli eventi",
+  "salva un video per ogni evento",
+  "clip evento on",
+  "attiva la registrazione degli eventi",
+  "registra quando c'e' movimento"
+ ],
+ "record_off": [
+  "niente piu clip per gli eventi",
+  "disattiva le clip degli eventi",
+  "clip evento off",
+  "non registrare le clip",
+  "smetti di salvare le clip",
+  "disattiva la registrazione degli eventi"
+ ],
+ "continuous_on": [
+  "attiva la registrazione continua",
+  "registra in continuo",
+  "registrazione continua on",
+  "registra tutto il giorno",
+  "avvia la registrazione 24 ore"
+ ],
+ "continuous_off": [
+  "ferma la registrazione continua",
+  "disattiva la registrazione continua",
+  "registrazione continua off",
+  "smetti di registrare sempre",
+  "spegni la registrazione continua"
+ ],
+ "ptz_left": [
+  "gira a sinistra",
+  "muovi la camera a sinistra",
+  "sinistra",
+  "punta a sinistra",
+  "sposta la camera verso sinistra",
+  "inquadra a sinistra"
+ ],
+ "ptz_right": [
+  "gira a destra",
+  "muovi la camera a destra",
+  "destra",
+  "punta a destra",
+  "sposta la camera verso destra",
+  "inquadra a destra"
+ ],
+ "ptz_up": [
+  "guarda in alto",
+  "muovi la camera in alto",
+  "su",
+  "punta in alto",
+  "alza la camera",
+  "inquadra piu in alto"
+ ],
+ "ptz_down": [
+  "inquadra piu in basso",
+  "muovi la camera in basso",
+  "giu",
+  "punta in basso",
+  "abbassa l'inquadratura",
+  "guarda in basso"
+ ],
+ "ptz_stop": [
+  "ferma il movimento della telecamera",
+  "stop ptz",
+  "ferma la camera",
+  "smetti di muoverti",
+  "blocca la rotazione"
+ ],
+ "ptz_home": [
+  "torna in posizione iniziale",
+  "ptz home",
+  "posizione home",
+  "riporta la camera al centro",
+  "torna alla posizione di default",
+  "resetta l'inquadratura"
+ ],
+ "devices": [
+  "dispositivi",
+  "elenca i dispositivi",
+  "che dispositivi ci sono",
+  "lista dispositivi",
+  "quali luci ci sono",
+  "le luci sono accese?",
+  "mostrami i dispositivi smart",
+  "cosa c'e' collegato",
+  "quali prese ho"
+ ],
+ "inventory": [
+  "inventario",
+  "cosa puoi controllare",
+  "elenca le entita",
+  "quali dispositivi e capacita hai",
+  "cosa gestisci",
+  "mostrami tutto quello che controlli"
+ ],
+ "device_on": [
+  "accendi la lampada",
+  "accendi la luce",
+  "accendi la presa",
+  "attiva la presa",
+  "luce on",
+  "accendimi la luce",
+  "dai corrente alla presa",
+  "accendi le luci"
+ ],
+ "device_off": [
+  "spegni la lampada",
+  "spegni la luce",
+  "spegni la presa",
+  "disattiva la presa",
+  "luce off",
+  "spegnimi la luce",
+  "togli corrente alla presa",
+  "spegni le luci"
+ ],
+ "entity_status": [
+  "la lampada e' accesa?",
+  "la presa e' accesa?",
+  "stato della lampada",
+  "la luce e' spenta?",
+  "com'e' la presa",
+  "stato della presa"
+ ],
+ "rules": [
+  "regole",
+  "elenca le regole",
+  "che regole ci sono",
+  "lista automazioni",
+  "quali automazioni hai",
+  "mostrami le automazioni"
+ ],
+ "rule_run": [
+  "esegui la regola",
+  "avvia la regola",
+  "lancia l'automazione",
+  "esegui adesso la regola",
+  "fai partire la regola"
+ ],
+ "rule_on": [
+  "abilita la regola",
+  "attiva la regola",
+  "riattiva l'automazione",
+  "abilita l'automazione"
+ ],
+ "rule_off": [
+  "disabilita la regola",
+  "disattiva la regola",
+  "spegni l'automazione",
+  "disabilita l'automazione"
+ ],
+ "nessuno": [
+  "ciao come stai",
+  "buongiorno",
+  "grazie",
+  "ok",
+  "che tempo fa domani",
+  "raccontami una barzelletta",
+  "ordina una pizza",
+  "chi ha vinto la partita",
+  "alza il volume della musica",
+  "che ore sono adesso",
+  "quanto costa la benzina",
+  "traduci in inglese",
+  "apri la porta",
+  "accendi la lavatrice",
+  "chiama mio fratello",
+  "manda un messaggio a giulia",
+  "come ti chiami",
+  "cosa sai fare in generale",
+  "imposta una sveglia",
+  "cerca su google",
+  "metti netflix",
+  "accendi il condizionatore",
+  "che film danno stasera",
+  "scrivi una mail",
+  "cancella tutte le registrazioni",
+  "elimina gli eventi",
+  "formatta il disco",
+  "reset di fabbrica",
+  "cambia la password",
+  "spegni il computer",
+  "riavvia il pc",
+  "aggiorna il sistema operativo",
+  "dammi la ricetta della pasta",
+  "buonanotte",
+  "ti voglio bene",
+  "sei stupido",
+  "aiuto",
+  "test",
+  "prova"
+ ]
+}

@@ -1,0 +1,958 @@
+{
+ "devices": [
+  "lampada_ingresso",
+  "presa_salotto",
+  "striscia_led_camera"
+ ],
+ "rules": [
+  "notte",
+  "luci_sera"
+ ],
+ "_note": "Held-out set: phrasings deliberately different from the fast-path tables and from intent_examples.json. Do not copy these phrases into either.",
+ "cases": [
+  {
+   "text": "tutto ok?",
+   "expect_command": "status",
+   "tags": [
+    "readonly"
+   ]
+  },
+  {
+   "text": "a che punto e' la telecamera",
+   "expect_command": "status",
+   "tags": [
+    "readonly"
+   ]
+  },
+  {
+   "text": "dammi un aggiornamento",
+   "expect_command": "status",
+   "tags": [
+    "readonly"
+   ]
+  },
+  {
+   "text": "la cam funziona?",
+   "expect_command": "status",
+   "tags": [
+    "readonly"
+   ]
+  },
+  {
+   "text": "situazione?",
+   "expect_command": "status",
+   "tags": [
+    "readonly"
+   ]
+  },
+  {
+   "text": "fammi vedere cosa succede ora",
+   "expect_command": "snapshot",
+   "tags": [
+    "readonly"
+   ]
+  },
+  {
+   "text": "mandami una foto adesso",
+   "expect_command": "snapshot",
+   "tags": [
+    "readonly"
+   ]
+  },
+  {
+   "text": "voglio vedere il giardino",
+   "expect_command": "snapshot",
+   "tags": [
+    "readonly"
+   ]
+  },
+  {
+   "text": "cosa inquadra la cam in questo momento",
+   "expect_command": "snapshot",
+   "tags": [
+    "readonly"
+   ]
+  },
+  {
+   "text": "scatta",
+   "expect_command": "snapshot",
+   "tags": [
+    "readonly"
+   ]
+  },
+  {
+   "text": "mandami l'ultima cosa registrata",
+   "expect_command": "latest",
+   "tags": [
+    "readonly"
+   ]
+  },
+  {
+   "text": "fammi vedere l'ultimo movimento",
+   "expect_command": "latest",
+   "tags": [
+    "readonly"
+   ]
+  },
+  {
+   "text": "qual e' l'ultimo allarme",
+   "expect_command": "latest",
+   "tags": [
+    "readonly"
+   ]
+  },
+  {
+   "text": "e' passato qualcuno stamattina?",
+   "expect_command": "events",
+   "tags": [
+    "readonly",
+    "question"
+   ]
+  },
+  {
+   "text": "il cane e' uscito?",
+   "expect_command": "events",
+   "tags": [
+    "readonly",
+    "question"
+   ]
+  },
+  {
+   "text": "ci sono stati movimenti stanotte?",
+   "expect_command": "events",
+   "tags": [
+    "readonly",
+    "question"
+   ]
+  },
+  {
+   "text": "cosa e' successo mentre ero fuori",
+   "expect_command": "events",
+   "tags": [
+    "readonly",
+    "question"
+   ]
+  },
+  {
+   "text": "lista degli ultimi movimenti",
+   "expect_command": "events",
+   "tags": [
+    "readonly",
+    "question"
+   ]
+  },
+  {
+   "text": "quante volte ha rilevato qualcosa oggi?",
+   "expect_command": "events",
+   "tags": [
+    "readonly",
+    "question"
+   ]
+  },
+  {
+   "text": "come sei configurato?",
+   "expect_command": "config",
+   "tags": [
+    "readonly"
+   ]
+  },
+  {
+   "text": "fammi vedere i parametri",
+   "expect_command": "config",
+   "tags": [
+    "readonly"
+   ]
+  },
+  {
+   "text": "quali opzioni sono attive",
+   "expect_command": "config",
+   "tags": [
+    "readonly"
+   ]
+  },
+  {
+   "text": "in che modalita sei?",
+   "expect_command": "modalita",
+   "tags": [
+    "readonly",
+    "mode"
+   ]
+  },
+  {
+   "text": "sei armato?",
+   "expect_command": "modalita",
+   "tags": [
+    "readonly",
+    "mode"
+   ]
+  },
+  {
+   "text": "il sistema e' inserito?",
+   "expect_command": "modalita",
+   "tags": [
+    "readonly",
+    "mode"
+   ]
+  },
+  {
+   "text": "inserisci l'allarme che esco",
+   "expect_command": "arma",
+   "tags": [
+    "mode"
+   ]
+  },
+  {
+   "text": "esco di casa, attiva tutto",
+   "expect_command": "arma",
+   "tags": [
+    "mode"
+   ]
+  },
+  {
+   "text": "arma la casa",
+   "expect_command": "arma",
+   "tags": [
+    "mode"
+   ]
+  },
+  {
+   "text": "modalita fuori casa",
+   "expect_command": "arma",
+   "tags": [
+    "mode"
+   ]
+  },
+  {
+   "text": "sono rientrato",
+   "expect_command": "casa",
+   "tags": [
+    "mode"
+   ]
+  },
+  {
+   "text": "siamo tornati a casa",
+   "expect_command": "casa",
+   "tags": [
+    "mode"
+   ]
+  },
+  {
+   "text": "metti in modalita casa",
+   "expect_command": "casa",
+   "tags": [
+    "mode"
+   ]
+  },
+  {
+   "text": "siamo in casa, niente avvisi",
+   "expect_command": "casa",
+   "tags": [
+    "mode"
+   ]
+  },
+  {
+   "text": "disinserisci tutto",
+   "expect_command": "disarma",
+   "tags": [
+    "mode"
+   ]
+  },
+  {
+   "text": "spegni l'allarme",
+   "expect_command": "disarma",
+   "tags": [
+    "mode"
+   ]
+  },
+  {
+   "text": "metti in pausa la sorveglianza",
+   "expect_command": "disarma",
+   "tags": [
+    "mode"
+   ]
+  },
+  {
+   "text": "disattiva il sistema",
+   "expect_command": "disarma",
+   "tags": [
+    "mode"
+   ]
+  },
+  {
+   "text": "riattiva il rilevamento",
+   "expect_command": "motion_on",
+   "tags": []
+  },
+  {
+   "text": "accendi il motion detection",
+   "expect_command": "motion_on",
+   "tags": []
+  },
+  {
+   "text": "torna a rilevare i movimenti",
+   "expect_command": "motion_on",
+   "tags": []
+  },
+  {
+   "text": "smetti di rilevare i movimenti",
+   "expect_command": "motion_off",
+   "tags": []
+  },
+  {
+   "text": "disattiva il motion",
+   "expect_command": "motion_off",
+   "tags": []
+  },
+  {
+   "text": "basta rilevamento",
+   "expect_command": "motion_off",
+   "tags": []
+  },
+  {
+   "text": "rendila piu sensibile",
+   "expect_command": "sensitivity",
+   "tags": [
+    "arg"
+   ],
+   "expect_arg": "alta"
+  },
+  {
+   "text": "sensibilita al massimo",
+   "expect_command": "sensitivity",
+   "tags": [
+    "arg"
+   ],
+   "expect_arg": "alta"
+  },
+  {
+   "text": "e' troppo sensibile, abbassala",
+   "expect_command": "sensitivity",
+   "tags": [
+    "arg"
+   ],
+   "expect_arg": "bassa"
+  },
+  {
+   "text": "sensibilita al minimo",
+   "expect_command": "sensitivity",
+   "tags": [
+    "arg"
+   ],
+   "expect_arg": "bassa"
+  },
+  {
+   "text": "sensibilita normale",
+   "expect_command": "sensitivity",
+   "tags": [
+    "arg"
+   ],
+   "expect_arg": "media"
+  },
+  {
+   "text": "riattiva l'intelligenza artificiale",
+   "expect_command": "classification_on",
+   "tags": []
+  },
+  {
+   "text": "accendi il riconoscimento degli oggetti",
+   "expect_command": "classification_on",
+   "tags": []
+  },
+  {
+   "text": "spegni l'ia",
+   "expect_command": "classification_off",
+   "tags": []
+  },
+  {
+   "text": "non riconoscere piu niente, solo movimento",
+   "expect_command": "classification_off",
+   "tags": []
+  },
+  {
+   "text": "avvisami se entra qualcuno",
+   "expect_command": "detect_person_on",
+   "tags": []
+  },
+  {
+   "text": "voglio sapere quando passa una persona",
+   "expect_command": "detect_person_on",
+   "tags": []
+  },
+  {
+   "text": "non avvisarmi per le persone",
+   "expect_command": "detect_person_off",
+   "tags": []
+  },
+  {
+   "text": "ignora la gente",
+   "expect_command": "detect_person_off",
+   "tags": []
+  },
+  {
+   "text": "avvisami anche per il cane",
+   "expect_command": "detect_pet_on",
+   "tags": []
+  },
+  {
+   "text": "notificami gli animali",
+   "expect_command": "detect_pet_on",
+   "tags": []
+  },
+  {
+   "text": "il cane non mi interessa",
+   "expect_command": "detect_pet_off",
+   "tags": []
+  },
+  {
+   "text": "smettila di avvisarmi per il gatto",
+   "expect_command": "detect_pet_off",
+   "tags": []
+  },
+  {
+   "text": "non segnalare gli animali",
+   "expect_command": "detect_pet_off",
+   "tags": []
+  },
+  {
+   "text": "riaccendi gli avvisi",
+   "expect_command": "notifications_on",
+   "tags": []
+  },
+  {
+   "text": "voglio di nuovo i messaggi",
+   "expect_command": "notifications_on",
+   "tags": []
+  },
+  {
+   "text": "basta messaggi",
+   "expect_command": "notifications_off",
+   "tags": []
+  },
+  {
+   "text": "non mandarmi piu notifiche",
+   "expect_command": "notifications_off",
+   "tags": []
+  },
+  {
+   "text": "spegni gli avvisi su telegram",
+   "expect_command": "notifications_off",
+   "tags": []
+  },
+  {
+   "text": "silenzio per un'ora",
+   "expect_command": "mute",
+   "tags": [
+    "arg"
+   ],
+   "expect_arg": "60"
+  },
+  {
+   "text": "niente notifiche per 60 minuti",
+   "expect_command": "mute",
+   "tags": [
+    "arg"
+   ],
+   "expect_arg": "60"
+  },
+  {
+   "text": "zitto mezz'ora",
+   "expect_command": "mute",
+   "tags": [
+    "arg"
+   ],
+   "expect_arg": "30"
+  },
+  {
+   "text": "non disturbarmi per 2 ore",
+   "expect_command": "mute",
+   "tags": [
+    "arg"
+   ],
+   "expect_arg": "120"
+  },
+  {
+   "text": "silenzia un attimo",
+   "expect_command": "mute",
+   "tags": []
+  },
+  {
+   "text": "togli il silenzioso",
+   "expect_command": "resume",
+   "tags": []
+  },
+  {
+   "text": "riprendi ad avvisarmi",
+   "expect_command": "resume",
+   "tags": []
+  },
+  {
+   "text": "registra un video per ogni movimento",
+   "expect_command": "record_on",
+   "tags": []
+  },
+  {
+   "text": "salva le clip degli eventi",
+   "expect_command": "record_on",
+   "tags": []
+  },
+  {
+   "text": "non salvare piu i video degli eventi",
+   "expect_command": "record_off",
+   "tags": []
+  },
+  {
+   "text": "niente clip",
+   "expect_command": "record_off",
+   "tags": []
+  },
+  {
+   "text": "registra sempre",
+   "expect_command": "continuous_on",
+   "tags": []
+  },
+  {
+   "text": "fai partire la registrazione h24",
+   "expect_command": "continuous_on",
+   "tags": []
+  },
+  {
+   "text": "basta registrare in continuo",
+   "expect_command": "continuous_off",
+   "tags": []
+  },
+  {
+   "text": "stop registrazione continua",
+   "expect_command": "continuous_off",
+   "tags": []
+  },
+  {
+   "text": "girati a sinistra",
+   "expect_command": "ptz_left",
+   "tags": [
+    "ptz"
+   ]
+  },
+  {
+   "text": "un po' piu a sx",
+   "expect_command": "ptz_left",
+   "tags": [
+    "ptz"
+   ]
+  },
+  {
+   "text": "ruota verso sinistra",
+   "expect_command": "ptz_left",
+   "tags": [
+    "ptz"
+   ]
+  },
+  {
+   "text": "spostati a destra",
+   "expect_command": "ptz_right",
+   "tags": [
+    "ptz"
+   ]
+  },
+  {
+   "text": "piu a dx",
+   "expect_command": "ptz_right",
+   "tags": [
+    "ptz"
+   ]
+  },
+  {
+   "text": "alza l'inquadratura",
+   "expect_command": "ptz_up",
+   "tags": [
+    "ptz"
+   ]
+  },
+  {
+   "text": "guarda piu su",
+   "expect_command": "ptz_up",
+   "tags": [
+    "ptz"
+   ]
+  },
+  {
+   "text": "abbassa la camera",
+   "expect_command": "ptz_down",
+   "tags": [
+    "ptz"
+   ]
+  },
+  {
+   "text": "guarda verso il basso",
+   "expect_command": "ptz_down",
+   "tags": [
+    "ptz"
+   ]
+  },
+  {
+   "text": "fermati",
+   "expect_command": "ptz_stop",
+   "tags": [
+    "ptz"
+   ]
+  },
+  {
+   "text": "stop camera",
+   "expect_command": "ptz_stop",
+   "tags": [
+    "ptz"
+   ]
+  },
+  {
+   "text": "rimettiti dritta",
+   "expect_command": "ptz_home",
+   "tags": [
+    "ptz"
+   ]
+  },
+  {
+   "text": "posizione di partenza",
+   "expect_command": "ptz_home",
+   "tags": [
+    "ptz"
+   ]
+  },
+  {
+   "text": "torna al centro",
+   "expect_command": "ptz_home",
+   "tags": [
+    "ptz"
+   ]
+  },
+  {
+   "text": "cosa posso accendere?",
+   "expect_command": "devices",
+   "tags": [
+    "readonly",
+    "automation"
+   ]
+  },
+  {
+   "text": "che luci ho?",
+   "expect_command": "devices",
+   "tags": [
+    "readonly",
+    "automation"
+   ]
+  },
+  {
+   "text": "mostrami le prese",
+   "expect_command": "devices",
+   "tags": [
+    "readonly",
+    "automation"
+   ]
+  },
+  {
+   "text": "cosa sai controllare?",
+   "expect_command": "inventory",
+   "tags": [
+    "readonly",
+    "automation"
+   ]
+  },
+  {
+   "text": "che cose gestisci?",
+   "expect_command": "inventory",
+   "tags": [
+    "readonly",
+    "automation"
+   ]
+  },
+  {
+   "text": "luce ingresso on",
+   "expect_command": "device_on",
+   "tags": [
+    "arg",
+    "automation"
+   ],
+   "expect_arg": "lampada_ingresso"
+  },
+  {
+   "text": "accendimi la lampada all'ingresso",
+   "expect_command": "device_on",
+   "tags": [
+    "arg",
+    "automation"
+   ],
+   "expect_arg": "lampada_ingresso"
+  },
+  {
+   "text": "dai corrente alla presa del salotto",
+   "expect_command": "device_on",
+   "tags": [
+    "arg",
+    "automation"
+   ],
+   "expect_arg": "presa_salotto"
+  },
+  {
+   "text": "accendi i led in camera",
+   "expect_command": "device_on",
+   "tags": [
+    "arg",
+    "automation"
+   ],
+   "expect_arg": "striscia_led_camera"
+  },
+  {
+   "text": "spegnimi la luce dell'ingresso",
+   "expect_command": "device_off",
+   "tags": [
+    "arg",
+    "automation"
+   ],
+   "expect_arg": "lampada_ingresso"
+  },
+  {
+   "text": "togli corrente alla presa salotto",
+   "expect_command": "device_off",
+   "tags": [
+    "arg",
+    "automation"
+   ],
+   "expect_arg": "presa_salotto"
+  },
+  {
+   "text": "presa salotto off",
+   "expect_command": "device_off",
+   "tags": [
+    "arg",
+    "automation"
+   ],
+   "expect_arg": "presa_salotto"
+  },
+  {
+   "text": "spegni la striscia led",
+   "expect_command": "device_off",
+   "tags": [
+    "arg",
+    "automation"
+   ],
+   "expect_arg": "striscia_led_camera"
+  },
+  {
+   "text": "la lampada dell'ingresso e' accesa?",
+   "expect_command": "entity_status",
+   "tags": [
+    "arg",
+    "automation",
+    "question"
+   ],
+   "expect_arg": "lampada_ingresso"
+  },
+  {
+   "text": "com'e' messa la presa del salotto?",
+   "expect_command": "entity_status",
+   "tags": [
+    "arg",
+    "automation",
+    "question"
+   ],
+   "expect_arg": "presa_salotto"
+  },
+  {
+   "text": "che automazioni ci sono",
+   "expect_command": "rules",
+   "tags": [
+    "readonly",
+    "automation"
+   ]
+  },
+  {
+   "text": "mostrami le regole attive",
+   "expect_command": "rules",
+   "tags": [
+    "readonly",
+    "automation"
+   ]
+  },
+  {
+   "text": "lancia la regola notte",
+   "expect_command": "rule_run",
+   "tags": [
+    "arg",
+    "automation"
+   ],
+   "expect_arg": "notte"
+  },
+  {
+   "text": "avvia notte adesso",
+   "expect_command": "rule_run",
+   "tags": [
+    "arg",
+    "automation"
+   ],
+   "expect_arg": "notte"
+  },
+  {
+   "text": "fai partire luci sera",
+   "expect_command": "rule_run",
+   "tags": [
+    "arg",
+    "automation"
+   ],
+   "expect_arg": "luci_sera"
+  },
+  {
+   "text": "riattiva la regola notte",
+   "expect_command": "rule_on",
+   "tags": [
+    "arg",
+    "automation"
+   ],
+   "expect_arg": "notte"
+  },
+  {
+   "text": "disattiva l'automazione luci sera",
+   "expect_command": "rule_off",
+   "tags": [
+    "arg",
+    "automation"
+   ],
+   "expect_arg": "luci_sera"
+  },
+  {
+   "text": "ciao",
+   "expect_command": null,
+   "tags": [
+    "oos"
+   ]
+  },
+  {
+   "text": "grazie mille",
+   "expect_command": null,
+   "tags": [
+    "oos"
+   ]
+  },
+  {
+   "text": "che ore sono?",
+   "expect_command": null,
+   "tags": [
+    "oos"
+   ]
+  },
+  {
+   "text": "quanto fa 2 piu 2",
+   "expect_command": null,
+   "tags": [
+    "oos"
+   ]
+  },
+  {
+   "text": "metti un po' di musica",
+   "expect_command": null,
+   "tags": [
+    "oos"
+   ]
+  },
+  {
+   "text": "chiama la mamma",
+   "expect_command": null,
+   "tags": [
+    "oos"
+   ]
+  },
+  {
+   "text": "ricordami di comprare il latte",
+   "expect_command": null,
+   "tags": [
+    "oos"
+   ]
+  },
+  {
+   "text": "come si fa la carbonara?",
+   "expect_command": null,
+   "tags": [
+    "oos"
+   ]
+  },
+  {
+   "text": "chi sei?",
+   "expect_command": null,
+   "tags": [
+    "oos"
+   ]
+  },
+  {
+   "text": "scrivimi una poesia",
+   "expect_command": null,
+   "tags": [
+    "oos"
+   ]
+  },
+  {
+   "text": "accendi la tv",
+   "expect_command": null,
+   "tags": [
+    "oos"
+   ]
+  },
+  {
+   "text": "che giorno e' oggi",
+   "expect_command": null,
+   "tags": [
+    "oos"
+   ]
+  },
+  {
+   "text": "apri il cancello",
+   "expect_command": null,
+   "tags": [
+    "oos"
+   ]
+  },
+  {
+   "text": "spegni il forno",
+   "expect_command": null,
+   "tags": [
+    "oos"
+   ]
+  },
+  {
+   "text": "elimina tutti gli eventi",
+   "expect_command": null,
+   "tags": [
+    "oos",
+    "safety"
+   ]
+  },
+  {
+   "text": "cancella le clip di ieri",
+   "expect_command": null,
+   "tags": [
+    "oos",
+    "safety"
+   ]
+  },
+  {
+   "text": "resetta tutto il sistema",
+   "expect_command": null,
+   "tags": [
+    "oos",
+    "safety"
+   ]
+  },
+  {
+   "text": "disinstalla l'app",
+   "expect_command": null,
+   "tags": [
+    "oos",
+    "safety"
+   ]
+  },
+  {
+   "text": "cambia la password dell'admin",
+   "expect_command": null,
+   "tags": [
+    "oos",
+    "safety"
+   ]
+  }
+ ]
+}
