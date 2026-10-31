@@ -198,6 +198,10 @@ def _match_mute(normalized: str) -> dict | None:
         return None
     number = next((token for token in tokens if token.isdigit()), None)
     if number is None:
+        if {"mezz", "mezzora"} & set(tokens):
+            return {"command": "mute", "arg": "30"}
+        if "ora" in tokens and {"un", "una"} & set(tokens):
+            return {"command": "mute", "arg": "60"}
         return {"command": "mute", "arg": None}
     # Registry mute argument is expressed in minutes. Bare numbers keep same unit.
     value = float(number)
@@ -207,6 +211,52 @@ def _match_mute(normalized: str) -> dict | None:
         value *= 60
     rendered = str(int(value)) if value.is_integer() else str(value)
     return {"command": "mute", "arg": rendered}
+
+
+# Security modes. "casa" alone is too generic ("luce di casa"), so a mode word
+# only counts next to "modalita"/"allarme", or in one of the exact phrases.
+_MODE_PHRASES: dict[str, str] = {
+    "arma": "arma",
+    "arma_il_sistema": "arma",
+    "attiva_l_allarme": "arma",
+    "inserisci_l_allarme": "arma",
+    "sto_uscendo": "arma",
+    "stiamo_uscendo": "arma",
+    "disarma": "disarma",
+    "disarma_il_sistema": "disarma",
+    "disattiva_l_allarme": "disarma",
+    "togli_l_allarme": "disarma",
+    "sono_a_casa": "casa",
+    "siamo_a_casa": "casa",
+    "sono_tornato": "casa",
+    "sono_tornata": "casa",
+    "siamo_tornati": "casa",
+}
+_MODE_WORDS: dict[str, str] = {
+    "armato": "arma",
+    "arma": "arma",
+    "armata": "arma",
+    "fuori": "arma",
+    "casa": "casa",
+    "disarmato": "disarma",
+    "disarmata": "disarma",
+    "disarma": "disarma",
+}
+
+
+def _match_mode(normalized: str) -> dict | None:
+    phrase = _MODE_PHRASES.get(normalized)
+    if phrase is not None:
+        return {"command": phrase, "arg": None}
+    tokens = normalized.split("_")
+    if "modalita" not in tokens and "allarme" not in tokens:
+        return None
+    targets = {_MODE_WORDS[token] for token in tokens if token in _MODE_WORDS}
+    if len(targets) == 1:
+        return {"command": targets.pop(), "arg": None}
+    if not targets and "modalita" in tokens:
+        return {"command": "modalita", "arg": None}
+    return None
 
 
 def _match_rule_action(normalized: str) -> dict | None:
@@ -290,6 +340,10 @@ def match(
     mute = _match_mute(normalized)
     if mute is not None:
         return mute if mute["command"] not in exclude else None
+
+    mode = _match_mode(normalized)
+    if mode is not None:
+        return mode if mode["command"] not in exclude else None
 
     rule = _match_rule_action(normalized)
     if rule is not None:

@@ -74,6 +74,12 @@ _DOMAIN_TOKENS = frozenset(
         "impostazioni",
         "stato",
         "ptz",
+        "modalita",
+        "allarme",
+        "armato",
+        "disarmato",
+        "arma",
+        "disarma",
     }
 )
 _DESTRUCTIVE_TOKENS = frozenset({"cancella", "elimina", "formatta", "distruggi"})

@@ -115,3 +115,33 @@ class InterpretIntegrationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ModeFastPathTests(unittest.TestCase):
+    def test_mode_phrases(self):
+        cases = {
+            "metti la modalità casa": "casa",
+            "passa in modalità armato": "arma",
+            "modalità disarmato": "disarma",
+            "attiva l'allarme": "arma",
+            "disattiva l'allarme": "disarma",
+            "sono a casa": "casa",
+            "sto uscendo": "arma",
+            "che modalità è attiva?": "modalita",
+        }
+        for text, command in cases.items():
+            with self.subTest(text=text):
+                self.assertEqual(fastpath.match(text), {"command": command, "arg": None})
+
+    def test_generic_casa_is_not_a_mode(self):
+        self.assertIsNone(fastpath.match("che tempo fa a casa"))
+        self.assertIsNone(fastpath.match("modalità casa o armato"))
+
+    def test_mode_words_pass_domain_gate(self):
+        self.assertTrue(intent._should_consult_llm("cambia la modalità per stanotte", {}, None))
+
+    def test_mute_half_hour_and_one_hour(self):
+        self.assertEqual(
+            fastpath.match("silenzia gli avvisi per mezz'ora"), {"command": "mute", "arg": "30"}
+        )
+        self.assertEqual(fastpath.match("silenzia per un'ora"), {"command": "mute", "arg": "60"})
