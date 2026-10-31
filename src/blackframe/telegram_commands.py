@@ -304,9 +304,7 @@ class TelegramCommandBot:
         # Group chat: every member shares the chat id. When admin user ids are
         # configured, only those users get admin rights inside the group.
         admin_users = {
-            item.strip()
-            for item in _env("TELEGRAM_ADMIN_USER_IDS").split(",")
-            if item.strip()
+            item.strip() for item in _env("TELEGRAM_ADMIN_USER_IDS").split(",") if item.strip()
         }
         if not admin_users:
             return True
@@ -402,6 +400,9 @@ class TelegramCommandBot:
             if failures:
                 logger.info("Polling comandi Telegram ripristinato dopo %d errori", failures)
                 failures = 0
+            # After a reboot the service often starts before the network: the
+            # first setMyCommands fails, so retry once Telegram is reachable.
+            self._set_commands_menu()
 
             for update in result.get("result", []):
                 update_id = update.get("update_id")
@@ -555,7 +556,9 @@ class TelegramCommandBot:
         if not proposal.ok:
             return proposal.error or "Richiesta non valida o scaduta."
         audit.record(
-            "telegram-agente", self._actor(chat_id), getattr(proposal, "command", None) or "agent",
+            "telegram-agente",
+            self._actor(chat_id),
+            getattr(proposal, "command", None) or "agent",
             getattr(proposal, "arg", None),
         )
         response = self._send_result(chat_id, proposal.result) if proposal.result else None

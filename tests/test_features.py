@@ -561,9 +561,7 @@ class TelegramCommandBotTests(unittest.TestCase):
 
         _, services = self._bot()
         services.features.camera_profiles = SimpleNamespace(
-            list_profiles=lambda: [
-                {"id": "front", "name": "Ingresso", "active": True}
-            ]
+            list_profiles=lambda: [{"id": "front", "name": "Ingresso", "active": True}]
         )
 
         result = execute("inventory", None, services)
@@ -720,6 +718,27 @@ class TelegramCommandBotTests(unittest.TestCase):
 
         self.assertIn("inline_keyboard", self.messages[0][2])
 
+    def test_commands_menu_is_retried_once_network_is_back(self):
+        bot, _ = self._bot()
+        calls = []
+
+        def fake_api(token, method, params=None, timeout=15):
+            calls.append(method)
+            if method == "setMyCommands":
+                if calls.count("setMyCommands") == 1:
+                    return {"ok": False, "description": "Errore di rete: getaddrinfo failed"}
+                bot._stop.set()
+                return {"ok": True, "result": True}
+            if method == "getUpdates" and len(calls) == 1:
+                return {"ok": False, "description": "Errore di rete"}
+            return {"ok": True, "result": [] if method == "getUpdates" else {"username": "b"}}
+
+        with mock.patch("blackframe.telegram_commands._bot_api_call", side_effect=fake_api):
+            bot._run()
+
+        self.assertEqual(calls.count("setMyCommands"), 2)
+        self.assertTrue(bot._menu_configured)
+
     def test_help_command_sends_reply_keyboard(self):
         bot, _ = self._bot()
 
@@ -863,17 +882,11 @@ class TelegramCommandBotTests(unittest.TestCase):
             self.assertFalse(os.path.exists(guests_file))
 
     def test_group_admin_actions_require_listed_user(self):
-        bot, services = self._bot(
-            NOTIFY_TELEGRAM_CHAT_ID="-100500", TELEGRAM_ADMIN_USER_IDS="42"
-        )
+        bot, services = self._bot(NOTIFY_TELEGRAM_CHAT_ID="-100500", TELEGRAM_ADMIN_USER_IDS="42")
         group = {"id": -100500, "type": "supergroup"}
 
-        bot._handle_update(
-            {"message": {"chat": group, "from": {"id": 7}, "text": "/motion_off"}}
-        )
-        bot._handle_update(
-            {"message": {"chat": group, "from": {"id": 42}, "text": "/motion_off"}}
-        )
+        bot._handle_update({"message": {"chat": group, "from": {"id": 7}, "text": "/motion_off"}})
+        bot._handle_update({"message": {"chat": group, "from": {"id": 42}, "text": "/motion_off"}})
 
         self.assertIn("riservato", self.messages[0][1])
         self.assertEqual(len(services.runtime_config.updates), 1)
