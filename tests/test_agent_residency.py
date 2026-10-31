@@ -59,4 +59,4 @@ def test_preload_is_deduplicated_while_in_progress() -> None:
     release.set()
     manager.wait(timeout=2)
 
-    assert calls == [("http://127.0.0.1:11434", "small-model", "-1")]
+    assert calls == [("http://127.0.0.1:11434", "small-model", "-1", {"num_ctx": 1536})]
