@@ -275,6 +275,66 @@ def _route_exclude(text: str, base: frozenset[str]) -> frozenset[str]:
     return frozenset(set(base) | routed_out)
 
 
+_MUTATING_COMMANDS = frozenset(
+    name
+    for name, spec in COMMAND_REGISTRY.items()
+    if spec.handler is not None and not spec.readonly
+)
+# Openings that turn a question into a request ("puoi accendere la luce?").
+_REQUEST_OPENERS = frozenset(
+    {"puoi", "potresti", "riesci", "vuoi", "mi", "ci", "ti", "per", "dai", "fammi", "fai"}
+)
+_IMPERATIVE_VERBS = frozenset(
+    {
+        "accendi",
+        "spegni",
+        "attiva",
+        "disattiva",
+        "abilita",
+        "disabilita",
+        "gira",
+        "muovi",
+        "sposta",
+        "ruota",
+        "punta",
+        "inquadra",
+        "metti",
+        "imposta",
+        "alza",
+        "abbassa",
+        "arma",
+        "disarma",
+        "silenzia",
+        "riprendi",
+        "ferma",
+        "avvia",
+        "esegui",
+        "registra",
+        "torna",
+        "ignora",
+        "avvisami",
+    }
+)
+
+
+def _is_info_question(text: str) -> bool:
+    """A question about the state of things ("il cane è uscito?").
+
+    Such a message must never become a state-changing command, so the schema
+    is restricted to read-only commands. Polite requests phrased as questions
+    ("puoi accendere la luce?", "accendi la luce?") are not info questions.
+    """
+    if "?" not in text:
+        return False
+    tokens = normalize_identifier(text).split("_")
+    if not tokens or not tokens[0]:
+        return False
+    first = tokens[0]
+    if first in _REQUEST_OPENERS or first in _IMPERATIVE_VERBS:
+        return False
+    return not (set(tokens[:3]) & _IMPERATIVE_VERBS)
+
+
 def interpret(
     text: str,
     exclude: frozenset[str] = frozenset(),
@@ -333,7 +393,13 @@ def interpret(
     ):
         return Suggestion(ok=False, reason="Richiesta fuori ambito o non supportata.")
 
-    effective_exclude = _route_exclude(text, _capability_exclude(services, exclude))
+    # The system prompt only depends on the configuration, never on the
+    # message: Ollama then reuses the cached prefix (~1.5 s instead of 8-15 s
+    # on the N95). Per-message narrowing lives only in the JSON schema enum.
+    capability_exclude = _capability_exclude(services, exclude)
+    effective_exclude = _route_exclude(text, capability_exclude)
+    if _is_info_question(text):
+        effective_exclude = effective_exclude | _MUTATING_COMMANDS
     schema = (
         build_response_schema(effective_exclude)
         if _env_bool("AGENT_SCHEMA_FORMAT", True)
@@ -358,7 +424,7 @@ def interpret(
         response = ollama_client.chat_json(
             base_url,
             model,
-            build_system_prompt(effective_exclude, known_names),
+            build_system_prompt(capability_exclude, known_names),
             text,
             timeout=timeout,
             keep_alive=keep_alive or None,

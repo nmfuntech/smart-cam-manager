@@ -42,6 +42,7 @@ NO_COMMAND_SENTINEL = "nessuno"
 _EXAMPLE_TURNS: tuple[tuple[str, str, str | None], ...] = (
     ("le luci sono accese?", "devices", None),
     ("metti la sensibilita' bassa", "sensitivity", "bassa"),
+    ("il cane e' uscito dal giardino?", "events", None),
     ("che tempo fa domani?", NO_COMMAND_SENTINEL, None),
     ("cancella tutte le registrazioni", NO_COMMAND_SENTINEL, None),
 )

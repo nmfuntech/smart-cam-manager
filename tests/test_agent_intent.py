@@ -316,3 +316,33 @@ class CatalogTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PromptStabilityAndQuestionTests(unittest.TestCase):
+    def _calls(self, texts):
+        settings = {"AGENT_FASTPATH": "false", "AGENT_DOMAIN_GATE": "false", "AGENT_CACHE": "false"}
+        reply = {"command": "nessuno", "arg": None}
+        with mock.patch.dict(os.environ, settings):
+            with mock.patch.object(intent.ollama_client, "chat_json", return_value=reply) as chat:
+                for text in texts:
+                    intent.interpret(text)
+        return chat.call_args_list
+
+    def test_system_prompt_does_not_depend_on_message(self):
+        calls = self._calls(["gira la camera a sinistra", "elenca i dispositivi", "ciao"])
+        prompts = {call.args[2] for call in calls}
+        self.assertEqual(len(prompts), 1)
+        schemas = [call.kwargs["response_schema"] for call in calls]
+        self.assertNotEqual(schemas[0], schemas[2])
+
+    def test_info_question_allows_only_read_commands(self):
+        (call,) = self._calls(["il cane e' uscito dal giardino?"])
+        enum = call.kwargs["response_schema"]["properties"]["command"]["anyOf"][0]["enum"]
+        self.assertIn("events", enum)
+        self.assertNotIn("detect_pet_on", enum)
+
+    def test_polite_request_question_keeps_actions(self):
+        for text in ("puoi accendere la lampada?", "accendi la lampada?"):
+            with self.subTest(text=text):
+                self.assertFalse(intent._is_info_question(text))
+        self.assertTrue(intent._is_info_question("c'e' qualcuno in giardino?"))
