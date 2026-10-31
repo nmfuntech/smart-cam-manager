@@ -168,6 +168,17 @@ class WarmupTests(unittest.TestCase):
         self.assertTrue(captured["url"].endswith("/api/generate"))
         self.assertEqual(captured["payload"], {"model": "m", "keep_alive": "30m"})
 
+    def test_warmup_sends_context_size_options(self):
+        captured = {}
+
+        def fake_urlopen(req, timeout):
+            captured["payload"] = json.loads(req.data)
+            return _fake_response("")
+
+        with mock.patch.object(ollama_client.urllib.request, "urlopen", fake_urlopen):
+            ollama_client.warmup("http://127.0.0.1", "m", options={"num_ctx": 1536})
+        self.assertEqual(captured["payload"]["options"], {"num_ctx": 1536})
+
     def test_negative_keep_alive_is_sent_as_json_number(self):
         captured = {}
 

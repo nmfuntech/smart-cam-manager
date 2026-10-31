@@ -12,7 +12,7 @@ import threading
 from functools import lru_cache
 from typing import Callable
 
-from blackframe.envutil import env_float
+from blackframe.envutil import env_float, env_int
 
 from . import ollama_client
 
@@ -157,7 +157,9 @@ class ModelResidencyManager:
 
     def _preload(self) -> None:
         try:
-            self._warmup(self.base_url, self.model, keep_alive=self.keep_alive)
+            # Same num_ctx as intent/answer requests, or Ollama reloads the model.
+            options = {"num_ctx": env_int("AGENT_OLLAMA_NUM_CTX", 1536)}
+            self._warmup(self.base_url, self.model, keep_alive=self.keep_alive, options=options)
         except Exception:
             logger.exception("Preload modello Ollama fallito")
         finally:

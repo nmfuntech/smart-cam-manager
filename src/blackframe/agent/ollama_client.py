@@ -221,6 +221,7 @@ def warmup(
     model: str,
     *,
     keep_alive: str | None = None,
+    options: dict | None = None,
     timeout: float = 120.0,
 ) -> None:
     """Precarica il modello in RAM (``POST /api/generate`` senza prompt è la
@@ -230,6 +231,10 @@ def warmup(
     Il timeout è volutamente generoso: sul mini PC il caricamento da disco
     può superare di molto ``AGENT_TIMEOUT_SEC``, ed è proprio il costo che
     questo warm-up paga in anticipo al posto del primo messaggio utente.
+
+    ``options`` deve contenere lo stesso ``num_ctx`` delle richieste vere:
+    Ollama ricarica il modello quando il contesto cambia, quindi un warm-up
+    con il contesto di default verrebbe buttato al primo messaggio.
     """
     url = _api_url(base_url, "/api/generate")
     if url is None:
@@ -237,6 +242,8 @@ def warmup(
     payload: dict = {"model": model}
     if keep_alive:
         payload["keep_alive"] = _keep_alive_value(keep_alive)
+    if options:
+        payload["options"] = dict(options)
     try:
         _request(url, payload, timeout)
         logger.info("Warm-up Ollama completato: modello %s residente", model)

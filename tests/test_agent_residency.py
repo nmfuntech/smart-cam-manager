@@ -41,8 +41,8 @@ def test_preload_is_deduplicated_while_in_progress() -> None:
     release = threading.Event()
     calls = []
 
-    def warmup(base_url, model, *, keep_alive):
-        calls.append((base_url, model, keep_alive))
+    def warmup(base_url, model, *, keep_alive, options=None):
+        calls.append((base_url, model, keep_alive, options))
         entered.set()
         release.wait(timeout=2)
 
