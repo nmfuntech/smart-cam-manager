@@ -38,6 +38,11 @@ Due regole valgono in tutta la pipeline:
 - una **domanda** ("il cane è uscito?") può portare solo a comandi di lettura;
 - le frasi con parole distruttive (cancella, elimina, formatta) non passano
   mai dal classificatore.
+- se la classe `nessuno` arriva quasi in testa (distacco sotto
+  `AGENT_SEMANTIC_NONE_MARGIN`, default 0,03), la frase è ambigua: all'LLM
+  restano solo comandi di lettura e, se non ce ne sono, la richiesta viene
+  rifiutata. Serve perché lo stesso `qwen2.5:1.5b` sulla CPU del mini PC
+  decideva in modo diverso dal Mac ("resetta tutto il sistema" → `disarma`).
 
 ## Risultati (31/10/2026)
 

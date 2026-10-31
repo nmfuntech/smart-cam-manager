@@ -177,7 +177,6 @@ def extract_arg(command: str, text: str, known_names: dict[str, list[str]]) -> t
     return name is not None, name
 
 
-
 # --- topics: the embedding picks the topic, word rules pick the command -------
 #
 # Embeddings capture the subject of a sentence well but negation poorly:
@@ -299,14 +298,33 @@ def shortlist(
     *,
     topics: int = 3,
     min_score: float = 0.70,
+    none_margin: float = 0.0,
 ) -> frozenset[str] | None:
     """Commands of the best topics, to narrow the LLM choice when the
-    classifier abstains. None when the message looks out of scope."""
+    classifier abstains. None when the message looks out of scope.
+
+    When the out-of-scope class scores almost as high as the best topic
+    (within ``none_margin``), the message is ambiguous ("resetta tutto il
+    sistema", "che giorno e' oggi"): only read-only commands are kept, so a
+    small LLM cannot turn it into a state change. The result may then be
+    empty, which means "reject".
+    """
     ranked = rank_topics(command_scores, allowed)
     if not ranked or ranked[0][0] == NO_COMMAND or ranked[0][1] < min_score:
         return None
     chosen = {topic for topic, _ in ranked[:topics] if topic != NO_COMMAND}
-    return frozenset(c for c in allowed if _topic(c) in chosen)
+    commands = frozenset(c for c in allowed if _topic(c) in chosen)
+    none_score = command_scores.get(NO_COMMAND)
+    if none_score is not None and none_score >= ranked[0][1] - none_margin:
+        commands = frozenset(c for c in commands if _is_readonly(c))
+    return commands
+
+
+def _is_readonly(command: str) -> bool:
+    from blackframe.commands import COMMAND_REGISTRY
+
+    spec = COMMAND_REGISTRY.get(command)
+    return spec is not None and spec.readonly
 
 
 def decide(
@@ -500,6 +518,7 @@ class SemanticClassifier:
                 allowed,
                 topics=env_int("AGENT_SEMANTIC_SHORTLIST_TOPICS", 3, minimum=1),
                 min_score=env_float("AGENT_SEMANTIC_SHORTLIST_SCORE", 0.70),
+                none_margin=env_float("AGENT_SEMANTIC_NONE_MARGIN", 0.03),
             )
         return SemanticResult(match, short)
 

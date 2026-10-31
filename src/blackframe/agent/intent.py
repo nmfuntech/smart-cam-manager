@@ -235,6 +235,12 @@ def _semantic_suggestion(
         return None, None
     match = analysis.match
     if match is None:
+        if analysis.shortlist is not None and not analysis.shortlist:
+            # Ambiguous with "out of scope" and no read-only candidate left.
+            rejected = Suggestion(
+                ok=False, reason="Richiesta fuori ambito o non supportata.", source="semantic"
+            )
+            return rejected, None
         return None, analysis.shortlist
     if match.command == semantic.NO_COMMAND:
         rejected = Suggestion(

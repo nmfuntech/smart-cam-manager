@@ -149,6 +149,17 @@ class TopicResolverTests(unittest.TestCase):
         self.assertEqual(short, {"motion_on", "motion_off", "ptz_left", "ptz_right"})
         self.assertIsNone(semantic.shortlist({**scores, "nessuno": 0.9}, allowed))
 
+    def test_out_of_scope_close_to_top_keeps_only_readonly(self):
+        scores = {"disarma": 0.83, "ptz_home": 0.70, "events": 0.79, "nessuno": 0.81}
+        allowed = {"disarma", "arma", "casa", "ptz_home", "ptz_left", "events"}
+        short = semantic.shortlist(scores, allowed, none_margin=0.03)
+        self.assertEqual(short, {"events"})
+        # Far from "nessuno": state-changing commands stay available.
+        far = semantic.shortlist({**scores, "nessuno": 0.6}, allowed, none_margin=0.03)
+        self.assertIn("disarma", far)
+        only_mutating = {"disarma", "arma", "casa", "ptz_home", "ptz_left"}
+        self.assertEqual(semantic.shortlist(scores, only_mutating, none_margin=0.03), frozenset())
+
 
 class LlmCorrectionTests(unittest.TestCase):
     def test_llm_polarity_mistake_is_fixed(self):
@@ -189,3 +200,13 @@ class ShortlistIntegrationTests(SemanticTestCase):
         enum = chat.call_args.kwargs["response_schema"]["properties"]["command"]["anyOf"][0]
         self.assertIn("notifications_off", enum["enum"])
         self.assertLess(len(enum["enum"]), 15)
+
+    def test_empty_shortlist_rejects_without_llm(self):
+        empty = semantic.SemanticResult(None, frozenset())
+        with mock.patch.dict(os.environ, {"AGENT_FASTPATH": "false", "AGENT_CACHE": "false"}):
+            with mock.patch.object(self.classifier, "analyze", return_value=empty):
+                with mock.patch.object(intent.ollama_client, "chat_json") as chat:
+                    result = intent.interpret("resetta tutto il sistema")
+        chat.assert_not_called()
+        self.assertFalse(result.ok)
+        self.assertEqual(result.source, "semantic")
