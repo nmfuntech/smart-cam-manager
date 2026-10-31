@@ -8,7 +8,8 @@
 #
 # Steps (any failure before the restart leaves the running service untouched;
 # a failure after the restart rolls back to the previous commit):
-#   1. refuse to run if tracked files have local edits
+#   1. refuse to run if tracked files have local edits (user config files such
+#      as config/automation/rules.yaml are preserved instead)
 #   2. git fetch + checkout of -Ref (branch, tag or commit)
 #   3. poetry sync only when pyproject.toml / poetry.lock changed
 #   4. run the test suite in a separate git worktree (never in the live folder)
@@ -247,11 +248,45 @@ function Checkout-Ref([string]$Target) {
 # ---------------------------------------------------------------------------
 Write-Step "=== BLACKFRAME update to '$Ref' ==="
 
+# User-editable config that is tracked in git but changed at runtime (e.g.
+# /rule_on rewrites rules.yaml). Local versions are preserved across updates.
+$UserConfigFiles = @(
+    "config/automation/rules.yaml",
+    "config/automation/tuya_device_names.yaml"
+)
+$preserved = @{}
 $dirty = Get-GitOutput @("status", "--porcelain", "--untracked-files=no")
 if ($dirty) {
-    Write-Step "ABORT: tracked files modified on the mini PC:"
-    Write-Host $dirty
-    exit 2
+    $blocking = @()
+    foreach ($line in ($dirty -split "`n")) {
+        # Porcelain "XY path"; the leading space may already be trimmed.
+        $path = ($line.Trim() -replace '^\S+\s+', '').Trim('"')
+        if ($UserConfigFiles -contains $path) {
+            $preserved[$path] = [System.IO.File]::ReadAllBytes((Join-Path $RepoDir $path))
+        } else {
+            $blocking += $path
+        }
+    }
+    if ($blocking.Count -gt 0) {
+        Write-Step "ABORT: tracked files modified on the mini PC:"
+        $blocking | ForEach-Object { Write-Host "    $_" }
+        exit 2
+    }
+    $backupDir = Join-Path $LogDir ("config-backup-" + (Get-Date -Format "yyyyMMdd-HHmmss"))
+    New-Item -ItemType Directory -Force -Path $backupDir | Out-Null
+    foreach ($path in $preserved.Keys) {
+        [System.IO.File]::WriteAllBytes((Join-Path $backupDir (Split-Path $path -Leaf)), $preserved[$path])
+        Invoke-Native git @("checkout", "-q", "--", $path) | Out-Null
+    }
+    Write-Step ("Preserving local config: {0} (backup in {1})" -f ($preserved.Keys -join ", "), $backupDir)
+}
+
+function Restore-UserConfig {
+    foreach ($path in $preserved.Keys) {
+        $target = Join-Path $RepoDir $path
+        New-Item -ItemType Directory -Force -Path (Split-Path $target -Parent) | Out-Null
+        [System.IO.File]::WriteAllBytes($target, $preserved[$path])
+    }
 }
 
 $prevSha = Get-GitOutput @("rev-parse", "HEAD")
@@ -268,6 +303,7 @@ try {
     Write-Step "Target:  $Ref ($newSha)"
 
     Checkout-Ref $Ref
+    Restore-UserConfig
     Sync-Dependencies $prevSha $newSha
     Ensure-Models
 
@@ -280,7 +316,9 @@ try {
 } catch {
     Write-Step "ABORT before restart: $($_.Exception.Message)"
     Write-Step "Restoring $prevRef"
+    foreach ($path in $preserved.Keys) { Invoke-Native git @("checkout", "-q", "--", $path) -AllowFail | Out-Null }
     Invoke-Native git @("checkout", "-q", $prevRef) -AllowFail | Out-Null
+    Restore-UserConfig
     try { Sync-Dependencies $newSha $prevSha } catch { Write-Step "WARN: dependency restore failed: $_" }
     exit 3
 }
@@ -300,7 +338,9 @@ if ($restarted -and (Wait-Healthy $newSha)) {
 }
 
 Write-Step "Service not healthy within $HealthTimeoutSec s: ROLLBACK to $prevRef"
+foreach ($path in $preserved.Keys) { Invoke-Native git @("checkout", "-q", "--", $path) -AllowFail | Out-Null }
 Invoke-Native git @("checkout", "-q", $prevRef) -AllowFail | Out-Null
+Restore-UserConfig
 try { Sync-Dependencies $newSha $prevSha } catch { Write-Step "WARN: dependency restore failed: $_" }
 $restarted = Restart-App
 if ($restarted -and (Wait-Healthy $prevSha)) {
