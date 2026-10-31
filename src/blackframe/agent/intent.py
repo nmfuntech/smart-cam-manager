@@ -341,6 +341,7 @@ def interpret(
     )
 
     cache_key = (
+        model,
         normalize_identifier(text),
         tuple(sorted(effective_exclude)),
         tuple((kind, tuple(values)) for kind, values in sorted(known_names.items())),

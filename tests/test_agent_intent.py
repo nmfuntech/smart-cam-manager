@@ -71,6 +71,21 @@ class InterpretTests(unittest.TestCase):
         self.assertTrue(first.ok and second.ok)
         chat_json.assert_called_once()
 
+    def test_llm_result_cache_is_per_model(self):
+        with intent._CACHE_LOCK:
+            intent._CACHE.clear()
+        reply = {"command": "status", "arg": None}
+        with mock.patch.object(intent.ollama_client, "chat_json", return_value=reply) as chat:
+            for model in ("model-a", "model-b"):
+                env = {
+                    "AGENT_FASTPATH": "false",
+                    "AGENT_CACHE": "true",
+                    "AGENT_OLLAMA_MODEL": model,
+                }
+                with mock.patch.dict(os.environ, env):
+                    intent.interpret("controlla la telecamera")
+        self.assertEqual(chat.call_count, 2)
+
     def test_concurrent_llm_request_fails_fast(self):
         self.assertTrue(intent._LLM_SLOT.acquire(blocking=False))
         try:

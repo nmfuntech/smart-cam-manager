@@ -219,6 +219,8 @@ def main() -> None:
     dataset = json.loads(Path(args.cases).read_text(encoding="utf-8"))
 
     os.environ["AGENT_OLLAMA_URL"] = args.url
+    # Each model must answer by itself, never from another model's cache.
+    os.environ["AGENT_CACHE"] = "false"
     if args.no_fastpath:
         os.environ["AGENT_FASTPATH"] = "false"
     if args.no_schema:
@@ -240,6 +242,9 @@ def main() -> None:
     with (
         mock.patch.object(intent, "load_rules_raw", return_value=fake_rules),
         mock.patch.object(commands_registry, "load_rules_raw", return_value=fake_rules),
+        # The stub services declare no capabilities: without this the PTZ and
+        # device commands would be routed out and the model could never pick them.
+        mock.patch.object(intent, "_capability_exclude", lambda services, base: base),
     ):
         for model in [m.strip() for m in args.models.split(",") if m.strip()]:
             print(f"=== {model} ===")

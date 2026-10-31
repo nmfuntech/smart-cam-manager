@@ -114,6 +114,10 @@ def _chat_payload(
             {"role": "user", "content": user_text},
         ],
         "stream": False,
+        # Thinking models (qwen3, qwen3.5...) would spend the whole small
+        # num_predict budget on reasoning and return empty content. Ollama
+        # accepts the flag on non-thinking models too.
+        "think": False,
         "options": {"temperature": 0, **(options or {})},
     }
     if keep_alive:

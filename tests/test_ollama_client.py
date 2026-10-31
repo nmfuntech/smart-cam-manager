@@ -88,6 +88,7 @@ class ChatJsonTests(unittest.TestCase):
         self.assertEqual(result, {"command": "status", "arg": None})
         self.assertEqual(payloads[0]["format"], schema)
         self.assertEqual(payloads[1]["format"], "json")
+        self.assertIs(payloads[0]["think"], False)
 
     def test_no_retry_on_timeout(self):
         calls = []
