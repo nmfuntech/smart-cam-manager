@@ -96,3 +96,41 @@ def performance_profile_apply():
     except Exception:
         current_app.logger.exception("Applicazione profilo prestazioni fallita")
         return jsonify({"ok": False, "error": "Applicazione profilo fallita"}), 500
+
+
+# --- Zone di esclusione movimento -------------------------------------------
+
+
+def _active_camera_id() -> str:
+    services = _services()
+    try:
+        return services.features.camera_profiles.get_active_profile_id() or "default"
+    except Exception:
+        return "default"
+
+
+@settings_bp.get("/api/motion_zones")
+@require_auth(api=True)
+def motion_zones_get():
+    from blackframe.motion_zones import get_zones
+
+    camera_id = _active_camera_id()
+    return jsonify({"ok": True, "camera_id": camera_id, **get_zones(camera_id)})
+
+
+@settings_bp.put("/api/motion_zones")
+@require_auth(api=True)
+@require_csrf(api=True)
+@rate_limit("motion-zones", limit=30, window_seconds=60, api=True)
+def motion_zones_put():
+    from blackframe import audit
+    from blackframe.motion_zones import set_zones
+
+    payload = request.get_json(silent=True) or {}
+    camera_id = _active_camera_id()
+    try:
+        zones = set_zones(camera_id, payload.get("exclude", []))
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    audit.record("web", "admin", "motion_zones", f"{len(zones['exclude'])} zone")
+    return jsonify({"ok": True, "camera_id": camera_id, **zones})

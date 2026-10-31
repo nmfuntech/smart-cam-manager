@@ -19,6 +19,7 @@
           <nav class="settings-subnav" aria-label="Sezioni impostazioni">
             <a href="#prestazioni">Profilo prestazioni</a>
             <a href="#movimento">Movimento</a>
+            <a href="#zone">Zone</a>
             <a href="#riconoscimento">Riconoscimento</a>
             <a href="#registrazione">Registrazione</a>
             <a href="#telegram">Notifiche Telegram</a>
@@ -116,6 +117,33 @@
                 Salva movimento
               </button>
               <p class="runtime-feedback" id="set-feedback-movimento"></p>
+            </section>
+
+            <!-- ── Zone di esclusione ─────────────────────────────── -->
+            <section class="sidebar-block settings-section" id="zone">
+              <div class="camera-config-head">
+                <h2>Zone di esclusione</h2>
+              </div>
+              <p class="description compact">
+                Disegna sull'immagine le aree da ignorare (finestre con sole o
+                riflessi, TV, tende). Clic per aggiungere punti, doppio clic o
+                "Chiudi zona" per terminare. Il movimento dentro le zone non
+                genera eventi.
+              </p>
+              <div class="zone-editor" id="zone-editor">
+                <img id="zone-snapshot" alt="Immagine live della camera" />
+                <canvas id="zone-canvas"></canvas>
+              </div>
+              <div class="button-row">
+                <button class="ghost-button compact-button" id="zone-close" type="button">Chiudi zona</button>
+                <button class="ghost-button compact-button" id="zone-undo" type="button">Annulla punto</button>
+                <button class="ghost-button compact-button danger-button" id="zone-clear" type="button">Cancella tutte</button>
+                <button class="ghost-button compact-button" id="zone-refresh" type="button">Aggiorna immagine</button>
+              </div>
+              <button class="ghost-button compact-button save-runtime" id="zone-save" type="button">
+                Salva zone
+              </button>
+              <p class="runtime-feedback" id="zone-feedback"></p>
             </section>
 
             <!-- ── Riconoscimento ────────────────────────────────── -->
@@ -356,5 +384,9 @@
     <script
       type="module"
       src="{{ url_for('static', filename='js/impostazioni-page.js', v=static_asset_version) }}"
+    ></script>
+    <script
+      type="module"
+      src="{{ url_for('static', filename='js/zones-ui.js', v=static_asset_version) }}"
     ></script>
 {% endblock %}

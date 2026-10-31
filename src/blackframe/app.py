@@ -29,6 +29,7 @@ from blackframe.fsperms import IS_WINDOWS, harden_windows_paths
 from blackframe.health import HealthMonitor
 from blackframe.modes import ModeManager, get_mode_manager, set_mode_manager
 from blackframe.motion_events import MotionEventStore
+from blackframe.motion_zones import ZoneMaskCache
 from blackframe.notifications import TelegramNotifier
 from blackframe.recording import EventRecorder
 from blackframe.routes import register_blueprints
@@ -500,8 +501,10 @@ class CameraStream:
                     try:
                         self.capture = self._open_capture()
                         self._reset_backoff()
-                    except Exception:
-                        logger.exception("Errore apertura stream video")
+                    except Exception as exc:
+                        # Expected while the camera is offline: one line, no traceback
+                        # (the repeat filter then collapses the reconnect loop).
+                        logger.warning("Errore apertura stream video: %s", exc)
                         self._record_open_failure("Impossibile aprire stream RTSP")
                         time.sleep(self._consume_backoff())
                         continue
@@ -1082,6 +1085,7 @@ class MotionDetector:
         # Id del profilo camera sorgente: finisce in EventContext.source così le
         # regole di automazione con filtro `source:` possono scattare per camera.
         self.camera_id = camera_id
+        self._zones = ZoneMaskCache(camera_id or "default")
         self._classified_events: set[str] = set()
         self._notified_events: set[str] = set()
         self._finalized_events: set[str] = set()
@@ -1191,6 +1195,15 @@ class MotionDetector:
         fg = self._bg_subtractor.apply(processed, learningRate=self._current_learning_rate())
         # MOG2 marks foreground as 255 and shadows as 127; keep only solid foreground.
         mask = cv2.inRange(fg, 250, 255)
+        # User-drawn exclusion zones (windows, TV, mirrors): drop their pixels and
+        # measure ratios against the watched area only.
+        zones = getattr(self, "_zones", None)
+        zone_mask, watched_area = (
+            zones.get(processed.shape[:2], time.monotonic()) if zones else (None, frame_area)
+        )
+        if zone_mask is not None:
+            mask = cv2.bitwise_and(mask, zone_mask)
+            frame_area = max(1.0, watched_area)
 
         # Global-change guard: a lighting/exposure shift lights up most of the frame.
         global_ratio = self.config.get("global_change_ratio", 0.5)
@@ -2618,10 +2631,30 @@ def create_app(services: AppServices | None = None) -> Flask:
     return app
 
 
-app = create_app()
+_app: Flask | None = None
+_app_lock = threading.Lock()
+
+
+def get_app() -> Flask:
+    """The process-wide application, built on first use (thread-safe)."""
+    global _app
+    with _app_lock:
+        if _app is None:
+            _app = create_app()
+        return _app
+
+
+def __getattr__(name: str):
+    # ``blackframe.app:app`` (gunicorn, waitress, the Windows service) keeps
+    # working, but merely importing this module no longer opens the camera,
+    # starts threads or reads credentials (PEP 562 lazy module attribute).
+    if name == "app":
+        return get_app()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 if __name__ == "__main__":
+    app = get_app()
     app.run(
         host=os.getenv("APP_BIND_HOST", "127.0.0.1"),
         port=int(os.getenv("APP_PORT", "8000")),
