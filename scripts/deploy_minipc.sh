@@ -20,7 +20,7 @@ cd "$(dirname "$0")/.."
 ssh_q() { ssh -o BatchMode=yes -o ConnectTimeout=10 "$HOST" "$@" 2> >(grep -v '^\*\*' >&2); }
 
 if [[ "${1:-}" == "status" ]]; then
-  ssh_q "cd /d $REPO_DIR && git log -1 --format=\"%h %ci %s\" && git status -sb --untracked-files=no && sc query BLACKFRAME | findstr STATE && curl -s -m 5 http://127.0.0.1:8000/health"
+  ssh_q "cd /d $REPO_DIR && git log -1 --format=\"%h %ci %s\" && git status -sb --untracked-files=no && sc query BLACKFRAME | findstr /I \"STATE STATO\" & curl -s -m 5 http://127.0.0.1:8000/health"
   exit 0
 fi
 
